@@ -16,11 +16,20 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /** Performs the read-only, process-start V037 schema probe. */
 public final class V037SchemaCapabilityDetector {
 
     private static final int QUERY_TIMEOUT_SECONDS = 5;
+    private static final Pattern EXPRESSION_TOKEN = Pattern.compile(
+            "'(?:''|\\\\.|[^'\\\\])*'|`(?:``|[^`])*`|[A-Za-z_][A-Za-z_0-9]*|[0-9]+|[^\\s'`]");
+    private static final Set<String> GENERATED_EXPRESSIONS = Set.of(
+            compactExpression("case when ((source_type='WORKITEM') and regexp_like(idempotency_key,'^[0-9]+:[0-9]+:[0-9]+$')) then concat('WORKITEM:',idempotency_key) else idempotency_key end"),
+            compactExpression("case when source_type='WORKITEM' and regexp_like(idempotency_key,'^[0-9]+:[0-9]+:[0-9]+$') then concat('WORKITEM:',idempotency_key) else idempotency_key end"),
+            compactExpression("case when ((source_type='WORKITEM') and (idempotency_key regexp '^[0-9]+:[0-9]+:[0-9]+$')) then concat('WORKITEM:',idempotency_key) else idempotency_key end"),
+            compactExpression("case when source_type='WORKITEM' and idempotency_key regexp '^[0-9]+:[0-9]+:[0-9]+$' then concat('WORKITEM:',idempotency_key) else idempotency_key end"));
 
     private static final String COLUMN_QUERY = """
             SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT,
@@ -81,12 +90,18 @@ public final class V037SchemaCapabilityDetector {
                 while (resultSet.next()) {
                     ColumnKey key = key(resultSet.getString("TABLE_NAME"),
                             resultSet.getString("COLUMN_NAME"));
-                    ColumnDetails previous = columns.put(key, new ColumnDetails(
-                            normalizeType(resultSet.getString("COLUMN_TYPE")),
-                            "YES".equalsIgnoreCase(resultSet.getString("IS_NULLABLE")),
-                            resultSet.getString("COLUMN_DEFAULT"),
+                    String type = normalizeType(resultSet.getString("COLUMN_TYPE"));
+                    String nullable = resultSet.getString("IS_NULLABLE");
+                    if (!"YES".equalsIgnoreCase(nullable) && !"NO".equalsIgnoreCase(nullable)) {
+                        throw new SQLException("未知的字段可空性元数据");
+                    }
+                    ColumnDetails actual = new ColumnDetails(
+                            type,
+                            "YES".equalsIgnoreCase(nullable),
+                            normalizeDefault(type, resultSet.getString("COLUMN_DEFAULT")),
                             resultSet.getString("EXTRA"),
-                            resultSet.getString("GENERATION_EXPRESSION")));
+                            resultSet.getString("GENERATION_EXPRESSION"));
+                    ColumnDetails previous = columns.put(key, normalizeGeneratedDefault(key, actual));
                     if (previous != null) {
                         throw new SQLException("duplicate column metadata");
                     }
@@ -106,7 +121,11 @@ public final class V037SchemaCapabilityDetector {
                 while (resultSet.next()) {
                     IndexKey key = new IndexKey(lower(resultSet.getString("TABLE_NAME")),
                             lower(resultSet.getString("INDEX_NAME")));
-                    boolean unique = resultSet.getInt("NON_UNIQUE") == 0;
+                    int nonUnique = resultSet.getInt("NON_UNIQUE");
+                    if (resultSet.wasNull() || (nonUnique != 0 && nonUnique != 1)) {
+                        throw new SQLException("未知的索引唯一性元数据");
+                    }
+                    boolean unique = nonUnique == 0;
                     MutableIndex index = collected.computeIfAbsent(key,
                             ignored -> new MutableIndex(unique));
                     int sequence = resultSet.getInt("SEQ_IN_INDEX");
@@ -295,6 +314,19 @@ public final class V037SchemaCapabilityDetector {
         }
     }
 
+    private static ColumnDetails normalizeGeneratedDefault(ColumnKey key, ColumnDetails actual) {
+        if (!key.equals(key("dispatch", "normalized_idempotency_key"))
+                || actual.defaultValue == null || actual.generationExpression == null
+                || actual.generationExpression.isBlank()
+                || !compactExpression(actual.defaultValue).equals(
+                        compactExpression(actual.generationExpression))) {
+            return actual;
+        }
+        ColumnDetails normalized = new ColumnDetails(actual.type, actual.nullable, null,
+                actual.extra, actual.generationExpression);
+        return isIntendedGeneratedColumn(normalized) ? normalized : actual;
+    }
+
     private static boolean isIntendedGeneratedColumn(ColumnDetails column) {
         if (!"varchar(137)".equals(column.type)
                 || !column.nullable
@@ -303,23 +335,42 @@ public final class V037SchemaCapabilityDetector {
                 || !"stored generated".equals(column.extra.trim().toLowerCase(Locale.ROOT))) {
             return false;
         }
-        String expression = compactExpression(column.generationExpression);
-        String mysqlCanonical = "casewhensource_type='workitem'andregexp_likeidempotency_key,'^[0-9]+:[0-9]+:[0-9]+$'thenconcat'workitem:',idempotency_keyelseidempotency_keyend";
-        String operatorCanonical = "casewhensource_type='workitem'andidempotency_keyregexp'^[0-9]+:[0-9]+:[0-9]+$'thenconcat'workitem:',idempotency_keyelseidempotency_keyend";
-        return expression.equals(mysqlCanonical) || expression.equals(operatorCanonical);
+        return GENERATED_EXPRESSIONS.contains(compactExpression(column.generationExpression));
     }
 
     private static String compactExpression(String expression) {
         if (expression == null) {
             return "";
         }
-        return expression.toLowerCase(Locale.ROOT)
-                .replace("`", "")
-                .replace("\\", "")
-                .replace("_utf8mb4", "")
-                .replace("(", "")
-                .replace(")", "")
-                .replaceAll("\\s+", "");
+        Matcher tokens = EXPRESSION_TOKEN.matcher(expression);
+        List<String> normalized = new ArrayList<>();
+        int end = 0;
+        while (tokens.find()) {
+            if (!expression.substring(end, tokens.start()).isBlank()) {
+                return "";
+            }
+            String token = tokens.group();
+            end = tokens.end();
+            if (token.startsWith("`")) {
+                token = token.substring(1, token.length() - 1).toLowerCase(Locale.ROOT);
+                if (!Set.of("source_type", "idempotency_key").contains(token)) {
+                    return "";
+                }
+            } else if (!token.startsWith("'")) {
+                token = token.toLowerCase(Locale.ROOT);
+                if (token.equals("_utf8mb4")
+                        && expression.substring(end).stripLeading().startsWith("'")) {
+                    continue;
+                }
+            }
+            normalized.add(token);
+        }
+        if (!expression.substring(end).isBlank()) {
+            return "";
+        }
+        String value = String.join(" ", normalized);
+        return value.startsWith("( case when ") && value.endsWith(" end )")
+                ? value.substring(2, value.length() - 2) : value;
     }
 
     private static Map<ColumnKey, ColumnContract> scheduledColumns() {
@@ -466,7 +517,16 @@ public final class V037SchemaCapabilityDetector {
     }
 
     private static String normalizeType(String value) {
-        return value == null ? "" : value.toLowerCase(Locale.ROOT).replaceAll("\\s+", " ").trim();
+        return value == null ? "" : value.toLowerCase(Locale.ROOT).replaceAll("\\s+", " ").trim()
+                .replaceFirst("^(bigint|int|tinyint)\\s*\\(\\d+\\)(?=\\s|$)", "$1");
+    }
+
+    private static String normalizeDefault(String type, String value) {
+        if ("datetime(3)".equals(type) && value != null
+                && "CURRENT_TIMESTAMP".equalsIgnoreCase(value.trim())) {
+            return "CURRENT_TIMESTAMP(3)";
+        }
+        return value;
     }
 
     private record ColumnKey(String table, String column) {

@@ -76,5 +76,13 @@ __pycache__/
 /deployments/
 /upgrade-info/
 
+# Local container deployment state and secrets
+/.env
+/.env.tmp.*
+/deploy/dist/
+/deploy/*.tmp
+/deploy/logs/
+/deploy/minio-data/
+
 # Shared, disposable Skill dependencies (never deployment state)
 /skills/.autowonder-tools/
