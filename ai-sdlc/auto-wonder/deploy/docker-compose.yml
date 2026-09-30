@@ -1,0 +1,120 @@
+# AutoWonder Community 生产容器编排。
+# 使用已有 OceanBase/Redis，MinIO 作为 S3 兼容对象存储。
+services:
+  minio:
+    image: quay.io/minio/minio:latest
+    pull_policy: never
+    platform: linux/amd64
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER 未配置}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD 未配置}
+      TZ: Asia/Shanghai
+    ports:
+      - "0.0.0.0:9000:9000"
+      - "127.0.0.1:9001:9001"
+    volumes:
+      - ./minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  minio-init:
+    image: quay.io/minio/mc:latest
+    pull_policy: never
+    platform: linux/amd64
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER 未配置}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD 未配置}
+      MINIO_APP_USER: ${MINIO_APP_USER:?MINIO_APP_USER 未配置}
+      MINIO_APP_PASSWORD: ${MINIO_APP_PASSWORD:?MINIO_APP_PASSWORD 未配置}
+      OSS_BUCKET: ${OSS_BUCKET:-autowonder}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}"
+        mc mb --ignore-existing "local/$${OSS_BUCKET}"
+        mc admin user add local "$${MINIO_APP_USER}" "$${MINIO_APP_PASSWORD}" 2>/dev/null || true
+        policy_file="$$(mktemp)"
+        trap 'rm -f "$$policy_file"' EXIT
+        cat > "$$policy_file" <<POLICY
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {"Effect":"Allow","Action":["s3:ListAllMyBuckets","s3:GetBucketLocation"],"Resource":["arn:aws:s3:::*"]},
+            {"Effect":"Allow","Action":["s3:ListBucket"],"Resource":["arn:aws:s3:::$${OSS_BUCKET}"]},
+            {"Effect":"Allow","Action":["s3:GetObject","s3:PutObject","s3:DeleteObject"],"Resource":["arn:aws:s3:::$${OSS_BUCKET}/*"]}
+          ]
+        }
+        POLICY
+        mc admin policy create local autowonder-app "$$policy_file" 2>/dev/null || true
+        mc admin policy attach local autowonder-app --user "$${MINIO_APP_USER}"
+    restart: "no"
+
+  autowonder:
+    image: autowonder-community:latest
+    pull_policy: never
+    platform: linux/amd64
+    environment:
+      SERVER_PORT: "7001"
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-local}
+      SPRING_DATASOURCE_URL: ${SPRING_DATASOURCE_URL:?SPRING_DATASOURCE_URL 未配置}
+      SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME:?SPRING_DATASOURCE_USERNAME 未配置}
+      SPRING_DATASOURCE_PASSWORD: ${SPRING_DATASOURCE_PASSWORD:?SPRING_DATASOURCE_PASSWORD 未配置}
+      REDIS_HOST: ${REDIS_HOST:?REDIS_HOST 未配置}
+      REDIS_PORT: ${REDIS_PORT:?REDIS_PORT 未配置}
+      REDIS_PASSWORD: ${REDIS_PASSWORD-}
+      REDIS_DATABASE: ${REDIS_DATABASE:-0}
+      AUTOWONDER_SECRET_MASTER_KEY: ${AUTOWONDER_SECRET_MASTER_KEY:?AUTOWONDER_SECRET_MASTER_KEY 未配置}
+      AUTOWONDER_JWT_SECRET: ${AUTOWONDER_JWT_SECRET:?AUTOWONDER_JWT_SECRET 未配置}
+      AUTOWONDER_PUBLIC_BASE_URL: ${AUTOWONDER_PUBLIC_BASE_URL:?AUTOWONDER_PUBLIC_BASE_URL 未配置}
+      AUTOWONDER_VERSION: ${AUTOWONDER_VERSION:-0.9.0}
+      JAVA_OPTS: ${JAVA_OPTS:--Xms1g -Xmx2g -Duser.timezone=Asia/Shanghai}
+      OSS_ENABLED: "false"
+      OSS_BUCKET: ${OSS_BUCKET:-autowonder}
+      S3_ENABLED: "true"
+      S3_ENDPOINT: http://minio:9000
+      S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:?S3_PUBLIC_ENDPOINT 未配置}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_ACCESS_KEY_ID: ${MINIO_APP_USER:?MINIO_APP_USER 未配置}
+      S3_ACCESS_KEY_SECRET: ${MINIO_APP_PASSWORD:?MINIO_APP_PASSWORD 未配置}
+      AUTOWONDER_SLS_ENABLED: ${AUTOWONDER_SLS_ENABLED:-false}
+      AUTOWONDER_AONE_ENABLED: ${AUTOWONDER_AONE_ENABLED:-false}
+      AUTOWONDER_SIGAR_ENABLED: ${AUTOWONDER_SIGAR_ENABLED:-true}
+      AUTOWONDER_COMMUNITY_EDITION: ${AUTOWONDER_COMMUNITY_EDITION:-true}
+      AUTOWONDER_SCHEDULED_TASK_ENABLED: ${AUTOWONDER_SCHEDULED_TASK_ENABLED:-true}
+      AUTOWONDER_SCHEDULED_TASK_SCANNER_ENABLED: ${AUTOWONDER_SCHEDULED_TASK_SCANNER_ENABLED:-true}
+      AUTOWONDER_SCHEDULED_TASK_CLUSTER_READY: ${AUTOWONDER_SCHEDULED_TASK_CLUSTER_READY:-true}
+      AUTOWONDER_SCHEDULED_TASK_SCAN_FIXED_DELAY_MS: ${AUTOWONDER_SCHEDULED_TASK_SCAN_FIXED_DELAY_MS:-10000}
+      AUTOWONDER_SCHEDULED_TASK_SCAN_BATCH_SIZE: ${AUTOWONDER_SCHEDULED_TASK_SCAN_BATCH_SIZE:-100}
+      AUTOWONDER_SCHEDULED_TASK_LOCK_TTL_SECONDS: ${AUTOWONDER_SCHEDULED_TASK_LOCK_TTL_SECONDS:-30}
+      ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-https://api.anthropic.com}
+      ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-4-20250514}
+    depends_on:
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    ports:
+      - "0.0.0.0:7001:7001"
+    volumes:
+      - ./logs:/app/logs
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

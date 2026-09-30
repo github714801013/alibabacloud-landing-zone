@@ -85,6 +85,94 @@ class V037SchemaCapabilityDetectorTest {
     }
 
     @Test
+    void unknownNullabilityFailsProbeClosed() throws Exception {
+        for (String nullable : new String[] {null, "", "UNKNOWN"}) {
+            List<ColumnRow> columns = readyColumns();
+            DataSource dataSource = dataSource(columns, readyIndexes(), false);
+            ResultSet metadata = dataSource.getConnection()
+                    .prepareStatement("information_schema.COLUMNS").executeQuery();
+            doAnswer(ignored -> {
+                String table = metadata.getString("TABLE_NAME");
+                String name = metadata.getString("COLUMN_NAME");
+                if (table.equals("dispatch") && name.equals("source_type")) {
+                    return nullable;
+                }
+                return columns.stream().filter(row -> row.table.equals(table)
+                        && row.column.equals(name)).findFirst().orElseThrow().nullable ? "YES" : "NO";
+            }).when(metadata).getString("IS_NULLABLE");
+
+            V037SchemaCapability capability = detector().detect(dataSource);
+
+            assertEquals(V037SchemaMode.INCONSISTENT, capability.mode());
+            assertFalse(capability.scheduledAvailable());
+        }
+    }
+
+    @Test
+    void unknownIndexUniquenessFailsProbeClosed() throws Exception {
+        for (Integer nonUnique : new Integer[] {null, -1, 2}) {
+            DataSource dataSource = dataSource(readyColumns(), readyIndexes(), false);
+            ResultSet metadata = dataSource.getConnection()
+                    .prepareStatement("information_schema.STATISTICS").executeQuery();
+            org.mockito.Mockito.doReturn(nonUnique == null ? 0 : nonUnique)
+                    .when(metadata).getInt("NON_UNIQUE");
+            when(metadata.wasNull()).thenReturn(nonUnique == null);
+
+            V037SchemaCapability capability = detector().detect(dataSource);
+
+            assertEquals(V037SchemaMode.INCONSISTENT, capability.mode());
+            assertFalse(capability.scheduledAvailable());
+        }
+    }
+
+    @Test
+    void ignoresDisplayWidthForMySqlIntegerTypes() throws Exception {
+        List<ColumnRow> columns = readyColumns().stream().map(row -> switch (row.type) {
+            case "bigint unsigned" -> column(row.table, row.column, "bigint(20) unsigned",
+                    row.nullable, row.defaultValue, row.extra, row.expression);
+            case "int" -> column(row.table, row.column, "int(11)", row.nullable,
+                    row.defaultValue, row.extra, row.expression);
+            case "tinyint" -> column(row.table, row.column, "tinyint(1)", row.nullable,
+                    row.defaultValue, row.extra, row.expression);
+            default -> row;
+        }).toList();
+
+        V037SchemaCapability capability = detector().detect(
+                dataSource(columns, readyIndexes(), false));
+
+        assertEquals(V037SchemaMode.V037_READY, capability.mode(),
+                capability.missingObjects().toString());
+    }
+
+    @Test
+    void integerDisplayWidthNormalizationDoesNotIgnoreUnsignedness() throws Exception {
+        List<ColumnRow> columns = readyColumns();
+        replace(columns, "workitem", "origin_id",
+                column("workitem", "origin_id", "bigint(20)", true, null, "", ""));
+
+        V037SchemaCapability capability = detector().detect(
+                dataSource(columns, readyIndexes(), false));
+
+        assertEquals(V037SchemaMode.INCONSISTENT, capability.mode());
+    }
+
+    @Test
+    void acceptsOceanBaseTimestampDefaultsForMillisecondColumns() throws Exception {
+        List<ColumnRow> columns = readyColumns().stream().map(row ->
+                "datetime(3)".equals(row.type) && "CURRENT_TIMESTAMP(3)".equals(row.defaultValue)
+                        ? column(row.table, row.column, row.type, row.nullable,
+                                "CURRENT_TIMESTAMP", row.extra, row.expression)
+                        : row).toList();
+
+        V037SchemaCapability capability = detector().detect(
+                dataSource(columns, readyIndexes(), false));
+
+        assertEquals(V037SchemaMode.V037_READY, capability.mode(),
+                capability.missingObjects().toString());
+        assertTrue(capability.scheduledAvailable());
+    }
+
+    @Test
     void rejectsWrongDefaultAndWrongExactIndexOrderAsIncomplete() throws Exception {
         List<ColumnRow> columns = readyColumns();
         replace(columns, "scheduled_task", "overlap_policy",
@@ -100,6 +188,22 @@ class V037SchemaCapabilityDetectorTest {
         assertTrue(inventory.missingObjects().contains("scheduled_task.overlap_policy"));
         assertTrue(inventory.missingObjects().contains(
                 "scheduled_task_run.idx_scheduled_task_run_queue"));
+    }
+
+    @Test
+    void rejectsChangedIndexUniqueness() throws Exception {
+        for (String name : List.of("uk_dispatch_normalized_idempotency", "idx_dispatch_source")) {
+            List<IndexRow> indexes = readyIndexes().stream().map(row -> row.index.equals(name)
+                    ? new IndexRow(row.table, row.index, row.column, row.sequence, !row.unique)
+                    : row).toList();
+
+            V037SchemaCapability capability = detector().detect(
+                    dataSource(readyColumns(), indexes, false));
+
+            assertEquals(V037SchemaMode.V037_PARTIAL, capability.mode());
+            assertFalse(capability.scheduledAvailable());
+            assertTrue(capability.missingObjects().contains("dispatch." + name));
+        }
     }
 
     @Test
@@ -155,6 +259,139 @@ class V037SchemaCapabilityDetectorTest {
         assertTrue(inventory.scheduledDataExists());
         assertTrue(fixture.calls.stream().anyMatch(call ->
                 normalize(call.sql).equals("SELECT 1 FROM scheduled_task LIMIT 1")));
+    }
+
+    @Test
+    void acceptsOceanBaseRepeatedGeneratedExpressionAsReady() throws Exception {
+        List<ColumnRow> columns = readyColumns();
+        String expression = "(case when ((`source_type` = 'WORKITEM') and "
+                + "(`idempotency_key` regexp '^[0-9]+:[0-9]+:[0-9]+$')) then "
+                + "CONCAT('WORKITEM:',`idempotency_key`) else `idempotency_key` end)";
+        replace(columns, "dispatch", "normalized_idempotency_key",
+                column("dispatch", "normalized_idempotency_key", "varchar(137)", true,
+                        expression, "STORED GENERATED", expression));
+
+        V037SchemaCapability capability = detector().detect(
+                dataSource(columns, readyIndexes(), false));
+
+        assertEquals(V037SchemaMode.V037_READY, capability.mode(),
+                capability.missingObjects().toString());
+        assertTrue(capability.scheduledAvailable());
+    }
+
+    @Test
+    void timestampNormalizationPreservesPrecisionDefaultsAndOnUpdate() throws Exception {
+        List<ColumnRow> invalidRows = List.of(
+                column("scheduled_task", "gmt_modified", "datetime(6)", false,
+                        "CURRENT_TIMESTAMP", "on update CURRENT_TIMESTAMP(3)", ""),
+                column("scheduled_task", "gmt_modified", "datetime(3)", false,
+                        "CURRENT_TIMESTAMP(6)", "on update CURRENT_TIMESTAMP(3)", ""),
+                column("scheduled_task", "gmt_modified", "datetime(3)", false,
+                        "CURRENT_TIMESTAMP", "on update CURRENT_TIMESTAMP", ""),
+                column("scheduled_task", "gmt_modified", "datetime(3)", false,
+                        "CURRENT_TIMESTAMP", "", ""),
+                column("scheduled_task", "gmt_modified", "datetime(3)", false,
+                        "2026-01-01 00:00:00.000", "on update CURRENT_TIMESTAMP(3)", ""),
+                column("scheduled_task", "gmt_modified", "datetime(3)", true,
+                        "CURRENT_TIMESTAMP", "on update CURRENT_TIMESTAMP(3)", ""));
+
+        for (ColumnRow row : invalidRows) {
+            List<ColumnRow> columns = readyColumns();
+            replace(columns, row.table, row.column, row);
+            V037SchemaCapability capability = detector().detect(
+                    dataSource(columns, readyIndexes(), false));
+
+            assertFalse(capability.scheduledAvailable(), row.toString());
+            assertTrue(capability.missingObjects().contains("scheduled_task.gmt_modified"));
+        }
+    }
+
+    @Test
+    void repeatedGeneratedDefaultStillRequiresApprovedPhysicalContract() throws Exception {
+        String expression = "case when source_type = 'WORKITEM' and idempotency_key "
+                + "regexp '^[0-9]+:[0-9]+:[0-9]+$' then concat('WORKITEM:',idempotency_key) "
+                + "else idempotency_key end";
+        String changedExpression = expression.replace("WORKITEM:", "OTHER:");
+        String spacedExpression = expression.replace("WORKITEM:", "WORKITEM: ");
+        String parenthesizedLiteral = expression.replace("WORKITEM:", "WORKITEM:(");
+        String escapedLiteral = expression.replace("WORKITEM:", "WORKITEM:\\\\");
+        String changedGrouping = expression.replace("source_type = 'WORKITEM' and idempotency_key",
+                "(source_type = 'WORKITEM' and idempotency_key)");
+        String changedIdentifier = expression.replace("idempotency_key", "`idempotency_ key`");
+        List<ColumnRow> invalidRows = List.of(
+                column("dispatch", "normalized_idempotency_key", "varchar(137)", true,
+                        "unexpected", "STORED GENERATED", expression),
+                column("dispatch", "normalized_idempotency_key", "varchar(137)", true,
+                        changedExpression, "STORED GENERATED", expression),
+                column("dispatch", "normalized_idempotency_key", "varchar(137)", true,
+                        changedExpression, "STORED GENERATED", changedExpression),
+                column("dispatch", "normalized_idempotency_key", "varchar(137)", true,
+                        spacedExpression, "STORED GENERATED", expression),
+                column("dispatch", "normalized_idempotency_key", "varchar(137)", true,
+                        spacedExpression, "STORED GENERATED", spacedExpression),
+                column("dispatch", "normalized_idempotency_key", "varchar(137)", true,
+                        expression.toLowerCase(java.util.Locale.ROOT), "STORED GENERATED",
+                        expression.toLowerCase(java.util.Locale.ROOT)),
+                column("dispatch", "normalized_idempotency_key", "varchar(137)", true,
+                        parenthesizedLiteral, "STORED GENERATED", parenthesizedLiteral),
+                column("dispatch", "normalized_idempotency_key", "varchar(137)", true,
+                        escapedLiteral, "STORED GENERATED", escapedLiteral),
+                column("dispatch", "normalized_idempotency_key", "varchar(137)", true,
+                        changedGrouping, "STORED GENERATED", changedGrouping),
+                column("dispatch", "normalized_idempotency_key", "varchar(137)", true,
+                        changedIdentifier, "STORED GENERATED", changedIdentifier),
+                column("dispatch", "normalized_idempotency_key", "varchar(137)", true,
+                        null, "STORED GENERATED", changedIdentifier),
+                column("dispatch", "normalized_idempotency_key", "varchar(138)", true,
+                        expression, "STORED GENERATED", expression),
+                column("dispatch", "normalized_idempotency_key", "varchar(137)", false,
+                        expression, "STORED GENERATED", expression),
+                column("dispatch", "normalized_idempotency_key", "varchar(137)", true,
+                        expression, "VIRTUAL GENERATED", expression),
+                column("dispatch", "normalized_idempotency_key", "varchar(137)", true,
+                        "", "STORED GENERATED", ""));
+
+        for (ColumnRow row : invalidRows) {
+            List<ColumnRow> columns = readyColumns();
+            replace(columns, row.table, row.column, row);
+            V037SchemaCapability capability = detector().detect(
+                    dataSource(columns, readyIndexes(), false));
+
+            assertFalse(capability.scheduledAvailable(), row.toString());
+            assertTrue(capability.missingObjects().contains("dispatch.normalized_idempotency_key"));
+        }
+    }
+
+    @Test
+    void classifiesCompleteOceanBaseMetadataAsReady() throws Exception {
+        String expression = "(case when ((`source_type` = 'WORKITEM') and "
+                + "(`idempotency_key` regexp '^[0-9]+:[0-9]+:[0-9]+$')) then "
+                + "CONCAT('WORKITEM:',`idempotency_key`) else `idempotency_key` end)";
+        List<ColumnRow> columns = readyColumns().stream().map(row -> {
+            String type = switch (row.type) {
+                case "bigint unsigned" -> "bigint(20) unsigned";
+                case "int" -> "int(11)";
+                case "tinyint" -> "tinyint(4)";
+                default -> row.type;
+            };
+            String defaultValue = "CURRENT_TIMESTAMP(3)".equals(row.defaultValue)
+                    ? "CURRENT_TIMESTAMP" : row.defaultValue;
+            if (row.table.equals("dispatch") && row.column.equals("normalized_idempotency_key")) {
+                return column(row.table, row.column, type, row.nullable,
+                        expression, "STORED GENERATED", expression);
+            }
+            return column(row.table, row.column, type, row.nullable,
+                    defaultValue, row.extra, row.expression);
+        }).toList();
+
+        V037SchemaCapability capability = detector().detect(
+                dataSource(columns, readyIndexes(), false));
+
+        assertEquals(V037SchemaMode.V037_READY, capability.mode(),
+                capability.missingObjects().toString());
+        assertEquals(V037MapperMode.SOURCE_AWARE, capability.mapperMode());
+        assertTrue(capability.scheduledAvailable());
+        assertTrue(capability.missingObjects().isEmpty());
     }
 
     @Test
