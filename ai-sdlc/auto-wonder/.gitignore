@@ -79,10 +79,7 @@ __pycache__/
 # Local container deployment state and secrets
 /.env
 /.env.tmp.*
-/deploy/dist/
-/deploy/*.tmp
-/deploy/logs/
-/deploy/minio-data/
+/deploy/
 
 # Shared, disposable Skill dependencies (never deployment state)
 /skills/.autowonder-tools/
