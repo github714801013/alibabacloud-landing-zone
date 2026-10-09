@@ -1,5 +1,8 @@
 package com.aliyun.autowonder.scheduledtask.compat;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import javax.sql.DataSource;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -22,6 +25,7 @@ import java.util.regex.Pattern;
 /** Performs the read-only, process-start V037 schema probe. */
 public final class V037SchemaCapabilityDetector {
 
+    private static final Logger LOGGER = LoggerFactory.getLogger(V037SchemaCapabilityDetector.class);
     private static final int QUERY_TIMEOUT_SECONDS = 5;
     private static final Pattern EXPRESSION_TOKEN = Pattern.compile(
             "'(?:''|\\\\.|[^'\\\\])*'|`(?:``|[^`])*`|[A-Za-z_][A-Za-z_0-9]*|[0-9]+|[^\\s'`]");
@@ -76,6 +80,9 @@ public final class V037SchemaCapabilityDetector {
             Map<IndexKey, IndexDetails> indexes = readIndexes(connection, catalog);
             return classifyInventory(connection, columns, indexes);
         } catch (SQLException exception) {
+            // JDBC 异常消息含主机、库名或用户名但不含密码，足以区分连接失败、库不存在与权限不足。
+            LOGGER.error("V037 schema capability probe failed: {}: {}", exception.getClass().getSimpleName(),
+                    exception.getMessage(), exception);
             return V037SchemaInventory.failed("V037 schema capability probe failed");
         }
     }
