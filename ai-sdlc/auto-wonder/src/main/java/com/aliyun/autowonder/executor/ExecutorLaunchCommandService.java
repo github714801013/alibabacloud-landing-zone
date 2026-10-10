@@ -18,6 +18,7 @@ import java.util.Base64;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.regex.Pattern;
 
 /**
@@ -72,6 +73,17 @@ public class ExecutorLaunchCommandService {
                 config.extraArgs);
     }
 
+    /** 平台自己生成的一个启动参数；{@code value} 为 null 表示裸旗标（例如 --token-aware-enable）。 */
+    private record LaunchArg(String flag, String value) {
+        static LaunchArg of(String flag, String value) {
+            return new LaunchArg(flag, value);
+        }
+
+        static LaunchArg bare(String flag) {
+            return new LaunchArg(flag, null);
+        }
+    }
+
     private static <T> T requireDependency(T dependency) {
         if (dependency == null) {
             throw new BizException(ErrorCode.SYSTEM_ERROR, "执行器能力不可用");
@@ -116,26 +128,37 @@ public class ExecutorLaunchCommandService {
         String provider = ExecutorLaunchOptionsService.resolveProvider(clientKind);
         boolean qoderFamily = ExecutorLaunchOptionsService.isQoderFamily(provider);
 
-        List<String> argv = new ArrayList<>(List.of(
-                "npx", "-y", "autowonder@" + runtimeVersion, "connect",
-                "--ws-url", wsUrl,
-                "--token", token,
-                "--executor-id", String.valueOf(executorId),
-                "--provider", provider,
-                "--memory-mode", memoryMode,
-                "--max-tasks", String.valueOf(maxConcurrentDispatches)));
+        List<LaunchArg> launchArgs = new ArrayList<>(List.of(
+                LaunchArg.of("--ws-url", wsUrl),
+                LaunchArg.of("--token", token),
+                LaunchArg.of("--executor-id", String.valueOf(executorId)),
+                LaunchArg.of("--provider", provider),
+                LaunchArg.of("--memory-mode", memoryMode),
+                LaunchArg.of("--max-tasks", String.valueOf(maxConcurrentDispatches))));
         if (qoderFamily && model != null) {
-            argv.addAll(List.of("--model", model,
-                    "--reasoning-effort", reasoningEffort,
-                    "--context-window", contextWindow));
+            launchArgs.add(LaunchArg.of("--model", model));
+            launchArgs.add(LaunchArg.of("--reasoning-effort", reasoningEffort));
+            launchArgs.add(LaunchArg.of("--context-window", contextWindow));
         }
         if (qoderFamily) {
-            argv.add("--token-aware-enable");
+            launchArgs.add(LaunchArg.bare("--token-aware-enable"));
         }
-        if (extraArgs != null) {
-            // 操作者手输的扩展参数排在平台参数之后、--debug 之前，逐项走同一套转义。
-            argv.addAll(ExecutorLaunchExtraArgs.tokenize(extraArgs));
+
+        List<String> extraArgv = extraArgs == null ? List.of() : ExecutorLaunchExtraArgs.tokenize(extraArgs);
+        // 被扩展参数同名的平台参数连同取值一起丢掉，命令里只留覆盖后的那一份，不再两处并列。
+        Set<String> overridden = ExecutorLaunchExtraArgs.flagNames(extraArgv);
+        List<String> argv = new ArrayList<>(List.of("npx", "-y", "autowonder@" + runtimeVersion, "connect"));
+        for (LaunchArg arg : launchArgs) {
+            if (overridden.contains(arg.flag())) {
+                continue;
+            }
+            argv.add(arg.flag());
+            if (arg.value() != null) {
+                argv.add(arg.value());
+            }
         }
+        // 扩展参数排在平台参数之后、--debug 之前，逐项走同一套转义。
+        argv.addAll(extraArgv);
 
         String logFileName = null;
         String command;

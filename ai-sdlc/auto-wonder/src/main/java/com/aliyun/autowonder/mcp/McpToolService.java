@@ -243,11 +243,11 @@ public class McpToolService {
     /** Extra command-line arguments an operator typed on the executor page; appended after the platform's own flags. */
     private static final String EXECUTOR_EXTRA_ARGS_DESCRIPTION =
             "Optional. Extra arguments appended to the generated launch command after the platform's own flags. "
-                    + "Split on shell rules (whitespace, quotes group, backslash escapes) and quoted per shell. "
-                    + "Because they come last, an argument that repeats a platform flag (--model, --memory-mode, "
-                    + "--context-window, ...) overrides the value the platform generated; that is deliberate, so an "
-                    + "operator can use a value the platform UI does not offer. Omit this argument to clear it, "
-                    + "because this write is a full replace.";
+                    + "Split on shell rules (whitespace, quotes group, backslash escapes) and quoted per shell. An "
+                    + "argument that repeats a platform flag (--model, --memory-mode, --context-window, ...) replaces "
+                    + "it: the platform's own occurrence is dropped, so the command never carries both. That is "
+                    + "deliberate, so an operator can use a value the platform UI does not offer. Omit this argument "
+                    + "to clear it, because this write is a full replace.";
     private static final Set<String> TRANSITION_SCHEDULED_TASK_ACTIONS = Set.of(
             "enable", "pause", "archive", "run-now", "pause-run", "resume-run", "cancel-run");
     private static final Set<String> SCHEDULED_TASK_LIST_STATUSES = Set.of(

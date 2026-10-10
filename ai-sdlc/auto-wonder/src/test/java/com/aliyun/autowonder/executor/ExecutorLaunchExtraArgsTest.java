@@ -54,6 +54,14 @@ class ExecutorLaunchExtraArgsTest {
     }
 
     @Test
+    void flagNamesStripsTheEqualsValueAndKeepsOrder() {
+        // 裸值也会被收进来，但它们不会与平台参数同名，因此不会误判为覆盖
+        assertEquals(List.of("--model", "--memory-mode", "none", "bare"),
+                List.copyOf(ExecutorLaunchExtraArgs.flagNames(
+                        List.of("--model=my-model", "--memory-mode", "none", "bare"))));
+    }
+
+    @Test
     void tokenizeLetsExtraArgumentsOverridePlatformFlags() {
         // 扩展参数追加在平台参数之后，同名时以扩展参数为准——有意允许，因此这里不拦截
         assertEquals(List.of("--model", "my-model", "--context-window", "400000"),
