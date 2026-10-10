@@ -56,8 +56,8 @@ public class ExecutorLaunchCommandService {
 
     /**
      * Generates the command for one executor from what the database holds. An executor that does not exist in this
-     * workspace, whose config was never saved, or whose saved model has rotated out is refused with the reason, so a
-     * misleading command is never handed to an operator to copy.
+     * workspace or whose config was never saved is refused with the reason, so a misleading command is never handed to
+     * an operator to copy.
      */
     public ExecutorLaunchCommandVO buildForExecutor(long executorId, long tenantId, String os, boolean debug,
             String shell) {
@@ -68,7 +68,8 @@ public class ExecutorLaunchCommandService {
         ExecutorLaunchConfigService.LaunchConfig config = configs.requireCompleteConfig(executorId, tenantId);
         return buildAt(token, executorId, executor.getClientKind(), config.memoryMode, config.model,
                 config.reasoningEffort, config.contextWindow, os, debug, shell, new Date(),
-                ExecutorLaunchConfigService.resolveMaxConcurrentDispatches(config.maxConcurrentDispatches));
+                ExecutorLaunchConfigService.resolveMaxConcurrentDispatches(config.maxConcurrentDispatches),
+                config.extraArgs);
     }
 
     private static <T> T requireDependency(T dependency) {
@@ -88,12 +89,12 @@ public class ExecutorLaunchCommandService {
             String model, String reasoningEffort, String contextWindow, String os, boolean debug, String shell,
             Date now) {
         return buildAt(token, executorId, clientKind, memoryMode, model, reasoningEffort, contextWindow,
-                os, debug, shell, now, ExecutorLaunchConfigService.DEFAULT_MAX_CONCURRENT_DISPATCHES);
+                os, debug, shell, now, ExecutorLaunchConfigService.DEFAULT_MAX_CONCURRENT_DISPATCHES, null);
     }
 
     ExecutorLaunchCommandVO buildAt(String token, long executorId, String clientKind, String memoryMode,
             String model, String reasoningEffort, String contextWindow, String os, boolean debug, String shell,
-            Date now, int maxConcurrentDispatches) {
+            Date now, int maxConcurrentDispatches, String extraArgs) {
         // 缺类型的执行器（历史数据）若放行会被 resolveProvider 静默解释成 claude，宁可明确拒绝。
         if (clientKind == null || clientKind.isBlank()) {
             throw new BizException(ErrorCode.EXECUTOR_CLIENT_KIND_MISSING);
@@ -130,6 +131,10 @@ public class ExecutorLaunchCommandService {
         }
         if (qoderFamily) {
             argv.add("--token-aware-enable");
+        }
+        if (extraArgs != null) {
+            // 操作者手输的扩展参数排在平台参数之后、--debug 之前，逐项走同一套转义。
+            argv.addAll(ExecutorLaunchExtraArgs.tokenize(extraArgs));
         }
 
         String logFileName = null;

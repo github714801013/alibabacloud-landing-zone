@@ -52,7 +52,7 @@ public class ExecutorLaunchConfigService {
         LaunchConfig stored = parse(executor.getLaunchConfig());
         String provider = ExecutorLaunchOptionsService.resolveProvider(executor.getClientKind());
         if (!ExecutorLaunchOptionsService.isQoderFamily(provider)) {
-            return toVo(null, null, null, stored.memoryMode, stored.maxConcurrentDispatches, version);
+            return toVo(null, null, null, stored.memoryMode, stored.maxConcurrentDispatches, stored.extraArgs, version);
         }
         String model = stored.model;
         if (isNotBlank(model) && !modelIds(provider).contains(model)) {
@@ -63,7 +63,8 @@ public class ExecutorLaunchConfigService {
             }
             model = null;
         }
-        return toVo(model, stored.reasoningEffort, stored.contextWindow, stored.memoryMode, stored.maxConcurrentDispatches, version);
+        return toVo(model, stored.reasoningEffort, stored.contextWindow, stored.memoryMode, stored.maxConcurrentDispatches,
+                stored.extraArgs, version);
     }
 
     /**
@@ -77,9 +78,10 @@ public class ExecutorLaunchConfigService {
         int version = versionOf(executor);
         String provider = ExecutorLaunchOptionsService.resolveProvider(executor.getClientKind());
         if (!ExecutorLaunchOptionsService.isQoderFamily(provider)) {
-            return toVo(null, null, null, stored.memoryMode, stored.maxConcurrentDispatches, version);
+            return toVo(null, null, null, stored.memoryMode, stored.maxConcurrentDispatches, stored.extraArgs, version);
         }
-        return toVo(stored.model, stored.reasoningEffort, stored.contextWindow, stored.memoryMode, stored.maxConcurrentDispatches, version);
+        return toVo(stored.model, stored.reasoningEffort, stored.contextWindow, stored.memoryMode,
+                stored.maxConcurrentDispatches, stored.extraArgs, version);
     }
 
     /**
@@ -101,7 +103,7 @@ public class ExecutorLaunchConfigService {
         String kindToPersist = resolveRecoveryClientKind(executor.getClientKind(), req.getClientKind());
         LaunchConfig stored = resolve(kindToPersist != null ? kindToPersist : executor.getClientKind(),
                 req.getMemoryMode(), req.getModel(),
-                req.getReasoningEffort(), req.getContextWindow(), true);
+                req.getReasoningEffort(), req.getContextWindow(), req.getExtraArgs(), true);
         stored.maxConcurrentDispatches = resolveMaxConcurrentDispatches(req.getMaxConcurrentDispatches() != null
                 ? req.getMaxConcurrentDispatches() : parse(executor.getLaunchConfig()).maxConcurrentDispatches);
         int rows = kindToPersist != null
@@ -111,8 +113,8 @@ public class ExecutorLaunchConfigService {
         if (rows == 0) {
             throw new BizException(ErrorCode.EXECUTOR_LAUNCH_CONFIG_VERSION_CONFLICT);
         }
-        return toVo(stored.model, stored.reasoningEffort, stored.contextWindow, stored.memoryMode, stored.maxConcurrentDispatches,
-                expectedVersion + 1);
+        return toVo(stored.model, stored.reasoningEffort, stored.contextWindow, stored.memoryMode,
+                stored.maxConcurrentDispatches, stored.extraArgs, expectedVersion + 1);
     }
 
     /**
@@ -154,6 +156,7 @@ public class ExecutorLaunchConfigService {
                 explicitModel ? req.getModel() : null,
                 req == null ? null : req.getReasoningEffort(),
                 req == null ? null : req.getContextWindow(),
+                req == null ? null : req.getExtraArgs(),
                 explicitModel);
         config.maxConcurrentDispatches = resolveMaxConcurrentDispatches(req == null ? null : req.getMaxConcurrentDispatches());
         return config;
@@ -201,10 +204,12 @@ public class ExecutorLaunchConfigService {
      * it is false the caller is asking for a default and the id is demoted to a usable one instead.
      */
     private LaunchConfig resolve(String clientKind, String memoryMode, String model, String reasoningEffort,
-            String contextWindow, boolean requireKnownModel) {
+            String contextWindow, String extraArgs, boolean requireKnownModel) {
         String provider = ExecutorLaunchOptionsService.resolveProvider(clientKind);
         LaunchConfig config = new LaunchConfig();
         config.memoryMode = options.resolveMemoryMode(memoryMode);
+        // 扩展参数与客户端类型无关，因此在 Qoder 分支之前就校验并落库。
+        config.extraArgs = ExecutorLaunchExtraArgs.normalize(extraArgs);
         if (!ExecutorLaunchOptionsService.isQoderFamily(provider)) {
             return config;
         }
@@ -271,13 +276,14 @@ public class ExecutorLaunchConfigService {
     }
 
     private static ExecutorLaunchConfigVO toVo(String model, String reasoningEffort, String contextWindow,
-            String memoryMode, Integer maxConcurrentDispatches, int version) {
+            String memoryMode, Integer maxConcurrentDispatches, String extraArgs, int version) {
         ExecutorLaunchConfigVO vo = new ExecutorLaunchConfigVO();
         vo.setModel(model);
         vo.setReasoningEffort(reasoningEffort);
         vo.setContextWindow(contextWindow);
         vo.setMemoryMode(memoryMode);
         vo.setMaxConcurrentDispatches(maxConcurrentDispatches);
+        vo.setExtraArgs(extraArgs);
         vo.setVersion(version);
         return vo;
     }
@@ -302,5 +308,6 @@ public class ExecutorLaunchConfigService {
         public String contextWindow;
         public String memoryMode;
         public Integer maxConcurrentDispatches;
+        public String extraArgs;
     }
 }

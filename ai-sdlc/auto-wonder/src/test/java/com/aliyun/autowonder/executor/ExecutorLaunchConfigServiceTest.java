@@ -69,6 +69,13 @@ class ExecutorLaunchConfigServiceTest {
         return request;
     }
 
+    private UpdateExecutorLaunchConfigRequest req(Integer version, String memoryMode, String model,
+                                                  String reasoningEffort, String contextWindow, String extraArgs) {
+        UpdateExecutorLaunchConfigRequest request = req(version, memoryMode, model, reasoningEffort, contextWindow);
+        request.setExtraArgs(extraArgs);
+        return request;
+    }
+
     @Test
     void concurrencyDefaultsAndValidationMatchLaunchSettings() {
         CreateExecutorRequest request = new CreateExecutorRequest();
@@ -209,6 +216,14 @@ class ExecutorLaunchConfigServiceTest {
 
         BizException ex = assertThrows(BizException.class, () -> service.getConfig(9L, 999L, USER));
         assertEquals("17001", ex.getCode());
+    }
+
+    @Test
+    void getConfig_returns_the_stored_extra_args() {
+        when(executorDao.findById(9L)).thenReturn(executor(9L, "QODER_CLI",
+                "{\"model\":\"qmodel_38max\",\"memoryMode\":\"none\",\"extraArgs\":\"--foo bar\"}", 4));
+
+        assertEquals("--foo bar", service.getConfig(9L, TENANT, USER).getExtraArgs());
     }
 
     // ---------- readStoredConfig：MCP 只读 ----------
@@ -372,6 +387,55 @@ class ExecutorLaunchConfigServiceTest {
         BizException ex = assertThrows(BizException.class, () -> service.updateConfig(9L, 999L,
                 req(1, "platform", "qmodel_38max", "medium", "260000"), USER));
         assertEquals("17001", ex.getCode());
+    }
+
+    @Test
+    void updateConfig_persists_and_reads_back_the_extra_args() {
+        when(executorDao.findById(9L)).thenReturn(executor(9L, "QODER_CLI", null, 1));
+        ArgumentCaptor<String> json = ArgumentCaptor.forClass(String.class);
+        when(executorDao.updateLaunchConfig(eq(9L), eq(TENANT), json.capture(), eq(1), eq(USER))).thenReturn(1);
+
+        ExecutorLaunchConfigVO vo = service.updateConfig(9L, TENANT,
+                req(1, "platform", "qmodel_38max", "medium", "260000", "  --foo bar  "), USER);
+
+        assertEquals("--foo bar", vo.getExtraArgs());
+        assertTrue(json.getValue().contains("\"extraArgs\":\"--foo bar\""));
+    }
+
+    @Test
+    void updateConfig_lets_extra_args_override_a_platform_flag() {
+        when(executorDao.findById(9L)).thenReturn(executor(9L, "QODER_CLI", null, 1));
+        when(executorDao.updateLaunchConfig(eq(9L), eq(TENANT), anyString(), eq(1), eq(USER))).thenReturn(1);
+
+        // 覆盖平台参数是有意允许的：按输入落库，不在这里拦截
+        ExecutorLaunchConfigVO vo = service.updateConfig(9L, TENANT,
+                req(1, "platform", "qmodel_38max", "medium", "260000", "--model my-model"), USER);
+
+        assertEquals("--model my-model", vo.getExtraArgs());
+    }
+
+    @Test
+    void updateConfig_rejects_extra_args_with_an_unclosed_quote() {
+        when(executorDao.findById(9L)).thenReturn(executor(9L, "QODER_CLI", null, 1));
+
+        BizException ex = assertThrows(BizException.class, () -> service.updateConfig(9L, TENANT,
+                req(1, "platform", "qmodel_38max", "medium", "260000", "--foo 'bar"), USER));
+        assertEquals("17012", ex.getCode());
+        verify(executorDao, never()).updateLaunchConfig(anyLong(), anyLong(), anyString(), anyInt(), anyLong());
+    }
+
+    @Test
+    void updateConfig_stores_extra_args_for_a_non_qoder_executor_too() {
+        when(executorDao.findById(9L)).thenReturn(executor(9L, "CLAUDE_CODE", null, 1));
+        ArgumentCaptor<String> json = ArgumentCaptor.forClass(String.class);
+        when(executorDao.updateLaunchConfig(eq(9L), eq(TENANT), json.capture(), eq(1), eq(USER))).thenReturn(1);
+
+        ExecutorLaunchConfigVO vo = service.updateConfig(9L, TENANT,
+                req(1, "platform", null, null, null, "--foo bar"), USER);
+
+        assertEquals("--foo bar", vo.getExtraArgs());
+        assertNull(vo.getModel());
+        assertTrue(json.getValue().contains("\"extraArgs\":\"--foo bar\""));
     }
 
     // ---------- updateConfig：历史缺失类型执行器的恢复 ----------
@@ -576,6 +640,14 @@ class ExecutorLaunchConfigServiceTest {
 
         assertEquals("platform", config.memoryMode);
         assertNull(config.model);
+    }
+
+    @Test
+    void resolveForCreate_keeps_the_extra_args() {
+        CreateExecutorRequest request = create("QODER_CLI", "platform", "lite", "low", "400000");
+        request.setExtraArgs("--foo bar");
+
+        assertEquals("--foo bar", service.resolveForCreate(request).extraArgs);
     }
 
     // ---------- requireCompleteConfig：生成命令前读取 ----------

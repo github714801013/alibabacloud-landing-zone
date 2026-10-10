@@ -4667,6 +4667,23 @@ class McpToolServiceTest {
         verifyNoInteractions(providerModelCatalogService);
     }
 
+    @Test
+    void updateExecutorLaunchConfigPassesExtraArgsToTheService() {
+        McpAccessTokenService.Principal admin = principal(WorkspaceAccessLevel.ADMIN);
+        when(executorLaunchConfigService.updateConfig(eq(9L), eq(WORKSPACE_ID),
+                any(UpdateExecutorLaunchConfigRequest.class), eq(USER_ID)))
+                .thenReturn(storedConfig(4, "qfmodel", "platform", "medium", "260000"));
+
+        call(admin, "autowonder.update_executor_launch_config",
+                Map.of("id", 9L, "version", 3, "extraArgs", "--model my-model"));
+
+        // 扩展参数是启动配置的一部分，MCP 写入必须与页面走同一条落库路径
+        ArgumentCaptor<UpdateExecutorLaunchConfigRequest> captor =
+                ArgumentCaptor.forClass(UpdateExecutorLaunchConfigRequest.class);
+        verify(executorLaunchConfigService).updateConfig(eq(9L), eq(WORKSPACE_ID), captor.capture(), eq(USER_ID));
+        assertEquals("--model my-model", captor.getValue().getExtraArgs());
+    }
+
     private ExecutorLaunchConfigVO storedConfig(int version, String model, String memoryMode,
             String reasoningEffort, String contextWindow) {
         ExecutorLaunchConfigVO vo = new ExecutorLaunchConfigVO();

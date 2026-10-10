@@ -163,6 +163,10 @@ export function isLaunchConfigured(config: ExecutorLaunchConfig | null): boolean
 
 const UNCONFIGURED_PREVIEW = '未配置：请先选择启动参数并保存后再生成命令';
 
+// 与服务端 ExecutorLaunchExtraArgs.MAX_LENGTH 对齐；这里只是输入护栏，最终校验以服务端为准。
+const EXTRA_ARGS_MAX_LENGTH = 1000;
+const EXTRA_ARGS_HINT = '原样追加到启动命令末尾，空格分隔；含空格的参数用引号括起来。同名参数会覆盖平台参数。';
+
 function CopyCommandActions({ onCopy, disabled }: { onCopy: (shell?: DebugShell) => void; disabled?: boolean }) {
   return (
     <Space>
@@ -204,6 +208,14 @@ function CommandPreview({ text }: { text: string }) {
     }}>
       {text}
     </div>
+  );
+}
+
+function ExtraArgsField() {
+  return (
+    <Form.Item label="扩展命令参数" name="extraArgs" extra={EXTRA_ARGS_HINT}>
+      <Input maxLength={EXTRA_ARGS_MAX_LENGTH} allowClear placeholder="如 --foo bar --baz" />
+    </Form.Item>
   );
 }
 
@@ -286,6 +298,7 @@ interface CreateExecutorFormValues {
   model?: string;
   reasoningEffort?: string;
   contextWindow?: string;
+  extraArgs?: string;
 }
 
 interface StartupFormValues {
@@ -296,6 +309,7 @@ interface StartupFormValues {
   model?: string;
   reasoningEffort?: string;
   contextWindow?: string;
+  extraArgs?: string;
 }
 
 export function ExecutorListPage() {
@@ -517,9 +531,9 @@ export function ExecutorListPage() {
 
   const createMut = useMutation({
     // 启动配置随执行器一并落库，响应回显的就是数据库保存下来的值
-    mutationFn: ({ agentId, name, clientKind: kind, memoryMode, maxConcurrentDispatches, model, reasoningEffort, contextWindow }:
+    mutationFn: ({ agentId, name, clientKind: kind, memoryMode, maxConcurrentDispatches, model, reasoningEffort, contextWindow, extraArgs }:
       CreateExecutorFormValues) =>
-      createExecutor(agentId, { name, clientKind: kind, memoryMode, maxConcurrentDispatches, model, reasoningEffort, contextWindow }),
+      createExecutor(agentId, { name, clientKind: kind, memoryMode, maxConcurrentDispatches, model, reasoningEffort, contextWindow, extraArgs }),
     onSuccess: (data) => {
       setTokenResult(data);
       setCreateModalOpen(false);
@@ -663,10 +677,15 @@ export function ExecutorListPage() {
         model: config.model ?? undefined,
         reasoningEffort: config.reasoningEffort ?? undefined,
         contextWindow: config.contextWindow ?? undefined,
+        extraArgs: config.extraArgs ?? undefined,
       });
       setStartupModelInvalid(!config.model);
     } else {
-      startupForm.setFieldsValue({ memoryMode: config.memoryMode ?? 'platform', maxConcurrentDispatches: config.maxConcurrentDispatches ?? 5 });
+      startupForm.setFieldsValue({
+        memoryMode: config.memoryMode ?? 'platform',
+        maxConcurrentDispatches: config.maxConcurrentDispatches ?? 5,
+        extraArgs: config.extraArgs ?? undefined,
+      });
     }
     return config;
   };
@@ -710,6 +729,8 @@ export function ExecutorListPage() {
         ...(kindMissing ? { clientKind: values.clientKind } : {}),
         memoryMode: values.memoryMode,
         maxConcurrentDispatches: values.maxConcurrentDispatches,
+        // 扩展参数与客户端类型无关，非 Qoder 执行器同样提交
+        extraArgs: values.extraArgs,
         ...(isQoder ? {
           model: values.model,
           reasoningEffort: values.reasoningEffort,
@@ -1054,6 +1075,7 @@ export function ExecutorListPage() {
               </Form.Item>
             </>
           )}
+          <ExtraArgsField />
           <Form.Item label="执行器名称" name="name" rules={[{ required: true, message: '请输入名称' }]}>
             <Input placeholder="如: dev-machine-01" />
           </Form.Item>
@@ -1125,6 +1147,7 @@ export function ExecutorListPage() {
               </Form.Item>
             </>
           )}
+          <ExtraArgsField />
         </Form>
         <Typography.Text strong>命令预览</Typography.Text>
         <OsSegmented value={startupOs} onChange={setStartupOs} />
