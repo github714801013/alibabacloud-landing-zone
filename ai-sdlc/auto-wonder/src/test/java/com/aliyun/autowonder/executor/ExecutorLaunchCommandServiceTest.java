@@ -510,6 +510,42 @@ class ExecutorLaunchCommandServiceTest {
         assertTrue(ex.getMessage().contains("执行器能力不可用"));
     }
 
+    @Test
+    void extraArgumentsAreAppendedAfterThePlatformFlags() {
+        ExecutorLaunchCommandVO vo = buildWithExtraArgs("--foo bar --msg \"a b\"", false, null);
+
+        assertTrue(vo.getCommand().endsWith("--token-aware-enable --foo bar --msg 'a b'"), vo.getCommand());
+    }
+
+    @Test
+    void extraArgumentsLandBeforeTheDebugFlag() {
+        ExecutorLaunchCommandVO vo = buildWithExtraArgs("--foo bar", true, null);
+
+        assertTrue(vo.getCommand().contains("--token-aware-enable --foo bar --debug 2>&1 | tee ~/"),
+                vo.getCommand());
+    }
+
+    @Test
+    void extraArgumentsAreQuotedForPowerShellToo() {
+        ExecutorLaunchCommandVO vo = buildWithExtraArgs("--msg \"a b\"", false, "windows");
+
+        assertTrue(decode(vo.getCommand()).contains("--token-aware-enable --msg 'a b'"), decode(vo.getCommand()));
+    }
+
+    @Test
+    void extraArgumentsMayOverrideAPlatformFlag() {
+        // 扩展参数排在平台参数之后，同名时后者生效——这是有意允许的，故命令里两处都在
+        ExecutorLaunchCommandVO vo = buildWithExtraArgs("--model my-model --memory-mode none", false, null);
+
+        assertTrue(vo.getCommand().endsWith("--token-aware-enable --model my-model --memory-mode none"),
+                vo.getCommand());
+    }
+
+    private ExecutorLaunchCommandVO buildWithExtraArgs(String extraArgs, boolean debug, String os) {
+        return service.buildAt("awexec_plain", 9L, "QODER_CLI", "platform", "qmodel_latest", "medium",
+                "260000", os, debug, null, now, 5, extraArgs);
+    }
+
     private ExecutorLaunchCommandVO build(String token, String clientKind, String memoryMode, String model,
             String reasoningEffort, String contextWindow, String os, boolean debug, String shell) {
         return service.buildAt(token, 9L, clientKind, memoryMode, model, reasoningEffort, contextWindow,

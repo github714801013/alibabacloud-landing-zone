@@ -162,6 +162,10 @@ public class ExecutorLaunchCommandService {
         }
         if (config.workspaceRoot != null) argv.addAll(List.of("--workspace-root", config.workspaceRoot));
         if (config.daemonName != null) argv.addAll(List.of("--name", config.daemonName));
+        if (config.extraArgs != null) {
+            // 操作者手输的扩展参数排在平台参数之后、--debug 之前，逐项走同一套转义。
+            argv.addAll(ExecutorLaunchExtraArgs.tokenize(config.extraArgs));
+        }
         if (debug || Boolean.TRUE.equals(config.debug)) argv.add("--debug");
 
         String command;

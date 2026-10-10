@@ -1,0 +1,95 @@
+package com.aliyun.autowonder.executor;
+
+import com.aliyun.autowonder.common.error.BizException;
+import com.aliyun.autowonder.common.error.ErrorCode;
+
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * 扩展命令参数：操作者在「启动命令」弹窗手输、被追加到启动命令末尾的自由参数文本。保存时归一化并校验，
+ * 生成命令时按同一套规则分词，因此落库的值一定能被成功分词。
+ *
+ * <p>扩展参数一律追加在平台参数之后，因此与平台参数同名时以扩展参数为准——这是有意的：平台界面上没有的
+ * 取值（新模型、新档位、临时调试开关）可以就地覆盖，不必先改平台代码。代价是操作者也能覆盖
+ * --token/--ws-url/--executor-id 这类连接参数，覆盖错了就是执行器连不上，排查时先看命令预览。
+ */
+public final class ExecutorLaunchExtraArgs {
+
+    static final int MAX_LENGTH = 1000;
+
+    private ExecutorLaunchExtraArgs() {
+    }
+
+    /**
+     * 校验并归一化待落库的文本；空白返回 null，表示该执行器没有扩展参数。保存时就跑一遍分词，
+     * 让「引号不闭合」这类错误在操作者点击保存时暴露，而不是等到生成命令才发现。
+     */
+    public static String normalize(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        String value = raw.trim();
+        if (value.length() > MAX_LENGTH) {
+            throw invalid("扩展命令参数最多 " + MAX_LENGTH + " 个字符");
+        }
+        tokenize(value);
+        return value;
+    }
+
+    /** 按 shell 规则分词：空白分隔，引号成组，反斜杠转义下一个字符。 */
+    public static List<String> tokenize(String value) {
+        List<String> tokens = new ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        boolean started = false;
+        char quote = 0;
+        for (int index = 0; index < value.length(); index++) {
+            char ch = value.charAt(index);
+            if (ch < ' ' && ch != '\t') {
+                throw invalid("扩展命令参数不能包含换行等控制字符");
+            }
+            if (quote != 0) {
+                if (ch == quote) {
+                    quote = 0;
+                } else {
+                    current.append(ch);
+                }
+                continue;
+            }
+            if (ch == '\'' || ch == '"') {
+                quote = ch;
+                started = true;
+                continue;
+            }
+            if (ch == '\\') {
+                if (index + 1 >= value.length()) {
+                    throw invalid("扩展命令参数不能以反斜杠结尾");
+                }
+                current.append(value.charAt(++index));
+                started = true;
+                continue;
+            }
+            if (Character.isWhitespace(ch)) {
+                if (started) {
+                    tokens.add(current.toString());
+                    current.setLength(0);
+                    started = false;
+                }
+                continue;
+            }
+            current.append(ch);
+            started = true;
+        }
+        if (quote != 0) {
+            throw invalid("扩展命令参数存在未闭合的引号");
+        }
+        if (started) {
+            tokens.add(current.toString());
+        }
+        return tokens;
+    }
+
+    private static BizException invalid(String message) {
+        return new BizException(ErrorCode.EXECUTOR_LAUNCH_CONFIG_EXTRA_ARGS_INVALID, message);
+    }
+}

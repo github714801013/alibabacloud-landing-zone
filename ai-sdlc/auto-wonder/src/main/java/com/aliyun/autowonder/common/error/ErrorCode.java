@@ -115,6 +115,7 @@ public enum ErrorCode {
     EXECUTOR_CLIENT_KIND_INVALID("17009", "客户端类型不合法，仅支持 QODER_CLI/QODER_CN_CLI"),
     ARTIFACT_NOT_FOUND("17010", "产物不存在"),
     EXECUTOR_CLIENT_KIND_MISSING("17011", "执行器缺少客户端类型，无法生成启动命令"),
+    EXECUTOR_LAUNCH_CONFIG_EXTRA_ARGS_INVALID("17012", "扩展命令参数不合法"),
     PACKAGE_BUILD_FAILED("17020", "任务包打包失败"),
     STORAGE_ERROR("17021", "对象存储操作失败"),
     // 1703x 调度

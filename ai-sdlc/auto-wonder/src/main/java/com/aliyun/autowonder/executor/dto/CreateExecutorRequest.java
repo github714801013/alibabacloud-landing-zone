@@ -19,4 +19,6 @@ public class CreateExecutorRequest {
     private String model;
     private String reasoningEffort;
     private String contextWindow;
+    /** 手输的扩展命令参数，追加到启动命令末尾；空白表示不使用扩展参数。与客户端类型无关。 */
+    private String extraArgs;
 }

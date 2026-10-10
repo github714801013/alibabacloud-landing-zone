@@ -106,7 +106,7 @@ public class ExecutorLaunchConfigService {
         LaunchConfig previous = parse(executor.getLaunchConfig());
         LaunchConfig stored = resolve(clientKind,
                 req.getMemoryMode(), req.getModel(),
-                req.getReasoningEffort(), req.getContextWindow(), true);
+                req.getReasoningEffort(), req.getContextWindow(), req.getExtraArgs(), true);
         stored.maxConcurrentDispatches = resolveMaxConcurrentDispatches(req.getMaxConcurrentDispatches() != null
                 ? req.getMaxConcurrentDispatches() : previous.maxConcurrentDispatches);
         stored.modelUpgradePolicy = req.getModelUpgradePolicy() == null
@@ -187,6 +187,7 @@ public class ExecutorLaunchConfigService {
                 explicitModel ? req.getModel() : null,
                 req == null ? null : req.getReasoningEffort(),
                 req == null ? null : req.getContextWindow(),
+                req == null ? null : req.getExtraArgs(),
                 explicitModel);
         config.maxConcurrentDispatches = resolveMaxConcurrentDispatches(req == null ? null : req.getMaxConcurrentDispatches());
         return config;
@@ -241,10 +242,12 @@ public class ExecutorLaunchConfigService {
      * it is false the caller is asking for a default and the id is demoted to a usable one instead.
      */
     private LaunchConfig resolve(String clientKind, String memoryMode, String model, String reasoningEffort,
-            String contextWindow, boolean requireKnownModel) {
+            String contextWindow, String extraArgs, boolean requireKnownModel) {
         String provider = ExecutorLaunchOptionsService.resolveProvider(clientKind);
         LaunchConfig config = new LaunchConfig();
         config.memoryMode = options.resolveMemoryMode(memoryMode);
+        // 扩展参数与客户端类型无关，因此在 Qoder 分支之前就校验并落库。
+        config.extraArgs = ExecutorLaunchExtraArgs.normalize(extraArgs);
         if (!ExecutorLaunchOptionsService.isQoderFamily(provider)) {
             return config;
         }
@@ -311,6 +314,7 @@ public class ExecutorLaunchConfigService {
         vo.setWorkspaceRoot(config.workspaceRoot);
         vo.setDaemonName(config.daemonName);
         vo.setDebug(config.debug);
+        vo.setExtraArgs(config.extraArgs);
         vo.setVersion(version);
         return vo;
     }
@@ -383,5 +387,6 @@ public class ExecutorLaunchConfigService {
         public String workspaceRoot;
         public String daemonName;
         public Boolean debug;
+        public String extraArgs;
     }
 }

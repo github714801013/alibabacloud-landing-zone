@@ -242,6 +242,15 @@ public class McpToolService {
                     + "autowonder.get_executor_launch_options for the live list with labels and defaults. An id "
                     + "you pass explicitly that the catalog no longer offers is rejected with an error instead of "
                     + "being silently replaced, and the persisted value is returned in the response.";
+
+    /** Extra command-line arguments an operator typed on the executor page; appended after the platform's own flags. */
+    private static final String EXECUTOR_EXTRA_ARGS_DESCRIPTION =
+            "Optional. Extra arguments appended to the generated launch command after the platform's own flags. "
+                    + "Split on shell rules (whitespace, quotes group, backslash escapes) and quoted per shell. "
+                    + "Because they come last, an argument that repeats a platform flag (--model, --memory-mode, "
+                    + "--context-window, ...) overrides the value the platform generated; that is deliberate, so an "
+                    + "operator can use a value the platform UI does not offer. Omit this argument to clear it, "
+                    + "because this write is a full replace.";
     private static final Set<String> TRANSITION_SCHEDULED_TASK_ACTIONS = Set.of(
             "enable", "pause", "archive", "run-now", "pause-run", "resume-run", "cancel-run");
     private static final Set<String> SCHEDULED_TASK_LIST_STATUSES = Set.of(
@@ -1491,7 +1500,8 @@ public class McpToolService {
                                                 + "default."),
                                 enumProp("contextWindow", ExecutorLaunchOptionsService.contextWindowValues(),
                                         "Optional. Context window to persist; defaults to the chosen model's "
-                                                + "default."))),
+                                                + "default."),
+                                prop("extraArgs", "string", EXECUTOR_EXTRA_ARGS_DESCRIPTION))),
                 tool(GET_EXECUTOR_TOKEN, "Reveal an executor's plaintext connection token, the same value the page's "
                         + "eye icon shows. Requires workspace ADMIN. Treat it as a secret: anyone holding it can "
                         + "connect an executor as this digital worker.",
@@ -1539,7 +1549,8 @@ public class McpToolService {
                                 enumProp("reasoningEffort", ExecutorLaunchOptionsService.reasoningEffortValues(),
                                         "Optional. Reasoning effort; ignored for non-Qoder executors."),
                                 enumProp("contextWindow", ExecutorLaunchOptionsService.contextWindowValues(),
-                                        "Optional. Context window; ignored for non-Qoder executors."))),
+                                        "Optional. Context window; ignored for non-Qoder executors."),
+                                prop("extraArgs", "string", EXECUTOR_EXTRA_ARGS_DESCRIPTION))),
                 tool(BUILD_EXECUTOR_LAUNCH_COMMAND, "Build the startup command for an existing executor, identical to "
                         + "what the executor page copies to the clipboard. The token, client kind, MCP address, "
                         + "runtime version and every launch value are resolved server-side from the executor's "
@@ -2689,6 +2700,7 @@ public class McpToolService {
         request.setModel(str(args, "model"));
         request.setReasoningEffort(str(args, "reasoningEffort"));
         request.setContextWindow(str(args, "contextWindow"));
+        request.setExtraArgs(str(args, "extraArgs"));
         IssuedExecutorVO issued = requireExecutorDependency(executorService)
                 .create(agentId, request, context.workspaceId(), context.userId());
         // 令牌等同机器凭据：非管理员凭据不下发，由管理员经 get_executor_token 单独获取。
@@ -2745,8 +2757,9 @@ public class McpToolService {
         request.setModel(str(args, "model"));
         request.setReasoningEffort(str(args, "reasoningEffort"));
         request.setContextWindow(str(args, "contextWindow"));
+        request.setExtraArgs(str(args, "extraArgs"));
         if (request.getModelUpgradePolicy() != null && java.util.Collections.disjoint(args.keySet(),
-                Set.of("clientKind", "memoryMode", "maxConcurrentDispatches", "model", "reasoningEffort", "contextWindow"))) {
+                Set.of("clientKind", "memoryMode", "maxConcurrentDispatches", "model", "reasoningEffort", "contextWindow", "extraArgs"))) {
             return requireExecutorDependency(executorLaunchConfigService).updateModelUpgradePolicy(
                     requiredLong(args, "id"), context.workspaceId(), request, context.userId());
         }

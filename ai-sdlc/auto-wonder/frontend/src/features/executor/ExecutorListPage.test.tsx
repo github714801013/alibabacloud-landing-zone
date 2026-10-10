@@ -1772,6 +1772,30 @@ describe('ExecutorListPage', () => {
     expect(await screen.findByText('启动命令已复制')).toBeInTheDocument();
   });
 
+  it('saves the extra command arguments typed by hand', async () => {
+    const user = userEvent.setup();
+    const seen: Record<string, unknown>[] = [];
+    serveExecutor({ clientKind: 'QODER_CLI' });
+    server.use(http.put('/api/executors/10000/launch-config', async ({ request }) => {
+      const body = await request.json() as Record<string, unknown>;
+      seen.push(body);
+      return HttpResponse.json({
+        success: true, code: '0', message: '', traceId: null, data: { ...body, version: 2 },
+      });
+    }));
+    renderPage();
+
+    await expandAgentGroup(user, 'A（未编队）');
+    await user.click(await screen.findByRole('button', { name: /启动命令/ }));
+    const dialog = await findModalByTitle('启动命令 · dev-machine-01');
+    // 目录里没有的模型就靠这里写 --model 覆盖，因此平台参数不作拦截
+    await user.type(within(dialog).getByLabelText('扩展命令参数'), '--model my-model');
+
+    await user.click(within(dialog).getByRole('button', { name: '保存配置' }));
+    await waitFor(() => expect(seen).toHaveLength(1));
+    expect(seen[0].extraArgs).toBe('--model my-model');
+  });
+
   const AGENT_ALPHA = {
     id: 1, name: 'Alpha', avatarUrl: null, status: 'ONLINE', onlineVersionId: null,
     editingVersionId: null, latestVersionNo: 1, version: 1, gmtCreate: '2026-07-01',
@@ -2444,14 +2468,14 @@ describe('ExecutorListPage', () => {
   it('treats a config as unconfigured only when every launch value is null', () => {
     expect(isLaunchConfigured(null)).toBe(false);
     expect(isLaunchConfigured({
-      model: null, reasoningEffort: null, contextWindow: null, memoryMode: null, version: 1,
+      model: null, reasoningEffort: null, contextWindow: null, memoryMode: null, extraArgs: null, version: 1,
     })).toBe(false);
     // 非 Qoder 执行器只落记忆模式，同样算已配置
     expect(isLaunchConfigured({
-      model: null, reasoningEffort: null, contextWindow: null, memoryMode: 'platform', version: 1,
+      model: null, reasoningEffort: null, contextWindow: null, memoryMode: 'platform', extraArgs: null, version: 1,
     })).toBe(true);
     expect(isLaunchConfigured({
-      model: 'auto', reasoningEffort: null, contextWindow: null, memoryMode: null, version: 1,
+      model: 'auto', reasoningEffort: null, contextWindow: null, memoryMode: null, extraArgs: null, version: 1,
     })).toBe(true);
   });
 
