@@ -4,7 +4,9 @@ import com.aliyun.autowonder.common.error.BizException;
 import com.aliyun.autowonder.common.error.ErrorCode;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * 扩展命令参数：操作者在「启动命令」弹窗手输、被追加到启动命令末尾的自由参数文本。保存时归一化并校验，
@@ -87,6 +89,19 @@ public final class ExecutorLaunchExtraArgs {
             tokens.add(current.toString());
         }
         return tokens;
+    }
+
+    /**
+     * 取出每个 token 的参数名（{@code --flag=value} 只取等号前的 {@code --flag}），用于判断扩展参数覆盖了
+     * 哪些平台参数。裸值会原样返回，它们不会与平台参数同名，因此不会误判。
+     */
+    public static Set<String> flagNames(List<String> tokens) {
+        Set<String> names = new LinkedHashSet<>();
+        for (String token : tokens) {
+            int separator = token.indexOf('=');
+            names.add(separator < 0 ? token : token.substring(0, separator));
+        }
+        return names;
     }
 
     private static BizException invalid(String message) {

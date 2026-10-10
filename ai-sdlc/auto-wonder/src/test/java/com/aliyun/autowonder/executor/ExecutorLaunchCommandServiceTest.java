@@ -533,12 +533,46 @@ class ExecutorLaunchCommandServiceTest {
     }
 
     @Test
-    void extraArgumentsMayOverrideAPlatformFlag() {
-        // 扩展参数排在平台参数之后，同名时后者生效——这是有意允许的，故命令里两处都在
+    void extraArgumentsReplaceThePlatformFlagTheyOverride() {
         ExecutorLaunchCommandVO vo = buildWithExtraArgs("--model my-model --memory-mode none", false, null);
 
+        // 被覆盖的平台参数整条从平台段移除，命令里只剩扩展参数那一份
         assertTrue(vo.getCommand().endsWith("--token-aware-enable --model my-model --memory-mode none"),
                 vo.getCommand());
+        assertFalse(vo.getCommand().contains("qmodel_latest"), vo.getCommand());
+        assertEquals(1, occurrences(vo.getCommand(), "--memory-mode"), vo.getCommand());
+    }
+
+    @Test
+    void extraArgumentsReplaceThePlatformFlagInTheEqualsSpellingToo() {
+        ExecutorLaunchCommandVO vo = buildWithExtraArgs("--model=my-model", false, null);
+
+        assertFalse(vo.getCommand().contains("qmodel_latest"), vo.getCommand());
+        assertTrue(vo.getCommand().endsWith("--token-aware-enable --model=my-model"), vo.getCommand());
+    }
+
+    @Test
+    void extraArgumentsReplaceAnOverriddenBareFlag() {
+        ExecutorLaunchCommandVO vo = buildWithExtraArgs("--token-aware-enable", false, null);
+
+        assertEquals(1, occurrences(vo.getCommand(), "--token-aware-enable"), vo.getCommand());
+    }
+
+    @Test
+    void extraArgumentsLeaveThePlatformFlagsTheyDoNotOverride() {
+        ExecutorLaunchCommandVO vo = buildWithExtraArgs("--foo bar", false, null);
+
+        assertTrue(vo.getCommand().contains("--model qmodel_latest"), vo.getCommand());
+        assertTrue(vo.getCommand().contains("--memory-mode platform"), vo.getCommand());
+        assertTrue(vo.getCommand().contains("--token-aware-enable"), vo.getCommand());
+    }
+
+    private static int occurrences(String text, String needle) {
+        int count = 0;
+        for (int at = text.indexOf(needle); at >= 0; at = text.indexOf(needle, at + needle.length())) {
+            count++;
+        }
+        return count;
     }
 
     private ExecutorLaunchCommandVO buildWithExtraArgs(String extraArgs, boolean debug, String os) {
