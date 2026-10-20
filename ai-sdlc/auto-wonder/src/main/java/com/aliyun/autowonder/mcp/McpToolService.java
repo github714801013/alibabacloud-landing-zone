@@ -62,6 +62,7 @@ import com.aliyun.autowonder.memory.dto.CreateMemoryRequest;
 import com.aliyun.autowonder.memory.dto.MemoryVO;
 import com.aliyun.autowonder.memory.dto.UpdateMemoryRequest;
 import com.aliyun.autowonder.workspace.WorkspaceService;
+import com.aliyun.autowonder.workspace.dto.MemberVO;
 import com.aliyun.autowonder.workspace.dto.WorkspaceVO;
 import com.aliyun.autowonder.repo.RepoService;
 import com.aliyun.autowonder.repo.dto.CreateRelationRequest;
@@ -185,6 +186,7 @@ public class McpToolService {
     private static final String DEPRECATE_MEMORY = "autowonder.deprecate_memory";
     private static final String DELETE_MEMORY = "autowonder.delete_memory";
     private static final String LIST_REPOS = "autowonder.list_repos";
+    private static final String LIST_WORKSPACE_MEMBERS = "autowonder.list_workspace_members";
     private static final String GET_REPO = "autowonder.get_repo";
     private static final String LIST_REPO_RELATIONS = "autowonder.list_repo_relations";
     private static final String CREATE_REPO_RELATION = "autowonder.create_repo_relation";
@@ -423,6 +425,8 @@ public class McpToolService {
                     Map.entry(DELETE_MEMORY,
                             workspaceTool(WorkspaceAccessLevel.READ_WRITE)),
                     Map.entry(LIST_REPOS,
+                            workspaceTool(WorkspaceAccessLevel.READ_ONLY)),
+                    Map.entry(LIST_WORKSPACE_MEMBERS,
                             workspaceTool(WorkspaceAccessLevel.READ_ONLY)),
                     Map.entry(GET_REPO,
                             workspaceTool(WorkspaceAccessLevel.READ_ONLY)),
@@ -1244,6 +1248,8 @@ public class McpToolService {
                 tool(LIST_REPOS, "List repositories registered in AutoWonder. Use this to discover repo ids before reading or maintaining the Repo Map.",
                         schema(prop("page", "integer", "Optional page number, 1-based; defaults to 1."),
                                 prop("size", "integer", "Optional page size; defaults to 100 and is capped at 100."))),
+                tool(LIST_WORKSPACE_MEMBERS, "List workspace members with their user ids. Use this to resolve a Jira login name to the AutoWonder userId required by assign_workitem and add_workitem_comment. The optional keyword matches username, nickname or email.",
+                        schema(prop("keyword", "string", "Optional case-insensitive filter on username, nickname or email."))),
                 tool(GET_REPO, "Get one repository registered in AutoWonder by id.",
                         schema(required("id"), prop("id", "integer", "Required. Repository id."))),
                 tool(LIST_REPO_RELATIONS, "Read the AutoWonder Repo Map. Pass repoId to return every inbound and outbound relation touching one repository; omit it to return all relations in the workspace.",
@@ -2498,6 +2504,26 @@ public class McpToolService {
             }
             case LIST_REPOS -> repoService.list(context.workspaceId(), integer(safeArgs, "page", 1),
                     integer(safeArgs, "size", 100));
+            case LIST_WORKSPACE_MEMBERS -> {
+                String keyword = str(safeArgs, "keyword");
+                String needle = keyword == null || keyword.isBlank()
+                        ? null : keyword.trim().toLowerCase(Locale.ROOT);
+                List<Map<String, Object>> items = new ArrayList<>();
+                for (MemberVO member : workspaceService.listMembers(context.workspaceId())) {
+                    if (needle != null && !matchesMemberKeyword(member, needle)) {
+                        continue;
+                    }
+                    // 只投影解析所需的五个字段，不暴露 accessLevel、joinedAt 等成员属性
+                    Map<String, Object> item = new LinkedHashMap<>();
+                    item.put("userId", member.getUserId());
+                    item.put("username", member.getUsername());
+                    item.put("nickname", member.getNickname());
+                    item.put("email", member.getEmail());
+                    item.put("owner", member.isOwner());
+                    items.add(item);
+                }
+                yield items;
+            }
             case GET_REPO -> repoService.get(requiredLong(safeArgs, "id"), context.workspaceId());
             case LIST_REPO_RELATIONS -> {
                 Long repoId = lng(safeArgs, "repoId");
@@ -3710,6 +3736,7 @@ public class McpToolService {
             case CREATE_REPO, UPDATE_REPO -> repoSchema();
             case DELETE_REPO -> schema(prop("deleted", "boolean", "Whether the repository was deleted."));
             case LIST_REPOS -> listOutputSchema(repoSchema());
+            case LIST_WORKSPACE_MEMBERS -> listOutputSchema(workspaceMemberSchema());
             case LIST_REPO_RELATIONS -> listOutputSchema(repoRelationSchema());
             case CREATE_REPO_RELATION -> repoRelationSchema();
             case DELETE_REPO_RELATION -> schema(prop("deleted", "boolean", "Whether the repo relation was deleted."));
@@ -4304,6 +4331,24 @@ public class McpToolService {
                 nullableProp("defaultBranch", "string", "Default branch."),
                 nullableProp("description", "string", "Repository description."),
                 prop("scanStatus", "string", "Repository scan status."));
+    }
+
+    private Map<String, Object> workspaceMemberSchema() {
+        return schema(prop("userId", "integer", "AutoWonder user id."),
+                nullableProp("username", "string", "Login name."),
+                nullableProp("nickname", "string", "Display name."),
+                nullableProp("email", "string", "Email address."),
+                prop("owner", "boolean", "Whether the member owns the workspace."));
+    }
+
+    private boolean matchesMemberKeyword(MemberVO member, String needle) {
+        return containsKeyword(member.getUsername(), needle)
+                || containsKeyword(member.getNickname(), needle)
+                || containsKeyword(member.getEmail(), needle);
+    }
+
+    private boolean containsKeyword(String value, String needle) {
+        return value != null && value.toLowerCase(Locale.ROOT).contains(needle);
     }
 
     private Map<String, Object> repoRelationSchema() {

@@ -56,6 +56,7 @@ import com.aliyun.autowonder.memory.dto.CreateMemoryRequest;
 import com.aliyun.autowonder.memory.dto.MemoryVO;
 import com.aliyun.autowonder.memory.dto.UpdateMemoryRequest;
 import com.aliyun.autowonder.workspace.WorkspaceService;
+import com.aliyun.autowonder.workspace.dto.MemberVO;
 import com.aliyun.autowonder.workspace.dto.WorkspaceVO;
 import com.aliyun.autowonder.repo.RepoService;
 import com.aliyun.autowonder.repo.dto.CreateRelationRequest;
@@ -590,6 +591,7 @@ class McpToolServiceTest {
                 "autowonder.search_memories",
                 "autowonder.get_memory",
                 "autowonder.list_repos",
+                "autowonder.list_workspace_members",
                 "autowonder.get_repo",
                 "autowonder.list_repo_relations",
                 "autowonder.list_squads",
@@ -636,8 +638,8 @@ class McpToolServiceTest {
         hiddenFromReadWrite.removeAll(readWriteCatalog);
         assertEquals(adminOnlyTools, hiddenFromReadWrite);
         assertEquals(fullCatalog, adminCatalog);
-        assertEquals(112, fullCatalog.size());
-        assertEquals(106, readWriteCatalog.size());
+        assertEquals(113, fullCatalog.size());
+        assertEquals(107, readWriteCatalog.size());
     }
 
     @Test
@@ -709,6 +711,37 @@ class McpToolServiceTest {
         @SuppressWarnings("unchecked")
         Map<String, Object> items = (Map<String, Object>) memberIds.get("items");
         assertEquals("integer", items.get("type"));
+    }
+
+    @Test
+    void listWorkspaceMembersResolvesUserIdsAndFiltersByKeyword() {
+        MemberVO xie = new MemberVO();
+        xie.setUserId(10001L);
+        xie.setUsername("13685");
+        xie.setNickname("谢熊坤");
+        xie.setEmail("xie@example.com");
+        xie.setOwner(true);
+        MemberVO chen = new MemberVO();
+        chen.setUserId(10008L);
+        chen.setUsername("2867");
+        chen.setNickname("陈金龙");
+        when(workspaceService.listMembers(WORKSPACE_ID)).thenReturn(List.of(xie, chen));
+
+        assertEquals(List.of(Map.of("userId", 10001L, "username", "13685",
+                        "nickname", "谢熊坤", "email", "xie@example.com", "owner", true)),
+                service.call(principal, "autowonder.list_workspace_members",
+                        Map.of("workspaceId", WORKSPACE_ID, "keyword", "13685")));
+        assertEquals(List.of(Map.of("userId", 10001L, "username", "13685",
+                        "nickname", "谢熊坤", "email", "xie@example.com", "owner", true)),
+                service.call(principal, "autowonder.list_workspace_members",
+                        Map.of("workspaceId", WORKSPACE_ID, "keyword", "XIE@EXAMPLE")));
+        List<?> byNickname = (List<?>) service.call(principal, "autowonder.list_workspace_members",
+                Map.of("workspaceId", WORKSPACE_ID, "keyword", "陈金龙"));
+        assertEquals(1, byNickname.size());
+        assertEquals(10008L, ((Map<?, ?>) byNickname.get(0)).get("userId"));
+        assertNull(((Map<?, ?>) byNickname.get(0)).get("email"));
+        assertEquals(2, ((List<?>) service.call(principal, "autowonder.list_workspace_members",
+                Map.of("workspaceId", WORKSPACE_ID))).size());
     }
 
     @Test
