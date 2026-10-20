@@ -301,7 +301,7 @@ Run phases in order and record terminal results in the manifest. Read
 | 2. Backend/Plan | `scripts/terraform-backend.sh prepare`; `scripts/terraform-stage.sh plan` | private state backend and reviewed plan fingerprint |
 | 3. Apply | `scripts/terraform-stage.sh apply`, then `inventory` | Infrastructure ready |
 | 4. Build | `scripts/build-release.sh` | sealed local JAR containing the frontend, schema, and template seed |
-| 5. Host/DB/runtime | `scripts/initialize-and-verify.sh runtime-config`; `scripts/deploy-via-cloud-assistant.sh`; then `scripts/initialize-and-verify.sh database` | Java 21, clients, release, env (including public base URL), systemd, schema and four system templates installed |
+| 5. Host/DB/runtime | `scripts/initialize-and-verify.sh runtime-config`; `scripts/deploy-via-cloud-assistant.sh`; then `scripts/initialize-and-verify.sh database` | Java 21, clients, release, env (including public base URL), systemd, schema and six system templates installed |
 
 For a new deployment, `runtime-config` creates a missing protected environment
 file from the bound Terraform state and its mode-600 password file, then adds
