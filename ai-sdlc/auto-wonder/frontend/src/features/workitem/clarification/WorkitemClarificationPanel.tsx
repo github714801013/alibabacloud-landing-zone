@@ -603,8 +603,9 @@ export function WorkitemClarificationPanel({
   const queryClient = useQueryClient();
   const replyMutation = useReplyElicitation(workitemId, conversationId);
   const [replyingRequestId, setReplyingRequestId] = useState<string | null>(null);
-  // 后端已结算（取消/过期/并发）但 resolved 事件不落库时，前端时间线仍把卡片当 pending。
-  // 提交吃到 409 CONFLICT 就把该 requestId 记为已结算并据此撤下卡片，避免用户对着死卡片反复 409、对话卡死。
+  // 后端已结算（成功/取消/过期/并发）但 resolved 事件不落库时，前端时间线仍把卡片当 pending。
+  // 提交成功或吃到 409 CONFLICT 都把该 requestId 记为已结算并据此撤下卡片，
+  // 避免用户对着死卡片反复点击、对话卡死。
   const [settledElicitationIds, setSettledElicitationIds] = useState<ReadonlySet<string>>(() => new Set());
 
   const handleReplyElicitation = useCallback(
@@ -614,8 +615,14 @@ export function WorkitemClarificationPanel({
       replyMutation.mutate(
         { requestId, action: reply.action, content: reply.content },
         {
-          onSettled: () => setReplyingRequestId(null),
+          // 成功响应即服务端已 CAS 结算：直接撤下卡片。若等 resolved 回声，
+          // 卡片会残留到用户以为没提交成功又点一次（重复提交），回声丢失时更会永久卡住。
+          onSuccess: () => {
+            setSettledElicitationIds((prev) => new Set(prev).add(requestId));
+            setReplyingRequestId(null);
+          },
           onError: (error) => {
+            setReplyingRequestId(null);
             if (error instanceof ApiError && error.code === ErrorCodes.CONFLICT) {
               setSettledElicitationIds((prev) => new Set(prev).add(requestId));
               queryClient.invalidateQueries({
