@@ -251,6 +251,12 @@ public class McpToolService {
                     + "it: the platform's own occurrence is dropped, so the command never carries both. That is "
                     + "deliberate, so an operator can use a value the platform UI does not offer. Omit this argument "
                     + "to clear it, because this write is a full replace.";
+    /** Verbatim shell text an operator typed on the executor page; placed before the runtime command. */
+    private static final String EXECUTOR_PREFIX_COMMAND_DESCRIPTION =
+            "Optional. Verbatim shell text placed before the generated runtime command, so an operator can set "
+                    + "environment variables or run setup steps. It is not parsed, rewritten, or given a separator; "
+                    + "for Windows it runs inside the encoded PowerShell script. Omit this argument to clear it, "
+                    + "because this write is a full replace.";
     private static final Set<String> TRANSITION_SCHEDULED_TASK_ACTIONS = Set.of(
             "enable", "pause", "archive", "run-now", "pause-run", "resume-run", "cancel-run");
     private static final Set<String> SCHEDULED_TASK_LIST_STATUSES = Set.of(
@@ -1501,7 +1507,8 @@ public class McpToolService {
                                 enumProp("contextWindow", ExecutorLaunchOptionsService.contextWindowValues(),
                                         "Optional. Context window to persist; defaults to the chosen model's "
                                                 + "default."),
-                                prop("extraArgs", "string", EXECUTOR_EXTRA_ARGS_DESCRIPTION))),
+                                prop("extraArgs", "string", EXECUTOR_EXTRA_ARGS_DESCRIPTION),
+                                prop("prefixCommand", "string", EXECUTOR_PREFIX_COMMAND_DESCRIPTION))),
                 tool(GET_EXECUTOR_TOKEN, "Reveal an executor's plaintext connection token, the same value the page's "
                         + "eye icon shows. Requires workspace ADMIN. Treat it as a secret: anyone holding it can "
                         + "connect an executor as this digital worker.",
@@ -1550,7 +1557,8 @@ public class McpToolService {
                                         "Optional. Reasoning effort; ignored for non-Qoder executors."),
                                 enumProp("contextWindow", ExecutorLaunchOptionsService.contextWindowValues(),
                                         "Optional. Context window; ignored for non-Qoder executors."),
-                                prop("extraArgs", "string", EXECUTOR_EXTRA_ARGS_DESCRIPTION))),
+                                prop("extraArgs", "string", EXECUTOR_EXTRA_ARGS_DESCRIPTION),
+                                prop("prefixCommand", "string", EXECUTOR_PREFIX_COMMAND_DESCRIPTION))),
                 tool(BUILD_EXECUTOR_LAUNCH_COMMAND, "Build the startup command for an existing executor, identical to "
                         + "what the executor page copies to the clipboard. The token, client kind, MCP address, "
                         + "runtime version and every launch value are resolved server-side from the executor's "
@@ -2701,6 +2709,7 @@ public class McpToolService {
         request.setReasoningEffort(str(args, "reasoningEffort"));
         request.setContextWindow(str(args, "contextWindow"));
         request.setExtraArgs(str(args, "extraArgs"));
+        request.setPrefixCommand(str(args, "prefixCommand"));
         IssuedExecutorVO issued = requireExecutorDependency(executorService)
                 .create(agentId, request, context.workspaceId(), context.userId());
         // 令牌等同机器凭据：非管理员凭据不下发，由管理员经 get_executor_token 单独获取。
@@ -2758,8 +2767,9 @@ public class McpToolService {
         request.setReasoningEffort(str(args, "reasoningEffort"));
         request.setContextWindow(str(args, "contextWindow"));
         request.setExtraArgs(str(args, "extraArgs"));
+        request.setPrefixCommand(str(args, "prefixCommand"));
         if (request.getModelUpgradePolicy() != null && java.util.Collections.disjoint(args.keySet(),
-                Set.of("clientKind", "memoryMode", "maxConcurrentDispatches", "model", "reasoningEffort", "contextWindow", "extraArgs"))) {
+                Set.of("clientKind", "memoryMode", "maxConcurrentDispatches", "model", "reasoningEffort", "contextWindow", "extraArgs", "prefixCommand"))) {
             return requireExecutorDependency(executorLaunchConfigService).updateModelUpgradePolicy(
                     requiredLong(args, "id"), context.workspaceId(), request, context.userId());
         }

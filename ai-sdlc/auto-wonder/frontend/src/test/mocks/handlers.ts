@@ -11,6 +11,7 @@ type StoredLaunchConfig = {
   workspaceRoot?: string | null;
   daemonName?: string | null;
   debug?: boolean | null;
+  prefixCommand?: string | null;
   version: number;
 };
 
@@ -61,6 +62,7 @@ export type SeededLaunchConfig = {
   workspaceRoot?: string | null;
   daemonName?: string | null;
   debug?: boolean | null;
+  prefixCommand?: string | null;
   version?: number;
 };
 
@@ -74,12 +76,16 @@ export function setExecutorLaunchConfig(id: number, config: SeededLaunchConfig):
     reasoningEffort: config.reasoningEffort === undefined ? current.reasoningEffort : config.reasoningEffort,
     contextWindow: config.contextWindow === undefined ? current.contextWindow : config.contextWindow,
     memoryMode: config.memoryMode === undefined ? current.memoryMode : config.memoryMode,
+    prefixCommand: config.prefixCommand === undefined ? current.prefixCommand : config.prefixCommand,
     version: config.version ?? current.version,
   });
 }
 
 function emptyLaunchConfig(): StoredLaunchConfig {
-  return { model: null, reasoningEffort: null, contextWindow: null, memoryMode: null, version: 1 };
+  return {
+    model: null, reasoningEffort: null, contextWindow: null, memoryMode: null,
+    prefixCommand: null, version: 1,
+  };
 }
 
 const MOCK_WS_URL = 'wss://community.example/ws/executor';
@@ -155,8 +161,11 @@ function buildMockLaunchCommand(id: number, stored: StoredLaunchConfig, fixture:
   if (stored.daemonName) argv.push('--name', `'${stored.daemonName.replace(/'/g, "'\\''")}'`);
   if (stored.maxConcurrentDispatches !== undefined) argv.push('--max-tasks', String(stored.maxConcurrentDispatches));
   if (debug || stored.debug) argv.push('--debug');
+  const prefix = stored.prefixCommand ? `${stored.prefixCommand} ` : '';
   const powershellOutput = debug ? shell === 'powershell' : os === 'windows';
-  const command = powershellOutput ? encodePowerShellCommand(argv.join(' ')) : argv.join(' ');
+  const command = powershellOutput
+    ? encodePowerShellCommand(`${prefix}${argv.join(' ')}`)
+    : `${prefix}${argv.join(' ')}`;
   return {
     executorId: id,
     clientKind: fixture.clientKind,
@@ -378,6 +387,7 @@ export const handlers = [
       reasoningEffort: body.reasoningEffort ?? null,
       contextWindow: body.contextWindow ?? null,
       memoryMode: body.memoryMode ?? null,
+      prefixCommand: body.prefixCommand ?? null,
       version: current.version + 1,
     };
     executorLaunchConfigStore.set(id, next);

@@ -76,6 +76,9 @@ describe('ExecutorListPage', () => {
     // 页面默认视图已改为按小队分组；本文件既有分组用例均基于按 Agent 分组视图编写，
     // 这里按用例维度固化旧视图，持久化相关的新用例在各自测试体内覆盖该值。
     localStorage.setItem('autowonder.executors.view', 'agent');
+    // 预览断言基于 posix 明文命令，而 detectStartupOs() 读取宿主平台；
+    // 固定为 Linux，避免同一组用例在 Windows 开发机上因编码成 PowerShell 而失败。
+    Object.defineProperty(navigator, 'platform', { value: 'Linux x86_64', configurable: true });
     resetExecutorLaunchConfigStore();
     vi.restoreAllMocks();
   });
@@ -1796,6 +1799,65 @@ describe('ExecutorListPage', () => {
     expect(seen[0].extraArgs).toBe('--model my-model');
   });
 
+  it('saves the prefix command typed by hand', async () => {
+    const user = userEvent.setup();
+    const seen: Record<string, unknown>[] = [];
+    serveExecutor({ clientKind: 'QODER_CLI' });
+    server.use(http.put('/api/executors/10000/launch-config', async ({ request }) => {
+      const body = await request.json() as Record<string, unknown>;
+      seen.push(body);
+      return HttpResponse.json({
+        success: true, code: '0', message: '', traceId: null, data: { ...body, version: 2 },
+      });
+    }));
+    renderPage();
+
+    await expandAgentGroup(user, 'A（未编队）');
+    await user.click(await screen.findByRole('button', { name: /启动命令/ }));
+    const dialog = await findModalByTitle('启动命令 · dev-machine-01');
+    await user.type(within(dialog).getByLabelText('前置命令'), 'SHELL=/bin/bash');
+
+    await user.click(within(dialog).getByRole('button', { name: '保存配置' }));
+    await waitFor(() => expect(seen).toHaveLength(1));
+    expect(seen[0].prefixCommand).toBe('SHELL=/bin/bash');
+  });
+
+  it('restores the saved prefix command when reopening the startup dialog', async () => {
+    const user = userEvent.setup();
+    serveExecutor({ clientKind: 'QODER_CLI' }, { prefixCommand: 'SHELL=/bin/bash' });
+    renderPage();
+
+    await expandAgentGroup(user, 'A（未编队）');
+    await user.click(await screen.findByRole('button', { name: /启动命令/ }));
+    const dialog = await findModalByTitle('启动命令 · dev-machine-01');
+
+    expect(await within(dialog).findByLabelText('前置命令')).toHaveValue('SHELL=/bin/bash');
+  });
+
+  it('shows the saved prefix command at the front of the generated preview', async () => {
+    const user = userEvent.setup();
+    serveExecutor({ clientKind: 'QODER_CLI' }, { prefixCommand: 'SHELL=/bin/bash' });
+    renderPage();
+
+    await expandAgentGroup(user, 'A（未编队）');
+    await user.click(await screen.findByRole('button', { name: /启动命令/ }));
+    const dialog = await findModalByTitle('启动命令 · dev-machine-01');
+
+    expect(await within(dialog).findByText(/SHELL=\/bin\/bash npx -y autowonder/)).toBeInTheDocument();
+  });
+
+  it('keeps the host-permission warning visible for the prefix command', async () => {
+    const user = userEvent.setup();
+    serveExecutor({ clientKind: 'QODER_CLI' });
+    renderPage();
+
+    await expandAgentGroup(user, 'A（未编队）');
+    await user.click(await screen.findByRole('button', { name: /启动命令/ }));
+    const dialog = await findModalByTitle('启动命令 · dev-machine-01');
+
+    expect(within(dialog).getByText(/Executor 宿主机权限执行/)).toBeInTheDocument();
+  });
+
   const AGENT_ALPHA = {
     id: 1, name: 'Alpha', avatarUrl: null, status: 'ONLINE', onlineVersionId: null,
     editingVersionId: null, latestVersionNo: 1, version: 1, gmtCreate: '2026-07-01',
@@ -1824,7 +1886,7 @@ describe('ExecutorListPage', () => {
       http.post('/api/agents/1/executors', async ({ request }) => {
         const body = await request.json() as {
           name: string; clientKind: string; memoryMode?: string; model?: string;
-          reasoningEffort?: string; contextWindow?: string;
+          reasoningEffort?: string; contextWindow?: string; prefixCommand?: string;
         };
         seenCreateBodies.push(body as unknown as Record<string, unknown>);
         createdNames.add(body.name);
@@ -1836,6 +1898,7 @@ describe('ExecutorListPage', () => {
           model: body.model ?? null,
           reasoningEffort: body.reasoningEffort ?? null,
           contextWindow: body.contextWindow ?? null,
+          prefixCommand: body.prefixCommand ?? null,
           version: 1,
         });
         return HttpResponse.json({
@@ -1897,7 +1960,7 @@ describe('ExecutorListPage', () => {
 
   async function submitCreateForm(
     user: ReturnType<typeof userEvent.setup>,
-    options: { name: string; contextWindowLabel: string; clientKindLabel?: string },
+    options: { name: string; contextWindowLabel: string; clientKindLabel?: string; prefixCommand?: string },
   ) {
     await user.click(await screen.findByRole('button', { name: /新建执行器/ }));
     const dialog = await findModalByTitle('新建执行器');
@@ -1912,6 +1975,9 @@ describe('ExecutorListPage', () => {
     await user.click(formItemSelect(dialog, '上下文窗口'));
     await user.click(await screen.findByText(options.contextWindowLabel));
     await user.type(within(dialog).getByRole('textbox', { name: '执行器名称' }), options.name);
+    if (options.prefixCommand) {
+      await user.type(within(dialog).getByLabelText('前置命令'), options.prefixCommand);
+    }
     await user.click(within(dialog).getByRole('button', { name: 'OK' }));
     return findModalByTitle('执行器创建成功');
   }
@@ -1935,6 +2001,19 @@ describe('ExecutorListPage', () => {
     });
     expect(previewedCommand(dialog)).toContain(`--context-window ${value}`);
   }
+
+  it('submits the prefix command typed in the create dialog', { timeout: CREATE_FLOW_TIMEOUT }, async () => {
+    const user = userEvent.setup();
+    const createBodies: Record<string, unknown>[] = [];
+    serveCreateFlow([{ name: 'dev-machine-01', clientKind: 'QODER_CLI' }], createBodies);
+    renderPage();
+
+    await submitCreateForm(user, {
+      name: 'dev-machine-01', contextWindowLabel: '1M', prefixCommand: 'SHELL=/bin/bash',
+    });
+
+    expect(createBodies[0].prefixCommand).toBe('SHELL=/bin/bash');
+  });
 
   it.each([
     ['1M', '1000000'],
@@ -2468,14 +2547,17 @@ describe('ExecutorListPage', () => {
   it('treats a config as unconfigured only when every launch value is null', () => {
     expect(isLaunchConfigured(null)).toBe(false);
     expect(isLaunchConfigured({
-      model: null, reasoningEffort: null, contextWindow: null, memoryMode: null, extraArgs: null, version: 1,
+      model: null, reasoningEffort: null, contextWindow: null, memoryMode: null, extraArgs: null,
+      prefixCommand: null, version: 1,
     })).toBe(false);
     // 非 Qoder 执行器只落记忆模式，同样算已配置
     expect(isLaunchConfigured({
-      model: null, reasoningEffort: null, contextWindow: null, memoryMode: 'platform', extraArgs: null, version: 1,
+      model: null, reasoningEffort: null, contextWindow: null, memoryMode: 'platform', extraArgs: null,
+      prefixCommand: null, version: 1,
     })).toBe(true);
     expect(isLaunchConfigured({
-      model: 'auto', reasoningEffort: null, contextWindow: null, memoryMode: null, extraArgs: null, version: 1,
+      model: 'auto', reasoningEffort: null, contextWindow: null, memoryMode: null, extraArgs: null,
+      prefixCommand: null, version: 1,
     })).toBe(true);
   });
 

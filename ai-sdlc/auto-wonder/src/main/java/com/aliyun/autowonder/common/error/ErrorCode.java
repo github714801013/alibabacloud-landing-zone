@@ -116,6 +116,7 @@ public enum ErrorCode {
     ARTIFACT_NOT_FOUND("17010", "产物不存在"),
     EXECUTOR_CLIENT_KIND_MISSING("17011", "执行器缺少客户端类型，无法生成启动命令"),
     EXECUTOR_LAUNCH_CONFIG_EXTRA_ARGS_INVALID("17012", "扩展命令参数不合法"),
+    EXECUTOR_LAUNCH_CONFIG_PREFIX_COMMAND_INVALID("17013", "前置命令不合法"),
     PACKAGE_BUILD_FAILED("17020", "任务包打包失败"),
     STORAGE_ERROR("17021", "对象存储操作失败"),
     // 1703x 调度

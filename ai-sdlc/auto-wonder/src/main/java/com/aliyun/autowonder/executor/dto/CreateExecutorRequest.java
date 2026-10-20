@@ -21,4 +21,6 @@ public class CreateExecutorRequest {
     private String contextWindow;
     /** 手输的扩展命令参数，追加到启动命令末尾；空白表示不使用扩展参数。与客户端类型无关。 */
     private String extraArgs;
+    /** 前置命令，原样放在运行时命令之前；空白表示未配置。与客户端类型无关。 */
+    private String prefixCommand;
 }

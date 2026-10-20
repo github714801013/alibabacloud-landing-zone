@@ -196,18 +196,20 @@ public class ExecutorLaunchCommandService {
         argv.addAll(extraArgv);
         if (debug || Boolean.TRUE.equals(config.debug)) argv.add("--debug");
 
+        String prefix = config.prefixCommand == null || config.prefixCommand.isBlank() ? null : config.prefixCommand;
+
         String command;
         if (debug) {
             // --debug turns on the runtime's own diagnostic log and keeps streaming the console; the
             // command must not tee stdout/stderr into a second, unmanaged file.
             command = SHELL_POWERSHELL.equals(resolvedShell)
-                    ? encodedPowerShell(joinPowerShell(argv))
-                    : joinPosix(argv);
+                    ? encodedPowerShell(withPrefix(prefix, joinPowerShell(argv)))
+                    : withPrefix(prefix, joinPosix(argv));
         } else if (OS_WINDOWS.equals(resolvedOs)) {
             // Session-level UTF-8 console so Chinese progress output is not mangled on CP936 systems.
-            command = encodedPowerShell(joinPowerShell(argv));
+            command = encodedPowerShell(withPrefix(prefix, joinPowerShell(argv)));
         } else {
-            command = joinPosix(argv);
+            command = withPrefix(prefix, joinPosix(argv));
         }
 
         ExecutorLaunchCommandVO vo = new ExecutorLaunchCommandVO();
@@ -278,6 +280,11 @@ public class ExecutorLaunchCommandService {
         throw BizException.keyed(ErrorCode.MCP_TOOL_ARGUMENT_INVALID, "executor.option.only_supported",
                 new Object[]{"shell", SHELL_BASH + "/" + SHELL_POWERSHELL},
                 "shell 仅支持 " + SHELL_BASH + "/" + SHELL_POWERSHELL);
+    }
+
+    /** 前置命令原样放在整条命令最前；不解析、不改写，也不补分隔符。 */
+    private static String withPrefix(String prefixCommand, String command) {
+        return prefixCommand == null ? command : prefixCommand + " " + command;
     }
 
     private static String joinPosix(List<String> argv) {

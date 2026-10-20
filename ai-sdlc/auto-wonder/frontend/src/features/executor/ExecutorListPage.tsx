@@ -189,6 +189,9 @@ export function isLaunchConfigured(config: ExecutorLaunchConfig | null): boolean
 // 与服务端 ExecutorLaunchExtraArgs.MAX_LENGTH 对齐；这里只是输入护栏，最终校验以服务端为准。
 const EXTRA_ARGS_MAX_LENGTH = 1000;
 
+// 与服务端 ExecutorLaunchConfigService.MAX_PREFIX_COMMAND_LENGTH 对齐；这里只是输入护栏，最终校验以服务端为准。
+const PREFIX_COMMAND_MAX_LENGTH = 4000;
+
 function CopyCommandActions({ onCopy, disabled }: { onCopy: (shell?: DebugShell) => void; disabled?: boolean }) {
   const { t } = useTranslation('executor');
   return (
@@ -244,6 +247,22 @@ function ExtraArgsField() {
   return (
     <Form.Item label={t('extraArgs')} name="extraArgs" extra={t('extraArgsHint')}>
       <Input maxLength={EXTRA_ARGS_MAX_LENGTH} allowClear placeholder={t('extraArgsPlaceholder')} />
+    </Form.Item>
+  );
+}
+
+function PrefixCommandField() {
+  const { t } = useTranslation('executor');
+  return (
+    <Form.Item label={t('prefixCommand')} name="prefixCommand"
+      rules={[{ max: PREFIX_COMMAND_MAX_LENGTH, message: t('prefixCommandTooLong', { max: PREFIX_COMMAND_MAX_LENGTH }) }]}
+      extra={(
+        <div>
+          <div>{t('prefixCommandHint')}</div>
+          <Alert type="warning" showIcon style={{ marginTop: 6 }} message={t('prefixCommandRisk')} />
+        </div>
+      )}>
+      <Input.TextArea rows={3} allowClear placeholder={t('prefixCommandPlaceholder')} />
     </Form.Item>
   );
 }
@@ -334,6 +353,7 @@ interface CreateExecutorFormValues {
   reasoningEffort?: string;
   contextWindow?: string;
   extraArgs?: string;
+  prefixCommand?: string;
 }
 
 interface StartupFormValues {
@@ -345,6 +365,7 @@ interface StartupFormValues {
   reasoningEffort?: string;
   contextWindow?: string;
   extraArgs?: string;
+  prefixCommand?: string;
 }
 
 export function ExecutorListPage() {
@@ -589,9 +610,9 @@ export function ExecutorListPage() {
 
   const createMut = useMutation({
     // 启动配置随执行器一并落库，响应回显的就是数据库保存下来的值
-    mutationFn: ({ agentId, name, clientKind: kind, memoryMode, maxConcurrentDispatches, model, reasoningEffort, contextWindow, extraArgs }:
+    mutationFn: ({ agentId, name, clientKind: kind, memoryMode, maxConcurrentDispatches, model, reasoningEffort, contextWindow, extraArgs, prefixCommand }:
       CreateExecutorFormValues) =>
-      createExecutor(agentId, { name, clientKind: kind, memoryMode, maxConcurrentDispatches, model, reasoningEffort, contextWindow, extraArgs }),
+      createExecutor(agentId, { name, clientKind: kind, memoryMode, maxConcurrentDispatches, model, reasoningEffort, contextWindow, extraArgs, prefixCommand }),
     onSuccess: (data) => {
       setTokenResult(data);
       setCreateModalOpen(false);
@@ -746,6 +767,7 @@ export function ExecutorListPage() {
         reasoningEffort: config.reasoningEffort ?? undefined,
         contextWindow: config.contextWindow ?? undefined,
         extraArgs: config.extraArgs ?? undefined,
+        prefixCommand: config.prefixCommand ?? undefined,
       });
       setStartupModelInvalid(!config.model);
     } else {
@@ -753,6 +775,7 @@ export function ExecutorListPage() {
         memoryMode: config.memoryMode ?? 'platform',
         maxConcurrentDispatches: config.maxConcurrentDispatches ?? 5,
         extraArgs: config.extraArgs ?? undefined,
+        prefixCommand: config.prefixCommand ?? undefined,
       });
     }
     return config;
@@ -800,8 +823,9 @@ export function ExecutorListPage() {
         ...(kindMissing ? { clientKind: values.clientKind } : {}),
         memoryMode: values.memoryMode,
         maxConcurrentDispatches: values.maxConcurrentDispatches,
-        // 扩展参数与客户端类型无关，非 Qoder 执行器同样提交
+        // 扩展参数与前置命令都与客户端类型无关，非 Qoder 执行器同样提交
         extraArgs: values.extraArgs,
+        prefixCommand: values.prefixCommand,
         ...(isQoder ? {
           model: values.model,
           reasoningEffort: values.reasoningEffort,
@@ -1229,6 +1253,7 @@ export function ExecutorListPage() {
             </>
           )}
           <ExtraArgsField />
+          <PrefixCommandField />
           <Form.Item label={t('name')} name="name" rules={[{ required: true, message: t('enterName') }]}>
             <Input placeholder={t('nameExample')} />
           </Form.Item>
@@ -1308,6 +1333,7 @@ export function ExecutorListPage() {
             </>
           )}
           <ExtraArgsField />
+          <PrefixCommandField />
         </Form>
         </div>
         {commandDraft !== null ? <>

@@ -567,6 +567,68 @@ class ExecutorLaunchCommandServiceTest {
         assertTrue(vo.getCommand().contains("--token-aware-enable"), vo.getCommand());
     }
 
+    @Test
+    void prefixCommandIsPlacedBeforeTheRuntimeCommand() {
+        ExecutorLaunchCommandVO vo = buildWithPrefix("SHELL=/bin/bash", false, null);
+
+        assertTrue(vo.getCommand().startsWith("SHELL=/bin/bash npx -y autowonder@" + RUNTIME_VERSION + " connect "),
+                vo.getCommand());
+    }
+
+    @Test
+    void prefixCommandIsKeptVerbatim() {
+        String prefix = "export A='x y' && export B=2";
+
+        ExecutorLaunchCommandVO vo = buildWithPrefix(prefix, false, null);
+
+        assertTrue(vo.getCommand().startsWith(prefix + " npx -y"), vo.getCommand());
+    }
+
+    @Test
+    void blankPrefixCommandLeavesTheCommandUnchanged() {
+        ExecutorLaunchCommandVO without = buildWithPrefix(null, false, null);
+        ExecutorLaunchCommandVO blank = buildWithPrefix("   ", false, null);
+
+        assertEquals(without.getCommand(), blank.getCommand());
+        assertTrue(without.getCommand().startsWith("npx -y"), without.getCommand());
+    }
+
+    @Test
+    void prefixCommandLandsBeforeTheDebugPipeline() {
+        ExecutorLaunchCommandVO vo = buildWithPrefix("SHELL=/bin/bash", true, null);
+
+        // 前缀作用于整条管道首命令，--debug 与 tee 仍留在同一管道里
+        assertTrue(vo.getCommand().startsWith("SHELL=/bin/bash npx -y"), vo.getCommand());
+        assertTrue(vo.getCommand().endsWith("--debug 2>&1 | tee ~/" + vo.getLogFileName()), vo.getCommand());
+    }
+
+    @Test
+    void prefixCommandLandsInsideTheEncodedPowerShellScript() {
+        ExecutorLaunchCommandVO vo = buildWithPrefix("$env:FOO='1'", false, "windows");
+
+        assertTrue(decode(vo.getCommand()).startsWith(PREAMBLE + "$env:FOO='1' npx -y"),
+                decode(vo.getCommand()));
+    }
+
+    @Test
+    void prefixCommandLandsInsideTheEncodedPowerShellPipelineToo() {
+        ExecutorLaunchCommandVO vo = buildWithPrefix("$env:FOO='1'", true, "windows");
+
+        String script = decode(vo.getCommand());
+        assertTrue(script.startsWith(PREAMBLE + "$env:FOO='1' npx -y"), script);
+        assertTrue(script.contains("--debug 2>&1 | Tee-Object"), script);
+    }
+
+    @Test
+    void prefixCommandAndExtraArgumentsKeepTheDocumentedOrder() {
+        ExecutorLaunchCommandVO vo = service.buildAt("awexec_plain", 9L, "QODER_CLI", "platform", "qmodel_latest",
+                "medium", "260000", null, false, null, now, 5, "--foo bar", "SHELL=/bin/bash");
+
+        assertEquals("SHELL=/bin/bash npx -y autowonder@" + RUNTIME_VERSION + " connect ", vo.getCommand()
+                .substring(0, ("SHELL=/bin/bash npx -y autowonder@" + RUNTIME_VERSION + " connect ").length()));
+        assertTrue(vo.getCommand().endsWith("--token-aware-enable --foo bar"), vo.getCommand());
+    }
+
     private static int occurrences(String text, String needle) {
         int count = 0;
         for (int at = text.indexOf(needle); at >= 0; at = text.indexOf(needle, at + needle.length())) {
@@ -578,6 +640,11 @@ class ExecutorLaunchCommandServiceTest {
     private ExecutorLaunchCommandVO buildWithExtraArgs(String extraArgs, boolean debug, String os) {
         return service.buildAt("awexec_plain", 9L, "QODER_CLI", "platform", "qmodel_latest", "medium",
                 "260000", os, debug, null, now, 5, extraArgs);
+    }
+
+    private ExecutorLaunchCommandVO buildWithPrefix(String prefixCommand, boolean debug, String os) {
+        return service.buildAt("awexec_plain", 9L, "QODER_CLI", "platform", "qmodel_latest", "medium",
+                "260000", os, debug, null, now, 5, null, prefixCommand);
     }
 
     private ExecutorLaunchCommandVO build(String token, String clientKind, String memoryMode, String model,

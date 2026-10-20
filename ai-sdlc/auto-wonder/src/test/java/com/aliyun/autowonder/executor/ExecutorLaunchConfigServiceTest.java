@@ -76,6 +76,12 @@ class ExecutorLaunchConfigServiceTest {
         return request;
     }
 
+    private UpdateExecutorLaunchConfigRequest reqWithPrefix(Integer version, String prefixCommand) {
+        UpdateExecutorLaunchConfigRequest request = req(version, "platform", "qmodel_38max", "medium", "260000");
+        request.setPrefixCommand(prefixCommand);
+        return request;
+    }
+
     @Test
     void previewValidatesTheDraftAndPreservesSavedLaunchFieldsWithoutWriting() {
         String original = "{\"memoryMode\":\"platform\",\"model\":\"auto\",\"reasoningEffort\":\"medium\","
@@ -398,6 +404,71 @@ class ExecutorLaunchConfigServiceTest {
         assertEquals("--foo bar", vo.getExtraArgs());
         assertNull(vo.getModel());
         assertTrue(json.getValue().contains("\"extraArgs\":\"--foo bar\""));
+    }
+
+    @Test
+    void updateConfig_persists_and_reads_back_the_prefix_command() {
+        when(executorDao.findById(9L)).thenReturn(executor(9L, "QODER_CLI", null, 1));
+        ArgumentCaptor<String> json = ArgumentCaptor.forClass(String.class);
+        when(executorDao.updateLaunchConfig(eq(9L), eq(TENANT), json.capture(), eq(1), eq(USER))).thenReturn(1);
+
+        String prefix = "SHELL=/bin/bash\nexport A=1";
+        ExecutorLaunchConfigVO vo = service.updateConfig(9L, TENANT, reqWithPrefix(1, prefix), USER);
+
+        assertEquals(prefix, vo.getPrefixCommand());
+        assertTrue(json.getValue().contains("\"prefixCommand\":\"SHELL=/bin/bash\\nexport A=1\""),
+                json.getValue());
+    }
+
+    @Test
+    void updateConfig_normalizes_a_blank_prefix_command_to_null() {
+        when(executorDao.findById(9L)).thenReturn(executor(9L, "QODER_CLI", null, 1));
+        ArgumentCaptor<String> json = ArgumentCaptor.forClass(String.class);
+        when(executorDao.updateLaunchConfig(eq(9L), eq(TENANT), json.capture(), eq(1), eq(USER))).thenReturn(1);
+
+        ExecutorLaunchConfigVO vo = service.updateConfig(9L, TENANT, reqWithPrefix(1, "  \n "), USER);
+
+        assertNull(vo.getPrefixCommand());
+        assertFalse(json.getValue().contains("prefixCommand"), json.getValue());
+    }
+
+    @Test
+    void updateConfig_accepts_a_prefix_command_at_the_length_limit() {
+        when(executorDao.findById(9L)).thenReturn(executor(9L, "QODER_CLI", null, 1));
+        when(executorDao.updateLaunchConfig(eq(9L), eq(TENANT), anyString(), eq(1), eq(USER))).thenReturn(1);
+        String prefix = "x".repeat(4000);
+
+        assertEquals(prefix, service.updateConfig(9L, TENANT, reqWithPrefix(1, prefix), USER).getPrefixCommand());
+    }
+
+    @Test
+    void updateConfig_rejects_a_prefix_command_over_the_length_limit() {
+        when(executorDao.findById(9L)).thenReturn(executor(9L, "QODER_CLI", null, 1));
+
+        BizException ex = assertThrows(BizException.class, () -> service.updateConfig(9L, TENANT,
+                reqWithPrefix(1, "x".repeat(4001)), USER));
+
+        assertEquals("17013", ex.getCode());
+        verify(executorDao, never()).updateLaunchConfig(anyLong(), anyLong(), anyString(), anyInt(), anyLong());
+    }
+
+    @Test
+    void updateConfig_rejects_a_prefix_command_containing_nul() {
+        when(executorDao.findById(9L)).thenReturn(executor(9L, "QODER_CLI", null, 1));
+
+        BizException ex = assertThrows(BizException.class, () -> service.updateConfig(9L, TENANT,
+                reqWithPrefix(1, "SHELL=/bin/bash\u0000rm -rf /"), USER));
+
+        assertEquals("17013", ex.getCode());
+        verify(executorDao, never()).updateLaunchConfig(anyLong(), anyLong(), anyString(), anyInt(), anyLong());
+    }
+
+    @Test
+    void resolveForCreate_keeps_the_prefix_command() {
+        CreateExecutorRequest request = create("QODER_CLI", "platform", "lite", "low", "400000");
+        request.setPrefixCommand("SHELL=/bin/bash");
+
+        assertEquals("SHELL=/bin/bash", service.resolveForCreate(request).prefixCommand);
     }
 
     // ---------- updateConfig：历史缺失类型执行器的恢复 ----------

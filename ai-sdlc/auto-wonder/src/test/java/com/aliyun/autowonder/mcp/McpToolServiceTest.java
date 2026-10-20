@@ -4903,6 +4903,20 @@ class McpToolServiceTest {
     }
 
     @Test
+    void createExecutorPassesThePrefixCommandToTheService() {
+        McpAccessTokenService.Principal admin = principal(WorkspaceAccessLevel.ADMIN);
+        when(executorService.create(eq(5L), any(CreateExecutorRequest.class), eq(WORKSPACE_ID), eq(USER_ID)))
+                .thenReturn(issued(9L, 5L, "dev-machine-01", "awexec_plain"));
+
+        call(admin, "autowonder.create_executor", Map.of("agentId", 5L, "name", "dev-machine-01",
+                "clientKind", "QODER_CLI", "prefixCommand", "SHELL=/bin/bash"));
+
+        ArgumentCaptor<CreateExecutorRequest> captor = ArgumentCaptor.forClass(CreateExecutorRequest.class);
+        verify(executorService).create(eq(5L), captor.capture(), eq(WORKSPACE_ID), eq(USER_ID));
+        assertEquals("SHELL=/bin/bash", captor.getValue().getPrefixCommand());
+    }
+
+    @Test
     void createExecutorLeavesOmittedLaunchValuesForTheServiceToResolve() {
         McpAccessTokenService.Principal admin = principal(WorkspaceAccessLevel.ADMIN);
         when(executorService.create(eq(5L), any(CreateExecutorRequest.class), eq(WORKSPACE_ID), eq(USER_ID)))
@@ -5237,6 +5251,22 @@ class McpToolServiceTest {
                 ArgumentCaptor.forClass(UpdateExecutorLaunchConfigRequest.class);
         verify(executorLaunchConfigService).updateConfig(eq(9L), eq(WORKSPACE_ID), captor.capture(), eq(USER_ID));
         assertEquals("--model my-model", captor.getValue().getExtraArgs());
+    }
+
+    @Test
+    void updateExecutorLaunchConfigPassesThePrefixCommandToTheService() {
+        McpAccessTokenService.Principal admin = principal(WorkspaceAccessLevel.ADMIN);
+        when(executorLaunchConfigService.updateConfig(eq(9L), eq(WORKSPACE_ID),
+                any(UpdateExecutorLaunchConfigRequest.class), eq(USER_ID)))
+                .thenReturn(storedConfig(4, "qfmodel", "platform", "medium", "260000"));
+
+        call(admin, "autowonder.update_executor_launch_config",
+                Map.of("id", 9L, "version", 3, "prefixCommand", "SHELL=/bin/bash"));
+
+        ArgumentCaptor<UpdateExecutorLaunchConfigRequest> captor =
+                ArgumentCaptor.forClass(UpdateExecutorLaunchConfigRequest.class);
+        verify(executorLaunchConfigService).updateConfig(eq(9L), eq(WORKSPACE_ID), captor.capture(), eq(USER_ID));
+        assertEquals("SHELL=/bin/bash", captor.getValue().getPrefixCommand());
     }
 
     private ExecutorLaunchConfigVO storedConfig(int version, String model, String memoryMode,
