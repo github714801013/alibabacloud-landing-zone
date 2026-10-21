@@ -11,7 +11,7 @@ import { getModelUpgradePolicy, updateModelUpgradePolicy, getExecutorModelCatalo
 import type { ExecutorVO } from './api';
 
 vi.mock('./api', () => ({ getModelUpgradePolicy: vi.fn(), updateModelUpgradePolicy: vi.fn(), getExecutorModelCatalog: vi.fn() }));
-const config = { model: 'gmodel', memoryMode: 'platform', reasoningEffort: 'medium', contextWindow: '260000', version: 7, modelUpgradePolicy: null };
+const config = { model: 'gmodel', memoryMode: 'platform', reasoningEffort: 'medium', contextWindow: '260000', extraArgs: null, prefixCommand: null, version: 7, modelUpgradePolicy: null };
 function mount() {
   return render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
     <ModelUpgradePolicyEditor executor={{ id: 10, clientKind: 'QODER_CLI' } as ExecutorVO} />

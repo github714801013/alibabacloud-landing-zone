@@ -521,8 +521,7 @@ class ExecutorLaunchCommandServiceTest {
     void extraArgumentsLandBeforeTheDebugFlag() {
         ExecutorLaunchCommandVO vo = buildWithExtraArgs("--foo bar", true, null);
 
-        assertTrue(vo.getCommand().contains("--token-aware-enable --foo bar --debug 2>&1 | tee ~/"),
-                vo.getCommand());
+        assertTrue(vo.getCommand().contains("--token-aware-enable --foo bar --debug"), vo.getCommand());
     }
 
     @Test
@@ -597,9 +596,9 @@ class ExecutorLaunchCommandServiceTest {
     void prefixCommandLandsBeforeTheDebugPipeline() {
         ExecutorLaunchCommandVO vo = buildWithPrefix("SHELL=/bin/bash", true, null);
 
-        // 前缀作用于整条管道首命令，--debug 与 tee 仍留在同一管道里
+        // 前缀作用于整条命令首，--debug 仍排在扩展参数之后
         assertTrue(vo.getCommand().startsWith("SHELL=/bin/bash npx -y"), vo.getCommand());
-        assertTrue(vo.getCommand().endsWith("--debug 2>&1 | tee ~/" + vo.getLogFileName()), vo.getCommand());
+        assertTrue(vo.getCommand().endsWith("--debug"), vo.getCommand());
     }
 
     @Test
@@ -616,13 +615,12 @@ class ExecutorLaunchCommandServiceTest {
 
         String script = decode(vo.getCommand());
         assertTrue(script.startsWith(PREAMBLE + "$env:FOO='1' npx -y"), script);
-        assertTrue(script.contains("--debug 2>&1 | Tee-Object"), script);
+        assertTrue(script.endsWith("--debug"), script);
     }
 
     @Test
     void prefixCommandAndExtraArgumentsKeepTheDocumentedOrder() {
-        ExecutorLaunchCommandVO vo = service.buildAt("awexec_plain", 9L, "QODER_CLI", "platform", "qmodel_latest",
-                "medium", "260000", null, false, null, now, 5, "--foo bar", "SHELL=/bin/bash");
+        ExecutorLaunchCommandVO vo = buildWith("--foo bar", "SHELL=/bin/bash", false, null);
 
         assertEquals("SHELL=/bin/bash npx -y autowonder@" + RUNTIME_VERSION + " connect ", vo.getCommand()
                 .substring(0, ("SHELL=/bin/bash npx -y autowonder@" + RUNTIME_VERSION + " connect ").length()));
@@ -638,13 +636,23 @@ class ExecutorLaunchCommandServiceTest {
     }
 
     private ExecutorLaunchCommandVO buildWithExtraArgs(String extraArgs, boolean debug, String os) {
-        return service.buildAt("awexec_plain", 9L, "QODER_CLI", "platform", "qmodel_latest", "medium",
-                "260000", os, debug, null, now, 5, extraArgs);
+        return buildWith(extraArgs, null, debug, os);
     }
 
     private ExecutorLaunchCommandVO buildWithPrefix(String prefixCommand, boolean debug, String os) {
-        return service.buildAt("awexec_plain", 9L, "QODER_CLI", "platform", "qmodel_latest", "medium",
-                "260000", os, debug, null, now, 5, null, prefixCommand);
+        return buildWith(null, prefixCommand, debug, os);
+    }
+
+    private ExecutorLaunchCommandVO buildWith(String extraArgs, String prefixCommand, boolean debug, String os) {
+        ExecutorLaunchConfigService.LaunchConfig config = new ExecutorLaunchConfigService.LaunchConfig();
+        config.memoryMode = "platform";
+        config.model = "qmodel_latest";
+        config.reasoningEffort = "medium";
+        config.contextWindow = "260000";
+        config.maxConcurrentDispatches = 5;
+        config.extraArgs = extraArgs;
+        config.prefixCommand = prefixCommand;
+        return service.buildAt("awexec_plain", 9L, "QODER_CLI", config, os, debug, null);
     }
 
     private ExecutorLaunchCommandVO build(String token, String clientKind, String memoryMode, String model,

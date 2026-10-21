@@ -128,7 +128,7 @@ public class ExecutorLaunchCommandService {
         return buildAt(token, executorId, clientKind, config, os, debug, shell);
     }
 
-    private ExecutorLaunchCommandVO buildAt(String token, long executorId, String clientKind,
+    ExecutorLaunchCommandVO buildAt(String token, long executorId, String clientKind,
             ExecutorLaunchConfigService.LaunchConfig config, String os, boolean debug, String shell) {
         String memoryMode = config.memoryMode;
         String model = config.model;

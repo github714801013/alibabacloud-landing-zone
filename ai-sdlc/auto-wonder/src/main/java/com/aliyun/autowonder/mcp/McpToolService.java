@@ -615,7 +615,8 @@ public class McpToolService {
                     Map.entry(DELETE_EXECUTOR, WorkspaceDomain.EXECUTOR),
                     Map.entry(BUILD_EXECUTOR_LAUNCH_COMMAND, WorkspaceDomain.EXECUTOR),
                     Map.entry(GET_EXECUTOR_LAUNCH_CONFIG, WorkspaceDomain.EXECUTOR),
-                    Map.entry(UPDATE_EXECUTOR_LAUNCH_CONFIG, WorkspaceDomain.EXECUTOR));
+                    Map.entry(UPDATE_EXECUTOR_LAUNCH_CONFIG, WorkspaceDomain.EXECUTOR),
+                    Map.entry(LIST_WORKSPACE_MEMBERS, WorkspaceDomain.WORKSPACE));
 
     static {
         TOOL_ACCESS.forEach((tool, access) -> {
