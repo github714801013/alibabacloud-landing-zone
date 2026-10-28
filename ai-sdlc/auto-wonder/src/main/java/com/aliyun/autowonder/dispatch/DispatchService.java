@@ -1276,27 +1276,27 @@ public class DispatchService {
             return new AffinitySelection(
                     selectExecutorForDispatch(d, preferredExecutorId, requiredFeature), null, false);
         }
-        long tenantId = d.getTenantId();
+        long workspaceId = d.getTenantId();
         long workitemId = d.getWorkitemId();
-        Long bound = affinityStore.boundExecutor(tenantId, workitemId);
+        Long bound = affinityStore.boundExecutor(workspaceId, workitemId);
         if (bound == null) {
             return new AffinitySelection(
                     selectExecutorForDispatch(d, preferredExecutorId, requiredFeature), null, false);
         }
         Long usable = selectBoundExecutor(d, bound, requiredFeature);
         if (usable != null) {
-            affinityStore.clearUnavailable(tenantId, workitemId);
+            affinityStore.clearUnavailable(workspaceId, workitemId);
             return new AffinitySelection(usable, null, false);
         }
         long now = System.currentTimeMillis();
-        long since = affinityStore.unavailableSince(tenantId, workitemId, now);
+        long since = affinityStore.unavailableSince(workspaceId, workitemId, now);
         long waited = Math.max(0L, now - since);
         if (waited < affinityTimeoutMs) {
             waitForBoundExecutor(d, bound, since, affinityTimeoutMs - waited);
             return new AffinitySelection(null, null, true);
         }
         recordAffinityDegradeEvent(d, bound, waited);
-        affinityStore.release(tenantId, workitemId);
+        affinityStore.release(workspaceId, workitemId);
         log.warn("workitem affinity degraded dispatchId={} workitemId={} executorId={} waitedMs={}",
                 d.getId(), workitemId, bound, waited);
         return new AffinitySelection(
