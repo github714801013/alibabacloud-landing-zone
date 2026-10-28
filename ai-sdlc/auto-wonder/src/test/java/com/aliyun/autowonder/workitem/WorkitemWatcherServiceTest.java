@@ -10,6 +10,7 @@ import com.aliyun.autowonder.workitem.dto.WatchStateVO;
 import com.aliyun.autowonder.workitem.dto.WorkitemVO;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.util.Arrays;
 import java.util.Collections;
@@ -146,6 +147,33 @@ class WorkitemWatcherServiceTest {
         // 取消不存在的关注同样返回未关注状态，不抛异常
         assertDoesNotThrow(() -> service.unfollow(WORKITEM, TENANT, USER));
         assertFalse(state.isWatched());
+    }
+
+    // ---- 包内关系写原语：供管理员批量代管共享，只幂等落库、不校验工单、不重算状态 ----
+
+    @Test
+    void insertWatchRelationWritesWithoutValidationOrStateRebuild() {
+        service.insertWatchRelation(WORKITEM, TENANT, USER);
+
+        ArgumentCaptor<WorkitemWatcherDO> written = ArgumentCaptor.forClass(WorkitemWatcherDO.class);
+        verify(watcherDao).insertIgnore(written.capture());
+        assertEquals(TENANT, written.getValue().getTenantId());
+        assertEquals(WORKITEM, written.getValue().getWorkitemId());
+        assertEquals(USER, written.getValue().getUserId());
+        // 原语不触发工单查询与逐成员名单重建；单人 follow/unfollow 的返回语义仍由外层保持原样
+        verifyNoInteractions(workitemDao, userDao, workspaceMemberDao);
+        verify(watcherDao, never()).find(anyLong(), anyLong(), anyLong());
+        verify(watcherDao, never()).listByWorkitem(anyLong(), anyLong());
+    }
+
+    @Test
+    void deleteWatchRelationDeletesOnlyTheRelation() {
+        service.deleteWatchRelation(WORKITEM, TENANT, USER);
+
+        verify(watcherDao).delete(TENANT, WORKITEM, USER);
+        verifyNoInteractions(workitemDao, userDao, workspaceMemberDao);
+        verify(watcherDao, never()).find(anyLong(), anyLong(), anyLong());
+        verify(watcherDao, never()).listByWorkitem(anyLong(), anyLong());
     }
 
     @Test

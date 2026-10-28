@@ -63,7 +63,7 @@ public class ConversationCapabilityService {
     /**
      * 平台管家会话的 MCP 身份只能是会话 Owner 本人。此前这里回退到 Agent 的创建者/修改者，
      * 结果是所有人共用最后一个改过 Chief 的人的身份，写操作与审计全部记在他名下。
-     * Owner 缺失时宁可整轮失败，也不能退回旧行为；钉钉与工单澄清渠道保持原样。
+     * Owner 缺失时宁可整轮失败，也不能退回旧行为；工单澄清优先固定归属人，缺失时保留历史回退。
      */
     private long resolvePrincipal(AgentConversationDO conversation, AgentDO agent) {
         if (PlatformConversationChannel.CHANNEL.equals(conversation.getChannel())) {
@@ -72,6 +72,10 @@ public class ConversationCapabilityService {
                 throw new IllegalStateException("platform conversation owner is unavailable");
             }
             return owner;
+        }
+        if (WorkitemClarificationConversationService.CHANNEL.equals(conversation.getChannel())
+                && conversation.getOwnerUserId() != null && conversation.getOwnerUserId() > 0) {
+            return conversation.getOwnerUserId();
         }
         long principalId = agent.getCreatorId() == null ? 0L : agent.getCreatorId();
         if (principalId <= 0 && agent.getModifierId() != null) {

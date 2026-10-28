@@ -40,6 +40,32 @@ class ConversationExecutorRouterTest {
     }
 
     @Test
+    void strictSelectionUsesOnlyTheRequestedExecutorAndNeverFallsBack() {
+        AgentEnvironmentVariableRefDao refs = mock(AgentEnvironmentVariableRefDao.class);
+        ExecutorSelector selector = mock(ExecutorSelector.class);
+        when(refs.listByVersion(1L, 50L)).thenReturn(List.of());
+        when(selector.selectStrict(3L, 9L)).thenReturn(9L);
+
+        assertEquals(9L, new ConversationExecutorRouter(refs, selector)
+                .selectStrict(1L, 3L, 50L, 9L));
+        verify(selector, never()).select(anyLong(), any());
+        verify(selector, never()).select(anyLong(), any(), any());
+    }
+
+    @Test
+    void strictSelectionTreatsMissingRuntimeFeatureAsUnavailable() {
+        AgentEnvironmentVariableRefDao refs = mock(AgentEnvironmentVariableRefDao.class);
+        ExecutorSelector selector = mock(ExecutorSelector.class);
+        when(refs.listByVersion(1L, 50L)).thenReturn(List.of());
+        when(selector.selectStrict(3L, 9L)).thenThrow(
+                new com.aliyun.autowonder.dispatch.ExecutorProtocolCompatibilityException(
+                        "missing CONVERSATION_TURN_EVENT"));
+
+        assertEquals(null, new ConversationExecutorRouter(refs, selector)
+                .selectStrict(1L, 3L, 50L, 9L));
+    }
+
+    @Test
     void unboundVersionKeepsLegacySelection() {
         AgentEnvironmentVariableRefDao refs = mock(AgentEnvironmentVariableRefDao.class);
         ExecutorSelector selector = mock(ExecutorSelector.class);

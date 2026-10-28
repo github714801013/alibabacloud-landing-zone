@@ -164,7 +164,7 @@ class ConversationCapabilityServiceTest {
         verify(tokenService, never()).issue(any(), anyLong());
     }
 
-    /** 钉钉与工单澄清渠道的行为必须一字不变，否则会破坏存量会话。 */
+    /** 尚未固定归属人的历史会话保留创建者回退。 */
     @Test
     void legacyChannelsKeepDerivingThePrincipalFromTheAgentCreator() {
         for (String channel : new String[]{"WORKITEM_CLARIFICATION", "DINGTALK"}) {
@@ -187,16 +187,40 @@ class ConversationCapabilityServiceTest {
         verify(tokenService).issue(conversation, CHIEF_MODIFIER);
     }
 
-    /** 遗留渠道即使写了 owner_user_id 也不改身份，避免历史数据被误读。 */
     @Test
-    void legacyChannelIgnoresAnUnexpectedOwnerColumn() {
+    void clarificationConversationIssuesTheTokenForItsFixedOwner() {
         agent(CHIEF_CREATOR, CHIEF_MODIFIER);
+        AgentConversationDO conversation = conversation("WORKITEM_CLARIFICATION", OWNER);
+        when(tokenService.issue(conversation, OWNER)).thenReturn("awconversation_owner");
+
+        ConversationCapabilitySnapshot snapshot = service.prepare(conversation, TURN_ID);
+
+        assertEquals("awconversation_owner", snapshot.mcpToken());
+        verify(tokenService, never()).issue(conversation, CHIEF_CREATOR);
+    }
+
+    @Test
+    void clarificationOwnerDoesNotDependOnTheAgentCreator() {
+        agent(null, null);
         AgentConversationDO conversation = conversation("WORKITEM_CLARIFICATION", OWNER);
 
         service.prepare(conversation, TURN_ID);
 
-        verify(tokenService).issue(conversation, CHIEF_CREATOR);
-        verify(tokenService, never()).issue(conversation, OWNER);
+        verify(tokenService).issue(conversation, OWNER);
+    }
+
+    /** 外部渠道仍忽略意外写入的归属人，避免改变既有身份解析。 */
+    @Test
+    void externalChannelsIgnoreAnUnexpectedOwnerColumn() {
+        for (String channel : new String[]{"DINGTALK", "FEISHU"}) {
+            agent(CHIEF_CREATOR, CHIEF_MODIFIER);
+            AgentConversationDO conversation = conversation(channel, OWNER);
+
+            service.prepare(conversation, TURN_ID);
+
+            verify(tokenService).issue(conversation, CHIEF_CREATOR);
+            verify(tokenService, never()).issue(conversation, OWNER);
+        }
     }
 
     @Test

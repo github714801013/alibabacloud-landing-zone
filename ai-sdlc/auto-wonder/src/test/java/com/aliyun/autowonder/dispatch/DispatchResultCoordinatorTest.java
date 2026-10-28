@@ -167,6 +167,35 @@ class DispatchResultCoordinatorTest {
         verify(guidance).requeueForExecutorFailover(100,55);
         verifyNoInteractions(checkpoints,handoffs);
     }
+    @Test void transientPrepareFailureRequeuesWithoutFailingTheDispatch() {
+        input.put("success",false);
+        input.put("error","execute dispatch: prepare repos: materialize repo huishou: git command failed");
+        when(dispatches.onPrepareFailure(100,1L,55,input.getString("error")))
+                .thenReturn(DispatchRecoveryService.PrepareRetryOutcome.RETRIED);
+        assertEquals("ACCEPTED",coordinator.handle(100,1,input).ack().getString("disposition"));
+        verify(guidance).requeueForExecutorFailover(100,55);
+        verify(guidance,never()).failForDispatch(anyLong(),anyLong(),any());
+        verify(dispatches,never()).runPending(anyLong());
+        verifyNoInteractions(checkpoints,handoffs);
+    }
+    @Test void exhaustedPrepareRetryFallsBackToOrdinaryFailure() {
+        input.put("success",false);
+        input.put("error","execute dispatch: prepare repos: materialize repo huishou: git command failed");
+        when(dispatches.onPrepareFailure(100,1L,55,input.getString("error")))
+                .thenReturn(DispatchRecoveryService.PrepareRetryOutcome.EXHAUSTED);
+        when(dispatches.onResult(100L,1L,55,false,null,input.getString("error"),false,false,null)).thenReturn(true);
+        assertEquals("ACCEPTED",coordinator.handle(100,1,input).ack().getString("disposition"));
+        verify(guidance).failForDispatch(100,55,input.getString("error"));
+    }
+    @Test void permanentPrepareErrorSkipsTheRetryBudget() {
+        input.put("success",false);
+        input.put("error","execute dispatch: prepare repos: materialize repo app: remote branch not found");
+        when(dispatches.onResult(100L,1L,55,false,null,input.getString("error"),false,false,null)).thenReturn(true);
+        assertEquals("ACCEPTED",coordinator.handle(100,1,input).ack().getString("disposition"));
+        verify(dispatches,never()).onPrepareFailure(anyLong(),anyLong(),anyLong(),any());
+        verify(guidance).failForDispatch(100,55,input.getString("error"));
+    }
+
     @Test void completionWhilePausingCommitsReworkWithoutOrdinaryResult() {
         allowCompletion();
         when(pauses.onCompletedWhilePausing(100,1,55,7,"sha256:abc"))

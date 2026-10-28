@@ -137,13 +137,18 @@ public class ExecutorSelector {
     }
 
     public Long selectStrict(long agentId, long executorId, String requiredFeature) {
+        return selectStrict(agentId, executorId, requiredFeature, false);
+    }
+
+    public Long selectStrict(long agentId, long executorId, String requiredFeature,
+            boolean interaction) {
         Set<String> members = redisManager.smembers(execsKey(agentId));
         if (members == null || !members.contains(String.valueOf(executorId))
                 || !isRuntimeAvailable(executorId)) {
             return null;
         }
         requireFeature(executorId, requiredFeature);
-        return hasRemainingCapacity(executorId, false) ? executorId : null;
+        return hasRemainingCapacity(executorId, interaction) ? executorId : null;
     }
 
     private Long select(long agentId, Long preferredExecutorId, boolean interaction,

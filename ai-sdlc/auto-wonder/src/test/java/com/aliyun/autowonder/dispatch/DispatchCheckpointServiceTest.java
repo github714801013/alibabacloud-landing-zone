@@ -205,6 +205,35 @@ class DispatchCheckpointServiceTest {
     }
 
     @Test
+    void resumedOnAnotherExecutorDropsThePinnedProviderSession() {
+        DispatchCheckpointDao dao = mock(DispatchCheckpointDao.class);
+        DispatchDao dispatchDao = mock(DispatchDao.class);
+        DispatchRuntimeEventDao runtimeEventDao = mock(DispatchRuntimeEventDao.class);
+        ObjectStorage storage = mock(ObjectStorage.class);
+        DispatchCheckpointService service = new DispatchCheckpointService(
+                dao, runtimeEventDao, dispatchDao, storage, new OssProperties());
+        DispatchDO dispatch = new DispatchDO();
+        dispatch.setTenantId(100L);
+        dispatch.setResumeMode("RECOVERY");
+        dispatch.setResumeFromDispatchId(55L);
+        dispatch.setExecutorId(2L);
+        DispatchDO source = new DispatchDO();
+        source.setId(55L);
+        source.setTenantId(100L);
+        source.setExecutorId(1L);
+        when(dispatchDao.findById(55L)).thenReturn(source);
+        DispatchRuntimeEventDO pinned = new DispatchRuntimeEventDO();
+        pinned.setDetailJson("{\"sessionId\":\"session-55\",\"provider\":\"codex\"}");
+        when(runtimeEventDao.findLatestByDispatchAndType(
+                100L, 55L, "agent.session_pinned")).thenReturn(pinned);
+
+        ResumeDescriptor descriptor = service.descriptor(dispatch);
+
+        assertNotNull(descriptor);
+        assertNull(descriptor.providerSessionId());
+    }
+
+    @Test
     void degradedContinuousDescriptorNeverExposesCheckpointNativeSession() {
         DispatchCheckpointDao dao = mock(DispatchCheckpointDao.class);
         ObjectStorage storage = mock(ObjectStorage.class);

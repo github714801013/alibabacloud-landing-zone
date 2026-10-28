@@ -11,8 +11,10 @@ import com.aliyun.autowonder.conversation.dto.ClarificationConversationVO;
 import com.aliyun.autowonder.conversation.dto.ClarificationElicitationVO;
 import com.aliyun.autowonder.conversation.dto.ClarificationSlashCommandVO;
 import com.aliyun.autowonder.conversation.dto.ClarificationTurnVO;
+import com.aliyun.autowonder.dispatch.WorkitemExecutorAffinity;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -38,6 +40,13 @@ public class WorkitemClarificationConversationService {
     private final ConversationCommandsService commandsService;
     private final ConversationExecutorRouter executorRouter;
     private final ClarificationAttachmentService attachmentService;
+
+    @Autowired(required = false)
+    private WorkitemExecutorAffinity executorAffinity;
+
+    void bindExecutorAffinity(WorkitemExecutorAffinity affinity) {
+        this.executorAffinity = affinity;
+    }
 
     public WorkitemClarificationConversationService(AgentConversationDao convDao,
             AgentConversationTurnDao turnDao, AgentConversationService conversationService,
@@ -178,8 +187,12 @@ public class WorkitemClarificationConversationService {
         if (agent == null) {
             throw new KeyedIllegalArgumentException("conversation.agent_not_found", null, "agent not found");
         }
-        Long executorId = executorRouter.select(tenantId, agentId,
-                requireOnlineVersion(agent), null);
+        Long boundExecutorId = executorAffinity == null ? null
+                : executorAffinity.boundExecutor(tenantId, workitemId);
+        Long executorId = boundExecutorId != null
+                ? executorRouter.selectStrict(tenantId, agentId, requireOnlineVersion(agent),
+                        boundExecutorId)
+                : executorRouter.select(tenantId, agentId, requireOnlineVersion(agent), null);
 
         AgentConversationDO conv = new AgentConversationDO();
         conv.setTenantId(tenantId);
@@ -200,6 +213,9 @@ public class WorkitemClarificationConversationService {
     @Transactional
     public void submitTurn(Long tenantId, Long workitemId, Long conversationId, Long userId,
             String content, String clientMessageId, List<Long> attachmentIds) {
+        if (userId == null || userId <= 0) {
+            throw new BizException(ErrorCode.UNAUTHORIZED);
+        }
         AgentConversationDO conv = convDao.findById(tenantId, conversationId);
         if (conv == null) {
             throw new KeyedIllegalArgumentException("conversation.not_found", null, "conversation not found");
@@ -229,8 +245,14 @@ public class WorkitemClarificationConversationService {
             return;
         }
         AgentDO agent = agentDao.findById(conv.getAgentId());
-        Long executorId = executorRouter.select(tenantId, conv.getAgentId(),
-                requireOnlineVersion(agent), conv.getExecutorId());
+        // 工单已绑定机器时严格使用绑定机器：不可用按离线报错，不回落到其他机器。
+        Long boundExecutorId = executorAffinity == null ? null
+                : executorAffinity.boundExecutor(tenantId, workitemId);
+        Long executorId = boundExecutorId != null
+                ? executorRouter.selectStrict(tenantId, conv.getAgentId(),
+                        requireOnlineVersion(agent), boundExecutorId)
+                : executorRouter.select(tenantId, conv.getAgentId(),
+                        requireOnlineVersion(agent), conv.getExecutorId());
         if (executorId == null) {
             throw new BizException(ErrorCode.CLARIFICATION_EXECUTOR_OFFLINE);
         }
@@ -241,7 +263,7 @@ public class WorkitemClarificationConversationService {
                 tenantId, conversationId, userId, attachmentIds);
         String normalizedContent = content == null || content.isBlank() ? "" : content;
         conversationService.submitTurn(tenantId, conv.getAgentId(), CHANNEL,
-                conv.getChannelConversationId(), normalizedContent, externalMsgId);
+                conv.getChannelConversationId(), normalizedContent, externalMsgId, null, userId);
         AgentConversationTurnDO turn = turnDao.findByExternalMsgId(tenantId, externalMsgId);
         if (turn == null) {
             throw new IllegalStateException("clarification turn was not persisted");

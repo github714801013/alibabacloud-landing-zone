@@ -236,6 +236,115 @@ class McpToolServiceTest {
     }
 
     @Test
+    void watcherManagementToolsDelegateToSharedServiceAndStayAdminOnly() {
+        var management = mock(com.aliyun.autowonder.workitem.WorkitemWatcherManagementService.class);
+        ReflectionTestUtils.setField(service, "watcherManagement", management);
+        var watchers = mock(com.aliyun.autowonder.workitem.WorkitemWatcherService.class);
+        ReflectionTestUtils.setField(service, "workitemWatchers", watchers);
+        var admin = principal(WorkspaceAccessLevel.ADMIN);
+        var state = new com.aliyun.autowonder.workitem.dto.WatchStateVO(128L, true, 2);
+        when(management.addWatcher(128L, WORKSPACE_ID, 77L, USER_ID)).thenReturn(state);
+        assertEquals(state, call(admin, "autowonder.add_workitem_watcher", Map.of("id", 128L, "userId", 77L)));
+        when(management.removeWatcher(128L, WORKSPACE_ID, 77L, USER_ID)).thenReturn(state);
+        assertEquals(state, call(admin, "autowonder.remove_workitem_watcher", Map.of("id", 128L, "userId", 77L)));
+        when(watchers.listWatchers(128L, WORKSPACE_ID)).thenReturn(List.of());
+        assertEquals(List.of(), call(admin, "autowonder.list_workitem_watchers", Map.of("id", 128L)));
+        // 层级不足的个人令牌在授权层即拒绝，不触达共享服务；actor 只取可信上下文
+        var readOnly = principal(WorkspaceAccessLevel.READ_ONLY);
+        assertThrows(BizException.class, () -> call(readOnly, "autowonder.add_workitem_watcher",
+                Map.of("id", 128L, "userId", 77L)));
+        assertThrows(BizException.class, () -> call(readOnly, "autowonder.remove_workitem_watcher",
+                Map.of("id", 128L, "userId", 77L)));
+        verify(management, times(1)).addWatcher(128L, WORKSPACE_ID, 77L, USER_ID);
+        verify(management, times(1)).removeWatcher(128L, WORKSPACE_ID, 77L, USER_ID);
+    }
+
+    @Test
+    void batchWatcherToolsDelegateWholeBatchCallsToSharedService() {
+        var management = mock(com.aliyun.autowonder.workitem.WorkitemWatcherManagementService.class);
+        ReflectionTestUtils.setField(service, "watcherManagement", management);
+        var admin = principal(WorkspaceAccessLevel.ADMIN);
+        var result = new com.aliyun.autowonder.workitem.dto.WatchBatchResultVO(128L, List.of(77L, 78L), true, 2);
+        when(management.batchAddWatchers(128L, WORKSPACE_ID, List.of(77L, 78L), USER_ID)).thenReturn(result);
+        assertEquals(result, call(admin, "autowonder.batch_add_workitem_watchers",
+                Map.of("id", 128L, "userIds", List.of(77L, 78L))));
+        when(management.batchRemoveWatchers(128L, WORKSPACE_ID, List.of(77L), USER_ID)).thenReturn(result);
+        assertEquals(result, call(admin, "autowonder.batch_remove_workitem_watchers",
+                Map.of("id", 128L, "userIds", List.of(77L))));
+        // 整批校验在共享服务内完成，MCP 层只负责传可信 actor；权限不足的个人令牌不触达服务
+        var readOnly = principal(WorkspaceAccessLevel.READ_ONLY);
+        assertThrows(BizException.class, () -> call(readOnly, "autowonder.batch_add_workitem_watchers",
+                Map.of("id", 128L, "userIds", List.of(77L))));
+        verify(management, times(1)).batchAddWatchers(128L, WORKSPACE_ID, List.of(77L, 78L), USER_ID);
+        verify(management, times(1)).batchRemoveWatchers(128L, WORKSPACE_ID, List.of(77L), USER_ID);
+    }
+
+    @Test
+    void batchWatcherToolsPassRawUserIdsWithoutJsonCoercion() {
+        var management = mock(com.aliyun.autowonder.workitem.WorkitemWatcherManagementService.class);
+        ReflectionTestUtils.setField(service, "watcherManagement", management);
+        var admin = principal(WorkspaceAccessLevel.ADMIN);
+        // 批量分支直接把 args 的原始 userIds 交给共享服务：小数/数字字符串/布尔/越界整数不在 MCP 层
+        // 被截断或强转（旧 toBean 通道会把 77.9→77、"77"→77），拒绝由服务侧严格校验统一给出
+        var raw = new java.util.ArrayList<Object>();
+        raw.add(77.9);
+        raw.add("78");
+        raw.add(true);
+        raw.add(new java.math.BigInteger("99999999999999999999"));
+        call(admin, "autowonder.batch_add_workitem_watchers", Map.of("id", 128L, "userIds", raw));
+        verify(management).batchAddWatchers(128L, WORKSPACE_ID, raw, USER_ID);
+        call(admin, "autowonder.batch_remove_workitem_watchers", Map.of("id", 128L, "userIds", raw));
+        verify(management).batchRemoveWatchers(128L, WORKSPACE_ID, raw, USER_ID);
+    }
+
+    @Test
+    void batchWatcherToolsRejectNonNativeWorkitemIdWithoutCallingService() {
+        var management = mock(com.aliyun.autowonder.workitem.WorkitemWatcherManagementService.class);
+        ReflectionTestUtils.setField(service, "watcherManagement", management);
+        var admin = principal(WorkspaceAccessLevel.ADMIN);
+        // 批量分支的工单 id 在原始值上严格取正原生整数：128.9 不得经全局 lng 截断成 128 后操作错误工单；
+        // 数字字符串/布尔/越界整数/非正数（0、-1、BigInteger.ZERO）同样拒绝，错误码沿用本地既有契约
+        // 27003（MCP 参数不合法），且一律不触达共享服务
+        for (Object badId : List.of(128.9, "128", true, new java.math.BigInteger("99999999999999999999"),
+                0L, -1L, java.math.BigInteger.ZERO)) {
+            BizException failure = assertThrows(BizException.class,
+                    () -> call(admin, "autowonder.batch_add_workitem_watchers",
+                            Map.of("id", badId, "userIds", List.of(77L))));
+            assertEquals(ErrorCode.MCP_TOOL_ARGUMENT_INVALID.getCode(), failure.getCode());
+            BizException removeFailure = assertThrows(BizException.class,
+                    () -> call(admin, "autowonder.batch_remove_workitem_watchers",
+                            Map.of("id", badId, "userIds", List.of(77L))));
+            assertEquals(ErrorCode.MCP_TOOL_ARGUMENT_INVALID.getCode(), removeFailure.getCode());
+        }
+        verifyNoInteractions(management);
+    }
+
+    @Test
+    void singleWatcherToolsRejectNonNativeIdsWithoutCallingService() {
+        var management = mock(com.aliyun.autowonder.workitem.WorkitemWatcherManagementService.class);
+        ReflectionTestUtils.setField(service, "watcherManagement", management);
+        var watchers = mock(com.aliyun.autowonder.workitem.WorkitemWatcherService.class);
+        ReflectionTestUtils.setField(service, "workitemWatchers", watchers);
+        var admin = principal(WorkspaceAccessLevel.ADMIN);
+        // 单人工具的 id 与 userId 同样只收原生正整数：128.9 不得截断成 128 后操作错误的工单或错的人，
+        // 数字字符串/布尔/越界/非正数统一按 27003 拒绝，且一律不触达共享服务
+        for (Object bad : List.of(128.9, "128", true, new java.math.BigInteger("99999999999999999999"), 0L, -1L)) {
+            assertEquals(ErrorCode.MCP_TOOL_ARGUMENT_INVALID.getCode(), assertThrows(BizException.class,
+                    () -> call(admin, "autowonder.add_workitem_watcher",
+                            Map.of("id", bad, "userId", 77L))).getCode());
+            assertEquals(ErrorCode.MCP_TOOL_ARGUMENT_INVALID.getCode(), assertThrows(BizException.class,
+                    () -> call(admin, "autowonder.add_workitem_watcher",
+                            Map.of("id", 128L, "userId", bad))).getCode());
+            assertEquals(ErrorCode.MCP_TOOL_ARGUMENT_INVALID.getCode(), assertThrows(BizException.class,
+                    () -> call(admin, "autowonder.remove_workitem_watcher",
+                            Map.of("id", 128L, "userId", bad))).getCode());
+            assertEquals(ErrorCode.MCP_TOOL_ARGUMENT_INVALID.getCode(), assertThrows(BizException.class,
+                    () -> call(admin, "autowonder.list_workitem_watchers", Map.of("id", bad))).getCode());
+        }
+        verifyNoInteractions(management, watchers);
+    }
+
+    @Test
     void chiefPlansNeverGrantDirectWriteOrCrossWorkspaceAccess() {
         var plans=mock(com.aliyun.autowonder.conversation.PlatformActionPlanService.class);
         ReflectionTestUtils.setField(service,"platformPlans",plans);
@@ -573,6 +682,7 @@ class McpToolServiceTest {
                 "autowonder.list_workitems",
                 "autowonder.get_workitem",
                 "autowonder.list_workitem_comments",
+                "autowonder.list_workitem_watchers",
                 "autowonder.list_workitem_documents",
                 "autowonder.list_status_templates",
                 "autowonder.get_status_template",
@@ -628,9 +738,11 @@ class McpToolServiceTest {
                         .collect(java.util.stream.Collectors.toSet());
 
         // 执行器运维工具随角色只读域治理（READ_WRITE）；令牌与启动命令携带凭证语义，仍要求 ADMIN；
-        // 项目分类维护要求 ADMIN。
+        // 项目分类维护要求 ADMIN；代管他人关注（添加/移除）同样收在管理员边界内。
         Set<String> adminOnlyTools = Set.of(
                 "autowonder.list_workitem_executions",
+                "autowonder.add_workitem_watcher", "autowonder.remove_workitem_watcher",
+                "autowonder.batch_add_workitem_watchers", "autowonder.batch_remove_workitem_watchers",
                 "autowonder.create_category", "autowonder.update_category", "autowonder.delete_category",
                 "autowonder.get_executor_token",
                 "autowonder.build_executor_launch_command");
@@ -638,8 +750,8 @@ class McpToolServiceTest {
         hiddenFromReadWrite.removeAll(readWriteCatalog);
         assertEquals(adminOnlyTools, hiddenFromReadWrite);
         assertEquals(fullCatalog, adminCatalog);
-        assertEquals(113, fullCatalog.size());
-        assertEquals(107, readWriteCatalog.size());
+        assertEquals(118, fullCatalog.size());
+        assertEquals(108, readWriteCatalog.size());
     }
 
     @Test

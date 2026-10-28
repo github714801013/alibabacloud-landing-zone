@@ -94,6 +94,7 @@ import com.aliyun.autowonder.workitem.dto.CreateWorkitemRequest;
 import com.aliyun.autowonder.workitem.dto.WorkitemVO;
 import org.springframework.stereotype.Service;
 
+import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -125,6 +126,11 @@ public class McpToolService {
     private static final String ASSIGN_WORKITEM = "autowonder.assign_workitem";
     private static final String ADD_WORKITEM_COMMENT = "autowonder.add_workitem_comment";
     private static final String LIST_WORKITEM_COMMENTS = "autowonder.list_workitem_comments";
+    private static final String ADD_WORKITEM_WATCHER = "autowonder.add_workitem_watcher";
+    private static final String REMOVE_WORKITEM_WATCHER = "autowonder.remove_workitem_watcher";
+    private static final String LIST_WORKITEM_WATCHERS = "autowonder.list_workitem_watchers";
+    private static final String BATCH_ADD_WORKITEM_WATCHERS = "autowonder.batch_add_workitem_watchers";
+    private static final String BATCH_REMOVE_WORKITEM_WATCHERS = "autowonder.batch_remove_workitem_watchers";
     private static final String UPLOAD_WORKITEM_DOCUMENT = "autowonder.upload_workitem_document";
     private static final String WORKITEM_CLI_UPLOAD_TOKEN = "autowonder.workitem_cli_upload_token";
     private static final String WORKITEM_CLI_DOWNLOAD_TOKEN = "autowonder.workitem_cli_download_token";
@@ -304,6 +310,16 @@ public class McpToolService {
                             workspaceTool(WorkspaceAccessLevel.READ_WRITE)),
                     Map.entry(LIST_WORKITEM_COMMENTS,
                             workspaceTool(WorkspaceAccessLevel.READ_ONLY)),
+                    Map.entry(ADD_WORKITEM_WATCHER,
+                            workspaceTool(WorkspaceAccessLevel.ADMIN)),
+                    Map.entry(REMOVE_WORKITEM_WATCHER,
+                            workspaceTool(WorkspaceAccessLevel.ADMIN)),
+                    Map.entry(LIST_WORKITEM_WATCHERS,
+                            workspaceTool(WorkspaceAccessLevel.READ_ONLY)),
+                    Map.entry(BATCH_ADD_WORKITEM_WATCHERS,
+                            workspaceTool(WorkspaceAccessLevel.ADMIN)),
+                    Map.entry(BATCH_REMOVE_WORKITEM_WATCHERS,
+                            workspaceTool(WorkspaceAccessLevel.ADMIN)),
                     Map.entry(UPLOAD_WORKITEM_DOCUMENT,
                             workspaceTool(WorkspaceAccessLevel.READ_WRITE)),
                     Map.entry(WORKITEM_CLI_UPLOAD_TOKEN,
@@ -515,6 +531,11 @@ public class McpToolService {
                     Map.entry(ASSIGN_WORKITEM, WorkspaceDomain.WORKITEM),
                     Map.entry(ADD_WORKITEM_COMMENT, WorkspaceDomain.WORKITEM),
                     Map.entry(LIST_WORKITEM_COMMENTS, WorkspaceDomain.WORKITEM),
+                    Map.entry(ADD_WORKITEM_WATCHER, WorkspaceDomain.WORKITEM),
+                    Map.entry(REMOVE_WORKITEM_WATCHER, WorkspaceDomain.WORKITEM),
+                    Map.entry(LIST_WORKITEM_WATCHERS, WorkspaceDomain.WORKITEM),
+                    Map.entry(BATCH_ADD_WORKITEM_WATCHERS, WorkspaceDomain.WORKITEM),
+                    Map.entry(BATCH_REMOVE_WORKITEM_WATCHERS, WorkspaceDomain.WORKITEM),
                     Map.entry(UPLOAD_WORKITEM_DOCUMENT, WorkspaceDomain.ARTIFACT),
                     Map.entry(WORKITEM_CLI_UPLOAD_TOKEN, WorkspaceDomain.ARTIFACT),
                     Map.entry(WORKITEM_CLI_DOWNLOAD_TOKEN, WorkspaceDomain.ARTIFACT),
@@ -640,6 +661,8 @@ public class McpToolService {
     private final WorkitemService workitemService;
     @org.springframework.beans.factory.annotation.Autowired
     private com.aliyun.autowonder.workitem.WorkitemWatcherService workitemWatchers;
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.aliyun.autowonder.workitem.WorkitemWatcherManagementService watcherManagement;
     private final GuidanceService guidanceService;
     private final SkillService skillService;
     private final SkillPackageService skillPackageService;
@@ -881,6 +904,49 @@ public class McpToolService {
                                         "Optional target real user ids mentioned in this comment."))),
                 tool(LIST_WORKITEM_COMMENTS, "List comments on an AutoWonder workitem.",
                         schema(required("id"), prop("id", "integer"))),
+                tool(ADD_WORKITEM_WATCHER, "Workspace ADMIN adds another real user as a watcher of a workitem. "
+                                + "The target must be an active member of this workspace with a normal account, and the "
+                                + "workitem must belong to this workspace. Adding an existing watcher is idempotent. "
+                                + "Returns the target user's watch state and the total watcher count.",
+                        schema(required("id", "userId"),
+                                prop("id", "integer", "Required. Native positive integer workitem id to watch."),
+                                prop("userId", "integer", "Required. Native positive integer target user id added as watcher."))),
+                tool(REMOVE_WORKITEM_WATCHER, "Workspace ADMIN removes a watcher from a workitem. "
+                                + "The target must be an active member of this workspace with a normal account, "
+                                + "the same rule as add. Removing a non-existent watch is idempotent and returns "
+                                + "the unwatched state.",
+                        schema(required("id", "userId"),
+                                prop("id", "integer", "Required. Native positive integer workitem id to unwatch."),
+                                prop("userId", "integer", "Required. Native positive integer target user id removed from watchers."))),
+                tool(LIST_WORKITEM_WATCHERS, "List the valid watchers of an AutoWonder workitem in this workspace. "
+                                + "Users who lost workspace access are excluded from the result.",
+                        schema(required("id"), prop("id", "integer", "Required. Native positive integer workitem id."))),
+                tool(BATCH_ADD_WORKITEM_WATCHERS, "Workspace ADMIN adds multiple real users as watchers of a "
+                                + "workitem in one batch. The whole batch is pre-checked first (workitem belongs to "
+                                + "this workspace; every target is an active member with a normal account) and only "
+                                + "then applied atomically in one transaction; any failure rolls back the entire "
+                                + "batch. Duplicate ids are deduplicated; an empty, missing or oversized (more than 100 "
+                                + "entries) userIds list is rejected. The result describes this batch only; batch add and "
+                                + "batch remove are two separate transactions, never a joint one.",
+                        schema(required("id", "userIds"),
+                                prop("id", "integer", "Required. Workitem id; must belong to this workspace."),
+                                arrayProp("userIds", Map.of("type", "integer"),
+                                        "Required. Non-empty array of at most 100 native JSON integers, each "
+                                                + "1..9223372036854775807; decimals, numeric strings, booleans, null, "
+                                                + "objects or nested arrays are rejected as invalid parameters; duplicates "
+                                                + "are processed once."))),
+                tool(BATCH_REMOVE_WORKITEM_WATCHERS, "Workspace ADMIN removes multiple watchers from a workitem in "
+                                + "one batch. Same all-or-nothing pre-check and single-transaction semantics as "
+                                + "batch_add_workitem_watchers. A target that is not an active member of this "
+                                + "workspace is rejected, consistent with the single-user remove endpoint; skipping "
+                                + "the call is the caller's job when the id set is already empty.",
+                        schema(required("id", "userIds"),
+                                prop("id", "integer", "Required. Workitem id; must belong to this workspace."),
+                                arrayProp("userIds", Map.of("type", "integer"),
+                                        "Required. Non-empty array of at most 100 native JSON integers to remove, each "
+                                                + "1..9223372036854775807; decimals, numeric strings, booleans, null, "
+                                                + "objects or nested arrays are rejected as invalid parameters; "
+                                                + "duplicates processed once."))),
                 tool(UPLOAD_WORKITEM_DOCUMENT, "DEPRECATED: Do not send file content or Base64 through MCP. "
                                 + "Use the AutoWonder CLI for every requirement/design attachment regardless of size. "
                                 + "Mint an upload token with autowonder.workitem_cli_upload_token and run the command it returns, e.g.: "
@@ -2152,6 +2218,21 @@ public class McpToolService {
                 }
                 yield workitemService.listComments(id);
             }
+            // 关注人代管的五个工具统一只接受原始值上的正原生整数：128.9 不得经全局 lng 截断成 128
+            // 后操作错误的工单或错误的人；批量分支另把原始 userIds 直接透传共享服务严格校验，
+            // 不经 toBean 的 Jackson 强转（否则 77.9 会被截断成 77、"77" 会被转成 77 并实际写入）
+            case ADD_WORKITEM_WATCHER -> watcherManagement.addWatcher(requiredNativeLong(safeArgs, "id"),
+                    context.workspaceId(), requiredNativeLong(safeArgs, "userId"), context.userId());
+            case REMOVE_WORKITEM_WATCHER -> watcherManagement.removeWatcher(requiredNativeLong(safeArgs, "id"),
+                    context.workspaceId(), requiredNativeLong(safeArgs, "userId"), context.userId());
+            case LIST_WORKITEM_WATCHERS -> workitemWatchers.listWatchers(requiredNativeLong(safeArgs, "id"),
+                    context.workspaceId());
+            case BATCH_ADD_WORKITEM_WATCHERS -> watcherManagement.batchAddWatchers(
+                    requiredNativeLong(safeArgs, "id"),
+                    context.workspaceId(), safeArgs.get("userIds"), context.userId());
+            case BATCH_REMOVE_WORKITEM_WATCHERS -> watcherManagement.batchRemoveWatchers(
+                    requiredNativeLong(safeArgs, "id"),
+                    context.workspaceId(), safeArgs.get("userIds"), context.userId());
             case UPLOAD_WORKITEM_DOCUMENT -> {
                 long id = requiredLong(safeArgs, "id");
                 if (scheduledTaskDocumentSource(safeArgs)) {
@@ -3652,6 +3733,9 @@ public class McpToolService {
             case DELETE_WORKITEM -> schema(prop("deleted", "boolean", "Whether the workitem was deleted."));
             case ADD_WORKITEM_COMMENT -> commentSchema();
             case LIST_WORKITEM_COMMENTS -> listOutputSchema(commentSchema());
+            case ADD_WORKITEM_WATCHER, REMOVE_WORKITEM_WATCHER -> watchStateSchema();
+            case LIST_WORKITEM_WATCHERS -> listOutputSchema(watcherParticipantSchema());
+            case BATCH_ADD_WORKITEM_WATCHERS, BATCH_REMOVE_WORKITEM_WATCHERS -> watchBatchResultSchema();
             case UPLOAD_WORKITEM_DOCUMENT -> artifactSchema();
             case WORKITEM_CLI_UPLOAD_TOKEN -> schema(
                     prop("token", "string", "The awupload_ token; pass it to the CLI via AUTOWONDER_UPLOAD_TOKEN or --token."),
@@ -3869,6 +3953,34 @@ public class McpToolService {
                 prop("authorRef", "integer", "Author reference id."),
                 prop("contentMd", "string", "Markdown comment content."),
                 timestampProp("gmtCreate", "Creation time."));
+    }
+
+    private Map<String, Object> watchStateSchema() {
+        return schema(required("workitemId", "watched", "watcherCount"),
+                prop("workitemId", "integer", "Workitem id."),
+                prop("watched", "boolean", "Whether the target user watches this workitem after the operation."),
+                prop("watcherCount", "integer", "Total valid watchers after the operation."));
+    }
+
+    private Map<String, Object> watcherParticipantSchema() {
+        return schema(required("userId", "targetType", "role", "roleName"),
+                prop("userId", "integer", "Watcher user id."),
+                prop("targetType", "string", "Always HUMAN: watchers are real users only."),
+                nullableProp("name", "string", "Display name of the watcher."),
+                prop("displayId", "string", "Display id, the user id as text."),
+                prop("role", "string", "Role key, e.g. HUMAN."),
+                prop("roleName", "string", "Localized role label for watchers."),
+                prop("isAgent", "boolean", "Always false for real users."),
+                nullableProp("status", "string", "Account status snapshot of the watcher."));
+    }
+
+    private Map<String, Object> watchBatchResultSchema() {
+        return schema(required("workitemId", "userIds", "watched", "watcherCount"),
+                prop("workitemId", "integer", "Workitem id."),
+                primitiveArrayProp("userIds", "integer",
+                        "Deduplicated target ids processed in this batch."),
+                prop("watched", "boolean", "Target watch state of this operation: true for batch add, false for batch remove."),
+                prop("watcherCount", "integer", "Valid watcher total after this batch; per-batch result, not a joint transaction across batches."));
     }
 
     private Map<String, Object> artifactSchema() {
@@ -4762,6 +4874,35 @@ public class McpToolService {
             throw new BizException(ErrorCode.MCP_TOOL_ARGUMENT_INVALID);
         }
         return value;
+    }
+
+    /**
+     * 关注人代管工具专用（含单人与批量）的 id 严格取值：只接受原始值中的正原生整数（Integer/Long
+     * 与数值恰在 long 范围内的正 BigInteger），小数、数字字符串、布尔、null、对象、越界与非正数一律
+     * 按 MCP_TOOL_ARGUMENT_INVALID（27003）拒绝——不走全局 lng 的 Number.longValue 截断，防止
+     * 128.9→128 后操作错误的工单或错误的人。其他旧接口与全局解析保持不变。
+     */
+    private long requiredNativeLong(Map<String, Object> args, String key) {
+        Object value = args.get(key);
+        long id;
+        if (value instanceof Integer intValue) {
+            id = intValue;
+        } else if (value instanceof Long longValue) {
+            id = longValue;
+        } else if (value instanceof BigInteger bigValue) {
+            try {
+                // longValueExact：越界抛 ArithmeticException，绝不截断或回绕
+                id = bigValue.longValueExact();
+            } catch (ArithmeticException overflow) {
+                throw new BizException(ErrorCode.MCP_TOOL_ARGUMENT_INVALID);
+            }
+        } else {
+            throw new BizException(ErrorCode.MCP_TOOL_ARGUMENT_INVALID);
+        }
+        if (id <= 0) {
+            throw new BizException(ErrorCode.MCP_TOOL_ARGUMENT_INVALID);
+        }
+        return id;
     }
 
     private int integer(Map<String, Object> args, String key, int defaultValue) {

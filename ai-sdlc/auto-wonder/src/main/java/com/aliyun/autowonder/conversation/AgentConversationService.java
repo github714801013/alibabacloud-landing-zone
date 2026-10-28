@@ -146,16 +146,26 @@ public class AgentConversationService {
     @Transactional
     public void submitTurn(Long tenantId, Long agentId, String channel, String channelConversationId,
             String content, String externalMsgId, String sourceContext) {
+        submitTurn(tenantId, agentId, channel, channelConversationId, content, externalMsgId,
+                sourceContext, null);
+    }
+
+    @Transactional
+    public void submitTurn(Long tenantId, Long agentId, String channel, String channelConversationId,
+            String content, String externalMsgId, String sourceContext, Long speakerUserId) {
+        if (speakerUserId != null && speakerUserId <= 0) {
+            throw new BizException(ErrorCode.UNAUTHORIZED);
+        }
         PendingDispatch dispatch = withConversationLock(
                 logicalConversationLockName(tenantId, channel, channelConversationId, agentId),
                 () -> submitTurnLocked(tenantId, agentId, channel, channelConversationId, content,
-                        externalMsgId, sourceContext));
+                        externalMsgId, sourceContext, speakerUserId));
         sendAfterCommitOrNow(dispatch);
     }
 
     private PendingDispatch submitTurnLocked(Long tenantId, Long agentId, String channel,
             String channelConversationId, String content, String externalMsgId,
-            String sourceContext) {
+            String sourceContext, Long speakerUserId) {
         if (externalMsgId != null && turnDao.findByExternalMsgId(tenantId, externalMsgId) != null) {
             return null;
         }
@@ -163,6 +173,7 @@ public class AgentConversationService {
         if (conv != null) {
             AgentConversationDO existingConv = conv;
             return withConversationLock(conversationLockName(tenantId, existingConv.getId()), () -> {
+                bindClarificationOwner(existingConv, speakerUserId);
                 if (turnDao.findProcessingInbound(tenantId, existingConv.getId()) != null) {
                     insertInboundTurn(tenantId, existingConv.getId(), content, externalMsgId,
                             sourceContext, STATUS_QUEUED);
@@ -173,12 +184,25 @@ public class AgentConversationService {
             });
         }
         return createConversationAndFirstDispatch(tenantId, agentId, channel, channelConversationId,
-                content, externalMsgId, sourceContext);
+                content, externalMsgId, sourceContext, speakerUserId);
+    }
+
+    private void bindClarificationOwner(AgentConversationDO conv, Long speakerUserId) {
+        if (!WorkitemClarificationConversationService.CHANNEL.equals(conv.getChannel())
+                || conv.getOwnerUserId() != null || speakerUserId == null) {
+            return;
+        }
+        if (convDao.bindClarificationOwnerIfAbsent(conv.getTenantId(), conv.getId(), speakerUserId) == 1) {
+            conv.setOwnerUserId(speakerUserId);
+        } else {
+            // 当前读避开旧事务快照，不能把条件更新失败的一方当成归属人。
+            conv.setOwnerUserId(convDao.findClarificationOwnerForUpdate(conv.getTenantId(), conv.getId()));
+        }
     }
 
     private PendingDispatch createConversationAndFirstDispatch(Long tenantId, Long agentId,
             String channel, String channelConversationId, String content, String externalMsgId,
-            String sourceContext) {
+            String sourceContext, Long speakerUserId) {
         ExecutorSelection selection = selectExecutor(tenantId, agentId, null);
         Long executorId = selection.executorId();
         if (executorId == null) {
@@ -191,6 +215,9 @@ public class AgentConversationService {
         conv.setAgentId(agentId);
         conv.setAgentVersionId(identity.agentVersionId());
         conv.setChannel(channel);
+        if (WorkitemClarificationConversationService.CHANNEL.equals(channel)) {
+            conv.setOwnerUserId(speakerUserId);
+        }
         conv.setChannelConversationId(channelConversationId);
         conv.setExecutorId(executorId);
         conv.setStatus("ACTIVE");
@@ -1110,6 +1137,10 @@ public class AgentConversationService {
 
     private AgentIdentitySnapshot refreshConversationIdentity(Long tenantId,
             AgentConversationDO conv, Long agentVersionId) {
+        if (WorkitemClarificationConversationService.CHANNEL.equals(conv.getChannel())
+                && conv.getOwnerUserId() == null) {
+            conv.setOwnerUserId(convDao.findClarificationOwnerForUpdate(tenantId, conv.getId()));
+        }
         AgentIdentitySnapshot identity = resolveIdentity(agentVersionId, conv.getChannel(),
                 conv.getExecutorId());
         if (!identity.agentVersionId().equals(conv.getAgentVersionId())) {

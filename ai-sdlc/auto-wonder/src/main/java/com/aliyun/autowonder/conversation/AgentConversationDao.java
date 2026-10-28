@@ -15,6 +15,11 @@ public interface AgentConversationDao {
 
     AgentConversationDO findById(@Param("tenantId") Long tenantId, @Param("id") Long id);
 
+    int bindClarificationOwnerIfAbsent(@Param("tenantId") Long tenantId, @Param("id") Long id,
+            @Param("ownerUserId") Long ownerUserId);
+
+    Long findClarificationOwnerForUpdate(@Param("tenantId") Long tenantId, @Param("id") Long id);
+
     int updateCliSessionRef(@Param("tenantId") Long tenantId, @Param("id") Long id,
             @Param("cliSessionRef") String cliSessionRef);
 
