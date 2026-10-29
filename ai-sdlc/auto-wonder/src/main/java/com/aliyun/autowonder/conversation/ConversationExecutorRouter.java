@@ -29,34 +29,37 @@ public class ConversationExecutorRouter {
     }
     /** 严格使用指定执行器：绑定机器不可用（离线/满容量/缺特性）时返回 null，不回落到其他机器。 */
     public Long selectStrict(long tenantId, long agentId, long agentVersionId, long executorId) {
-        var bindings = refs.listByVersion(tenantId, agentVersionId);
+        String required = requiredFeatures(tenantId, agentVersionId, false);
         try {
-            return bindings == null || bindings.isEmpty()
+            return required == null
                     ? selector.selectStrict(agentId, executorId)
-                    : selector.selectStrict(agentId, executorId,
-                            ExecutorProtocolFeatures.AGENT_ENVIRONMENT_VARIABLES_V1);
+                    : selector.selectStrict(agentId, executorId, required);
         } catch (ExecutorProtocolCompatibilityException incompatible) {
             return null;
         }
     }
 
     public Long selectPlatform(long tenantId, long agentId, long agentVersionId, Long preferredExecutorId) {
-        var bindings = refs.listByVersion(tenantId, agentVersionId);
-        String required = ConversationProtocolFeatures.TURN_EVENT;
-        if (bindings != null && !bindings.isEmpty()) required += "," + ExecutorProtocolFeatures.AGENT_ENVIRONMENT_VARIABLES_V1;
-        return selector.select(agentId, preferredExecutorId, required);
+        return selector.select(agentId, preferredExecutorId,
+                requiredFeatures(tenantId, agentVersionId, true));
     }
 
-    /** Same route requirements as selection, without permission to dispatch. */
-    public boolean canQueueOnOwner(long tenantId, long agentId, long agentVersionId,
-            Long ownerExecutorId, boolean platform) {
+    /** 选机所需的协议特性（本地二次开发：会话均衡选机复用同一套路由要求）。 */
+    public String requiredFeatures(long tenantId, long agentVersionId, boolean platform) {
         var bindings = refs.listByVersion(tenantId, agentVersionId);
         String required = platform ? ConversationProtocolFeatures.TURN_EVENT : null;
         if (bindings != null && !bindings.isEmpty()) {
             required = required == null ? ExecutorProtocolFeatures.AGENT_ENVIRONMENT_VARIABLES_V1
                     : required + "," + ExecutorProtocolFeatures.AGENT_ENVIRONMENT_VARIABLES_V1;
         }
-        return selector.canQueueOnOwner(agentId, ownerExecutorId, required);
+        return required;
+    }
+
+    /** Same route requirements as selection, without permission to dispatch. */
+    public boolean canQueueOnOwner(long tenantId, long agentId, long agentVersionId,
+            Long ownerExecutorId, boolean platform) {
+        return selector.canQueueOnOwner(agentId, ownerExecutorId,
+                requiredFeatures(tenantId, agentVersionId, platform));
     }
 
 }

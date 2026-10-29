@@ -26,12 +26,14 @@ class ConversationTurnDisplayTest {
 
     @ParameterizedTest
     @ValueSource(strings = {"CANCELED", "EMPTY_OUTPUT", "REPLY_FAILED", "DISPATCH_REPLY_FAILED",
-            "DISPATCH_FAILED", "EXECUTOR_COMPATIBILITY_FAILED", "DELIVERY_ATTEMPTS_EXHAUSTED"})
-    void allSevenFiniteEntriesRoundtripWithExactRawArguments(String code) {
+            "DISPATCH_FAILED", "EXECUTOR_COMPATIBILITY_FAILED", "DELIVERY_ATTEMPTS_EXHAUSTED",
+            "EXECUTOR_BUSY"})
+    void allFiniteEntriesRoundtripWithExactRawArguments(String code) {
         boolean content = java.util.Set.of("CANCELED", "EMPTY_OUTPUT", "REPLY_FAILED", "DISPATCH_REPLY_FAILED").contains(code);
         String raw = "\n<b>响应已终止</b> **raw** {{detail}} ' &\r";
         Map<String, Object> args = "DELIVERY_ATTEMPTS_EXHAUSTED".equals(code) ? Map.of("attempts", 3)
-                : java.util.Set.of("CANCELED", "EMPTY_OUTPUT").contains(code) ? Map.of() : Map.of("detail", raw);
+                : java.util.Set.of("CANCELED", "EMPTY_OUTPUT", "EXECUTOR_BUSY").contains(code) ? Map.of()
+                : Map.of("detail", raw);
         String source = ConversationTurnDisplay.source("WORKITEM_CLARIFICATION", content ? "content" : "error", code, args);
         var projection = ConversationTurnDisplay.project("PLATFORM_ASSISTANT", source);
         assertNotNull(projection);

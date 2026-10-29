@@ -79,6 +79,7 @@ public class AgentConversationService {
     private ClarificationAttachmentService clarificationAttachmentService;
     private com.aliyun.autowonder.aiusage.AgentConversationUsageService conversationUsageService;
     private ImReplyDeliveryService replyDeliveryService;
+    private ConversationAdmissionService admissionService;
     private final Map<Long, ScheduledFuture<?>> pendingCancels = new ConcurrentHashMap<>();
     private final ScheduledExecutorService cancelTimeoutScheduler =
             Executors.newSingleThreadScheduledExecutor(runnable -> {
@@ -269,6 +270,11 @@ public class AgentConversationService {
         this.replyDeliveryService = replyDeliveryService;
     }
 
+    @Autowired(required = false)
+    void setAdmissionService(ConversationAdmissionService admissionService) {
+        this.admissionService = admissionService;
+    }
+
     void setCancelAckTimeoutSeconds(long cancelAckTimeoutSeconds) {
         this.cancelAckTimeoutSeconds = cancelAckTimeoutSeconds;
     }
@@ -330,11 +336,13 @@ public class AgentConversationService {
                 if (turnDao.findProcessingInbound(tenantId, existingConv.getId()) != null) {
                     insertInboundTurn(tenantId, existingConv.getId(), content, externalMsgId,
                             sourceContext, STATUS_QUEUED, submittedUserId);
+                    recordQueueDepth(existingConv, 1L);
                     return null;
                 }
                 if (turnDao.findNextQueuedInbound(tenantId, existingConv.getId()) != null) {
                     insertInboundTurn(tenantId, existingConv.getId(), content, externalMsgId,
                             sourceContext, STATUS_QUEUED, submittedUserId);
+                    recordQueueDepth(existingConv, 1L);
                     return nextQueuedDispatch(tenantId, existingConv);
                 }
                 return insertAndPrepareDispatch(tenantId, agentId, content, externalMsgId,
@@ -361,8 +369,7 @@ public class AgentConversationService {
     private PendingDispatch createConversationAndFirstDispatch(Long tenantId, Long agentId,
             String channel, String channelConversationId, String content, String externalMsgId,
             String sourceContext, Long submittedUserId) {
-        ExecutorSelection selection = trySelectExecutor(tenantId, agentId, null,
-                usesPlatformRouting(channel));
+        ExecutorSelection selection = trySelectNewConversation(tenantId, agentId, channel);
         if (selection == null) {
             throw new IllegalStateException("no online executor for agent " + agentId);
         }
@@ -385,6 +392,7 @@ public class AgentConversationService {
         conv.setStatus("ACTIVE");
         conv.setLastTurnAt(new Date());
         convDao.insert(conv);
+        recordConversationBinding(tenantId, agentId, executorId);
         AgentConversationTurnDO turn = insertInboundTurn(tenantId, conv.getId(), content,
                 externalMsgId, sourceContext, STATUS_PROCESSING, submittedUserId);
         if (!recordProcessingDispatchAttempt(tenantId, conv.getId(), turn.getId())) {
@@ -396,8 +404,11 @@ public class AgentConversationService {
 
     private PendingDispatch insertAndPrepareDispatch(Long tenantId, Long agentId, String content,
             String externalMsgId, String sourceContext, AgentConversationDO conv, Long submittedUserId) {
-        ExecutorSelection selection = trySelectExecutor(tenantId, conv.getAgentId(), conv.getExecutorId(),
-                usesPlatformRouting(conv.getChannel()));
+        ExecutorSelection selection = WorkitemClarificationConversationService.CHANNEL.equals(conv.getChannel())
+                && conv.getExecutorId() != null
+                ? trySelectBoundExecutor(tenantId, conv.getAgentId(), conv.getExecutorId())
+                : trySelectExecutor(tenantId, conv.getAgentId(), conv.getExecutorId(),
+                        usesPlatformRouting(conv.getChannel()));
         if (selection == null) {
             // Only authenticated web submissions to an already persisted conversation may
             // wait for capacity. Keep legacy IM and new logical-conversation admission strict.
@@ -411,6 +422,7 @@ public class AgentConversationService {
                                 usesPlatformRouting(conv.getChannel()))) {
                     insertInboundTurn(tenantId, conv.getId(), content, externalMsgId,
                             sourceContext, STATUS_QUEUED, submittedUserId);
+                    recordQueueDepth(conv, 1L);
                     return null;
                 }
             }
@@ -968,6 +980,9 @@ public class AgentConversationService {
         if (finalized != 1) {
             return null;
         }
+        if (STATUS_QUEUED.equals(turn.getStatus())) {
+            recordQueueDepth(conv, -1L);
+        }
         if (questionExpiryStop(turn) != null && conversationElicitationService != null) {
             var settled = conversationElicitationService.settlePendingForTurn(tenantId, conv.getId(), turnId);
             runAfterCommit(() -> conversationElicitationService.notifySystemStopped(settled));
@@ -1140,20 +1155,32 @@ public class AgentConversationService {
         }
         ExecutorSelection selection;
         try {
-            selection = trySelectExecutor(tenantId, conv.getAgentId(), conv.getExecutorId(),
-                    usesPlatformRouting(conv.getChannel()));
+            // 澄清会话硬绑自身执行器：排队重投不换机。
+            selection = WorkitemClarificationConversationService.CHANNEL.equals(conv.getChannel())
+                    && conv.getExecutorId() != null
+                    ? trySelectBoundExecutor(tenantId, conv.getAgentId(), conv.getExecutorId())
+                    : trySelectExecutor(tenantId, conv.getAgentId(), conv.getExecutorId(),
+                            usesPlatformRouting(conv.getChannel()));
         } catch (ExecutorProtocolCompatibilityException compatibilityFailure) {
             deferSelectionCompatibilityFailure(tenantId, conv, next, STATUS_QUEUED,
                     compatibilityFailure);
             return null;
         }
         if (selection == null) {
+            // 等待空闲槽位超过上限：轮次失败并提示执行器繁忙；等待上一轮结束的排队不在此列。
+            if (admissionService != null && admissionService.queueWaitExpired(next.getId())) {
+                failQueuedTurnForBusy(tenantId, conv, next);
+            }
             return null;
         }
         int rows = turnDao.updateStatusIfCurrent(tenantId, next.getId(), STATUS_QUEUED,
                 STATUS_PROCESSING, null);
         if (rows != 1) {
             return null;
+        }
+        recordQueueDepth(conv, -1L);
+        if (admissionService != null) {
+            admissionService.clearQueueWait(next.getId());
         }
         if (!recordProcessingDispatchAttempt(tenantId, conv.getId(), next.getId())) {
             return null;
@@ -1674,12 +1701,73 @@ public class AgentConversationService {
                 : new ExecutorSelection(executorId, agent.getOnlineVersionId());
     }
 
+    /** 新建会话选机：优先会话均衡准入，降级或没有候选时退回既有轮询。 */
+    private ExecutorSelection trySelectNewConversation(Long tenantId, Long agentId, String channel) {
+        AgentDO agent = agentDao.findById(agentId);
+        if (agent == null || agent.getOnlineVersionId() == null) {
+            throw new IllegalStateException("agent has no online version: " + agentId);
+        }
+        boolean platform = usesPlatformRouting(channel);
+        Long executorId = admissionService == null ? null
+                : admissionService.selectNewConversation(tenantId, agentId,
+                        agent.getOnlineVersionId(), platform);
+        if (executorId == null) {
+            executorId = platform
+                    ? executorRouter.selectPlatform(tenantId, agentId, agent.getOnlineVersionId(), null)
+                    : executorRouter.select(tenantId, agentId, agent.getOnlineVersionId(), null);
+        }
+        return executorId == null ? null
+                : new ExecutorSelection(executorId, agent.getOnlineVersionId());
+    }
+
+    private void recordConversationBinding(Long tenantId, Long agentId, Long executorId) {
+        if (admissionService != null && tenantId != null && agentId != null && executorId != null) {
+            admissionService.recordBinding(tenantId, agentId, executorId);
+        }
+    }
+
+    /** 队列深度旁路计数：入队 +1、出队 -1，计数异常不影响轮次状态。 */
+    private void recordQueueDepth(AgentConversationDO conv, long delta) {
+        if (admissionService != null && conv != null && conv.getTenantId() != null
+                && conv.getAgentId() != null && conv.getExecutorId() != null) {
+            admissionService.recordQueueDepth(conv.getTenantId(), conv.getAgentId(),
+                    conv.getExecutorId(), delta);
+        }
+    }
+
+    /** 排队超时：轮次标记失败并呈现「执行器繁忙」，同时释放队列深度与起算点。 */
+    private void failQueuedTurnForBusy(Long tenantId, AgentConversationDO conv,
+            AgentConversationTurnDO turn) {
+        int rows = updateOwnedFailure(tenantId, conv, turn.getId(), STATUS_QUEUED, null,
+                "executor busy: queued turn exceeded queue timeout", "EXECUTOR_BUSY",
+                java.util.Map.of());
+        if (rows == 1) {
+            admissionService.clearQueueWait(turn.getId());
+        }
+    }
+
+    /** 严格使用会话绑定的执行器：不可用返回 null，不回落其他机器。 */
+    private ExecutorSelection trySelectBoundExecutor(Long tenantId, Long agentId, long executorId) {
+        AgentDO agent = agentDao.findById(agentId);
+        if (agent == null || agent.getOnlineVersionId() == null) {
+            throw new IllegalStateException("agent has no online version: " + agentId);
+        }
+        Long selected = executorRouter.selectStrict(tenantId, agentId, agent.getOnlineVersionId(),
+                executorId);
+        return selected == null ? null
+                : new ExecutorSelection(selected, agent.getOnlineVersionId());
+    }
+
     private void bindSelectedExecutor(Long tenantId, AgentConversationDO conv,
             ExecutorSelection selection) {
         Long executorId = selection.executorId();
+        boolean firstBinding = conv.getExecutorId() == null;
         if (!executorId.equals(conv.getExecutorId())) {
             conv.setExecutorId(executorId);
             convDao.updateExecutor(tenantId, conv.getId(), executorId);
+        }
+        if (firstBinding) {
+            recordConversationBinding(tenantId, conv.getAgentId(), executorId);
         }
     }
 
@@ -1705,9 +1793,13 @@ public class AgentConversationService {
         String source = existingContext == null
                 ? ConversationTurnDisplay.source(conv.getChannel(), "error", code, args) : null;
         if (STATUS_QUEUED.equals(expectedStatus)) {
-            return source == null
+            int rows = source == null
                     ? turnDao.updateStatusIfCurrent(tenantId, turnId, expectedStatus, "FAILED", diagnostic)
                     : turnDao.updateStatusAndContextIfCurrent(tenantId, turnId, expectedStatus, "FAILED", diagnostic, source);
+            if (rows == 1) {
+                recordQueueDepth(conv, -1L);
+            }
+            return rows;
         }
         return source == null
                 ? turnDao.updateInboundStatusIfProcessing(tenantId, conv.getId(), turnId, "FAILED", diagnostic)

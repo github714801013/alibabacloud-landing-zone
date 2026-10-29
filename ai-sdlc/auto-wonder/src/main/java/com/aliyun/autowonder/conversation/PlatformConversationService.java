@@ -30,6 +30,8 @@ import java.util.stream.Collectors;
 public class PlatformConversationService {
     @org.springframework.beans.factory.annotation.Autowired
     private PlatformConversationImageService imageService;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private ConversationAdmissionService admissionService;
 
     private static final String CHANNEL = PlatformConversationChannel.CHANNEL;
     private static final String STATUS_ACTIVE = "ACTIVE";
@@ -96,11 +98,20 @@ public class PlatformConversationService {
         conv.setTitle(normalizedTitle);
         conv.setTitleSource(normalizedTitle == null ? null : TITLE_SOURCE_USER);
         conv.setAgentVersionId(agent.getOnlineVersionId());
-        conv.setExecutorId(executorRouter.selectPlatform(tenantId, agent.getId(),
-                agent.getOnlineVersionId(), null));
+        Long executorId = admissionService == null ? null
+                : admissionService.selectNewConversation(tenantId, agent.getId(),
+                        agent.getOnlineVersionId(), true);
+        if (executorId == null) {
+            executorId = executorRouter.selectPlatform(tenantId, agent.getId(),
+                    agent.getOnlineVersionId(), null);
+        }
+        conv.setExecutorId(executorId);
         conv.setStatus(STATUS_ACTIVE);
         conv.setLastTurnAt(new Date());
         convDao.insert(conv);
+        if (executorId != null && admissionService != null) {
+            admissionService.recordBinding(tenantId, agent.getId(), executorId);
+        }
 
         return toVO(conv, ownerUserId);
     }

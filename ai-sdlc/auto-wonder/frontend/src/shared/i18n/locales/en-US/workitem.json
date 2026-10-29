@@ -759,8 +759,8 @@
     "lockBusy": "Waiting for the scheduling capacity lock",
     "atCapacity": "Executor capacity is full; waiting to retry",
     "executorRecovering": "The executor is recovering local tasks",
-    "affinityWait": "Waiting for the bound executor to recover",
-    "affinityLockBusy": "Waiting for another dispatch of this workitem to finish choosing an executor",
+    "bindingWait": "Waiting for the dispatch-bound executor to recover",
+    "bindingTimeout": "The dispatch-bound executor stayed unavailable; the dispatch failed",
     "incompatible": "The executor version is incompatible",
     "selectionError": "Internal scheduler error",
     "accepted": "Operation accepted.",
@@ -1002,6 +1002,7 @@
       "dispatchFailed": "Conversation dispatch failed: {{detail}}",
       "deliveryAttemptsExhausted": "Conversation runtime did not acknowledge after {{attempts}} delivery attempts.",
       "executorCompatibilityFailed": "Conversation executor compatibility failed: {{detail}}",
+      "executorBusy": "The executor is busy. Please try again later.",
       "questionExpired": "This turn ended after waiting for an answer. You can continue answering by preparing the context and sending a new message."
     },
     "noAgents": "No agents available",

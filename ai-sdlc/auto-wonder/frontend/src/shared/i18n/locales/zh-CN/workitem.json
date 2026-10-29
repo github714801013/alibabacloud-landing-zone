@@ -744,8 +744,8 @@
     "lockBusy": "等待调度容量锁",
     "atCapacity": "执行器容量已满，等待重试",
     "executorRecovering": "执行器正在恢复本地任务",
-    "affinityWait": "等待绑定的执行器恢复",
-    "affinityLockBusy": "等待同工单派发完成执行器绑定",
+    "bindingWait": "等待派发绑定的执行器恢复",
+    "bindingTimeout": "派发绑定的执行器持续不可用，派发已失败",
     "incompatible": "执行器版本不兼容",
     "selectionError": "调度器内部错误",
     "accepted": "操作已受理",
@@ -983,6 +983,7 @@
       "dispatchFailed": "会话派发失败：{{detail}}",
       "deliveryAttemptsExhausted": "会话 Runtime 在 {{attempts}} 次投递后仍未确认。",
       "executorCompatibilityFailed": "会话执行器兼容性校验失败：{{detail}}",
+      "executorBusy": "执行器繁忙，请稍后重试",
       "questionExpired": "等待回答时间过长，本轮已结束。你可以继续回答，整理背景后发送新消息。"
     },
     "noAgents": "暂无可用数字员工",

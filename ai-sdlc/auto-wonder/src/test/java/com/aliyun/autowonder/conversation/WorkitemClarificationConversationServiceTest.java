@@ -7,6 +7,7 @@ import com.aliyun.autowonder.common.error.ErrorCode;
 import com.aliyun.autowonder.conversation.dto.ClarificationConversationVO;
 import com.aliyun.autowonder.dispatch.ExecutorSelector;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
@@ -238,14 +239,53 @@ class WorkitemClarificationConversationServiceTest {
     }
 
     @Test
-    void submitTurnCanFallbackFromPreferredExecutorThroughFeatureAwareRouter() {
+    void createConversationUsesAdmissionSelectionAndRecordsBinding() {
+        ConversationAdmissionService admission = mock(ConversationAdmissionService.class);
+        service.setAdmissionService(admission);
+        AgentDO agent = new AgentDO();
+        agent.setId(3L);
+        agent.setOnlineVersionId(50L);
+        when(agentDao.findById(3L)).thenReturn(agent);
+        when(admission.selectNewConversation(1L, 3L, 50L, false)).thenReturn(10L);
+
+        service.createConversation(1L, 10011L, 3L);
+
+        ArgumentCaptor<AgentConversationDO> inserted = ArgumentCaptor.forClass(AgentConversationDO.class);
+        verify(convDao).insert(inserted.capture());
+        assertEquals(Long.valueOf(10L), inserted.getValue().getExecutorId());
+        verify(admission).recordBinding(1L, 3L, 10L);
+        verify(executorRouter, never()).select(anyLong(), anyLong(), anyLong(), any());
+    }
+
+    @Test
+    void createConversationFallsBackToRouterWhenAdmissionDegrades() {
+        ConversationAdmissionService admission = mock(ConversationAdmissionService.class);
+        service.setAdmissionService(admission);
+        AgentDO agent = new AgentDO();
+        agent.setId(3L);
+        agent.setOnlineVersionId(50L);
+        when(agentDao.findById(3L)).thenReturn(agent);
+        when(admission.selectNewConversation(1L, 3L, 50L, false)).thenReturn(null);
+        when(executorRouter.select(1L, 3L, 50L, null)).thenReturn(9L);
+
+        service.createConversation(1L, 10011L, 3L);
+
+        ArgumentCaptor<AgentConversationDO> inserted = ArgumentCaptor.forClass(AgentConversationDO.class);
+        verify(convDao).insert(inserted.capture());
+        assertEquals(Long.valueOf(9L), inserted.getValue().getExecutorId());
+        verify(admission).recordBinding(1L, 3L, 9L);
+    }
+
+    @Test
+    void submitTurnBindsAnUnboundConversationThroughTheRouter() {
         AgentConversationDO conv = clarificationConversation(10011L);
+        conv.setExecutorId(null);
         when(convDao.findById(1L, 77L)).thenReturn(conv);
         AgentDO agent = new AgentDO();
         agent.setId(3L);
         agent.setOnlineVersionId(50L);
         when(agentDao.findById(3L)).thenReturn(agent);
-        when(executorRouter.select(1L, 3L, 50L, 9L)).thenReturn(10L);
+        when(executorRouter.select(1L, 3L, 50L, null)).thenReturn(10L);
         when(turnDao.findByExternalMsgId(1L, "web-clarification:77:client-1"))
                 .thenReturn(null, turn(90L, "IN", "clarify"));
 
@@ -257,41 +297,76 @@ class WorkitemClarificationConversationServiceTest {
     }
 
     @Test
-    void submitTurnPrefersTheWorkitemExecutorBinding() {
-        com.aliyun.autowonder.dispatch.WorkitemExecutorAffinity affinity =
-                mock(com.aliyun.autowonder.dispatch.WorkitemExecutorAffinity.class);
-        service.bindExecutorAffinity(affinity);
+    void submitTurnUsesTheConversationBoundExecutor() {
         AgentConversationDO conv = clarificationConversation(10011L);
         when(convDao.findById(1L, 77L)).thenReturn(conv);
         AgentDO agent = new AgentDO();
         agent.setId(3L);
         agent.setOnlineVersionId(50L);
         when(agentDao.findById(3L)).thenReturn(agent);
-        when(affinity.boundExecutor(1L, 10011L)).thenReturn(12L);
-        when(executorRouter.selectStrict(1L, 3L, 50L, 12L)).thenReturn(12L);
+        when(executorRouter.selectStrict(1L, 3L, 50L, 9L)).thenReturn(9L);
         when(turnDao.findByExternalMsgId(1L, "web-clarification:77:bound"))
                 .thenReturn(null, turn(91L, "IN", "hi"));
 
         service.submitTurn(1L, 10011L, 77L, 42L, "hi", "bound", null);
 
-        verify(executorRouter).selectStrict(1L, 3L, 50L, 12L);
+        verify(executorRouter).selectStrict(1L, 3L, 50L, 9L);
         verify(executorRouter, never()).select(anyLong(), anyLong(), anyLong(), any());
-        verify(convDao).updateExecutor(1L, 77L, 12L);
+        verify(convDao, never()).updateExecutor(anyLong(), anyLong(), anyLong());
+    }
+
+    /** 绑定机器在线但无空闲槽位时排队，不换机也不报离线。 */
+    @Test
+    void submitTurnQueuesOnBoundExecutorWithoutFreeSlot() {
+        AgentConversationDO conv = clarificationConversation(10011L);
+        when(convDao.findById(1L, 77L)).thenReturn(conv);
+        AgentDO agent = new AgentDO();
+        agent.setId(3L);
+        agent.setOnlineVersionId(50L);
+        when(agentDao.findById(3L)).thenReturn(agent);
+        when(executorRouter.selectStrict(1L, 3L, 50L, 9L)).thenReturn(null);
+        when(executorRouter.canQueueOnOwner(1L, 3L, 50L, 9L, false)).thenReturn(true);
+        when(turnDao.findByExternalMsgId(1L, "web-clarification:77:queued"))
+                .thenReturn(null, turn(92L, "IN", "hi"));
+
+        service.submitTurn(1L, 10011L, 77L, 42L, "hi", "queued", null);
+
+        verify(executorRouter, never()).select(anyLong(), anyLong(), anyLong(), any());
+        verify(convDao, never()).updateExecutor(anyLong(), anyLong(), anyLong());
+        verify(conversationService).submitTurn(1L, 3L, "WORKITEM_CLARIFICATION",
+                conv.getChannelConversationId(), "hi", "web-clarification:77:queued", null, 42L);
+    }
+
+    @Test
+    void submitTurnRecordsFirstBindingCountWhenUnboundConversationBinds() {
+        ConversationAdmissionService admission = mock(ConversationAdmissionService.class);
+        service.setAdmissionService(admission);
+        AgentConversationDO conv = clarificationConversation(10011L);
+        conv.setExecutorId(null);
+        when(convDao.findById(1L, 77L)).thenReturn(conv);
+        AgentDO agent = new AgentDO();
+        agent.setId(3L);
+        agent.setOnlineVersionId(50L);
+        when(agentDao.findById(3L)).thenReturn(agent);
+        when(executorRouter.select(1L, 3L, 50L, null)).thenReturn(10L);
+        when(turnDao.findByExternalMsgId(1L, "web-clarification:77:first-bind"))
+                .thenReturn(null, turn(93L, "IN", "hi"));
+
+        service.submitTurn(1L, 10011L, 77L, 42L, "hi", "first-bind", null);
+
+        verify(convDao).updateExecutor(1L, 77L, 10L);
+        verify(admission).recordBinding(1L, 3L, 10L);
     }
 
     /** 绑定机器离线时澄清会话不换机：按离线报错，不投递到其他执行器。 */
     @Test
     void submitTurnDoesNotSwitchExecutorWhenTheBoundExecutorIsOffline() {
-        com.aliyun.autowonder.dispatch.WorkitemExecutorAffinity affinity =
-                mock(com.aliyun.autowonder.dispatch.WorkitemExecutorAffinity.class);
-        service.bindExecutorAffinity(affinity);
         when(convDao.findById(1L, 77L)).thenReturn(clarificationConversation(10011L));
         AgentDO agent = new AgentDO();
         agent.setId(3L);
         agent.setOnlineVersionId(50L);
         when(agentDao.findById(3L)).thenReturn(agent);
-        when(affinity.boundExecutor(1L, 10011L)).thenReturn(12L);
-        when(executorRouter.selectStrict(1L, 3L, 50L, 12L)).thenReturn(null);
+        when(executorRouter.selectStrict(1L, 3L, 50L, 9L)).thenReturn(null);
 
         BizException ex = assertThrows(BizException.class,
                 () -> service.submitTurn(1L, 10011L, 77L, 42L, "hi", "bound-offline", null));
@@ -303,25 +378,6 @@ class WorkitemClarificationConversationServiceTest {
                 nullable(String.class), anyString(), anyString(), nullable(String.class), anyLong());
     }
 
-    @Test
-    void createConversationUsesTheWorkitemExecutorBinding() {
-        com.aliyun.autowonder.dispatch.WorkitemExecutorAffinity affinity =
-                mock(com.aliyun.autowonder.dispatch.WorkitemExecutorAffinity.class);
-        service.bindExecutorAffinity(affinity);
-        AgentDO agent = new AgentDO();
-        agent.setId(3L);
-        agent.setOnlineVersionId(50L);
-        agent.setName("澄清数字人");
-        when(agentDao.findById(3L)).thenReturn(agent);
-        when(affinity.boundExecutor(1L, 10011L)).thenReturn(12L);
-        when(executorRouter.selectStrict(1L, 3L, 50L, 12L)).thenReturn(12L);
-
-        service.createConversation(1L, 10011L, 3L);
-
-        verify(executorRouter, never()).select(anyLong(), anyLong(), anyLong(), any());
-        verify(convDao).insert(argThat(c -> Long.valueOf(12L).equals(c.getExecutorId())));
-    }
-
     /** E2E 回归：执行器离线返回可判定的业务错误码，而不是落到 10000 系统错误。 */
     @Test
     void submitTurnReportsCodedErrorWhenNoExecutorAvailable() {
@@ -330,7 +386,7 @@ class WorkitemClarificationConversationServiceTest {
         agent.setId(3L);
         agent.setOnlineVersionId(50L);
         when(agentDao.findById(3L)).thenReturn(agent);
-        when(executorRouter.select(1L, 3L, 50L, 9L)).thenReturn(null);
+        when(executorRouter.selectStrict(1L, 3L, 50L, 9L)).thenReturn(null);
 
         BizException ex = assertThrows(BizException.class,
                 () -> service.submitTurn(1L, 10011L, 77L, 42L, "hello", "c-offline", null));
@@ -348,7 +404,7 @@ class WorkitemClarificationConversationServiceTest {
         agent.setId(3L);
         agent.setOnlineVersionId(50L);
         when(agentDao.findById(3L)).thenReturn(agent);
-        when(executorRouter.select(1L, 3L, 50L, 9L)).thenReturn(9L);
+        when(executorRouter.selectStrict(1L, 3L, 50L, 9L)).thenReturn(9L);
         when(turnDao.findByExternalMsgId(1L, "web-clarification:77:c-1"))
                 .thenReturn(null, turn(90L, "IN", "look at this"));
         when(attachmentService.requireBindableIds(1L, 77L, 42L, java.util.List.of(5L, 6L)))
@@ -369,7 +425,7 @@ class WorkitemClarificationConversationServiceTest {
         agent.setId(3L);
         agent.setOnlineVersionId(50L);
         when(agentDao.findById(3L)).thenReturn(agent);
-        when(executorRouter.select(1L, 3L, 50L, 9L)).thenReturn(9L);
+        when(executorRouter.selectStrict(1L, 3L, 50L, 9L)).thenReturn(9L);
         when(turnDao.findByExternalMsgId(1L, "web-clarification:77:c-2"))
                 .thenReturn(null, turn(91L, "IN", ""));
         when(attachmentService.requireBindableIds(1L, 77L, 42L, java.util.List.of(5L)))

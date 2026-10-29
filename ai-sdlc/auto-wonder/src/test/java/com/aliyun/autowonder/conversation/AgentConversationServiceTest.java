@@ -172,6 +172,7 @@ class AgentConversationServiceTest {
     void setUp() {
         // svc 是类级单例，逐一清掉用例注入的可选协作者，避免跨用例串味。
         svc.setConversationUsageService(null);
+        svc.setAdmissionService(null);
         TransactionSynchronizationManager.initSynchronization();
         TransactionSynchronizationManager.setActualTransactionActive(true);
         when(turnDao.acquireConversationLock(anyString(), anyInt())).thenReturn(1);
@@ -181,6 +182,10 @@ class AgentConversationServiceTest {
                 .thenReturn(1);
         when(convDao.updateAgentVersion(anyLong(), anyLong(), anyLong())).thenReturn(1);
         when(executorRouter.select(anyLong(), anyLong(), anyLong(), nullable(Long.class)))
+                .thenAnswer(invocation -> executorSelector.select(invocation.getArgument(1),
+                        invocation.getArgument(3)));
+        // 严格选机复用同一组可用性桩：用例只关心执行器可用与否，不关心路由强制语义。
+        when(executorRouter.selectStrict(anyLong(), anyLong(), anyLong(), anyLong()))
                 .thenAnswer(invocation -> executorSelector.select(invocation.getArgument(1),
                         invocation.getArgument(3)));
         AgentDO agent = new AgentDO();
@@ -281,6 +286,34 @@ class AgentConversationServiceTest {
         svc.recoverQueuedTurns();
         commitTransactionSynchronizations();
         verify(transport).send(eq(conv), eq(55L), eq("waiting"), any(), eq(1));
+    }
+
+    /** 排队等待空闲槽位超过上限：轮次失败并呈现执行器繁忙，不静默继续等待。 */
+    @Test
+    void queuedTurnFailsWithExecutorBusyWhenQueueWaitExceedsTimeout() {
+        var conv = existingConversationWithSession();
+        conv.setChannel("WORKITEM_CLARIFICATION");
+        var queued = processingInboundTurn(77L); queued.setStatus("QUEUED"); queued.setContent("waiting");
+        ConversationAdmissionService admission = mock(ConversationAdmissionService.class);
+        svc.setAdmissionService(admission);
+        when(turnDao.listQueuedInboundAfter(0L, 100)).thenReturn(java.util.List.of(queued));
+        when(convDao.findById(1L, 77L)).thenReturn(conv);
+        when(turnDao.findNextQueuedInbound(1L, 77L)).thenReturn(queued);
+        when(executorSelector.select(3L, 9L)).thenReturn(null);
+        when(admission.queueWaitExpired(55L)).thenReturn(true);
+        when(turnDao.updateStatusAndContextIfCurrent(eq(1L), eq(55L), eq("QUEUED"), eq("FAILED"),
+                contains("executor busy"), anyString())).thenReturn(1);
+
+        svc.recoverQueuedTurns();
+        commitTransactionSynchronizations();
+
+        ArgumentCaptor<String> source = ArgumentCaptor.forClass(String.class);
+        verify(turnDao).updateStatusAndContextIfCurrent(eq(1L), eq(55L), eq("QUEUED"), eq("FAILED"),
+                contains("executor busy"), source.capture());
+        assertEquals("EXECUTOR_BUSY",
+                ConversationTurnDisplay.project(conv.getChannel(), source.getValue()).error().code());
+        verify(admission).recordQueueDepth(1L, 3L, 9L, -1L);
+        verify(admission).clearQueueWait(55L);
     }
 
     @Test
@@ -1359,7 +1392,7 @@ class AgentConversationServiceTest {
         when(turnDao.updateInboundStatusIfProcessing(1L, 77L, 55L, "SUCCESS", null))
                 .thenReturn(1);
         when(turnDao.findNextQueuedInbound(1L, 77L)).thenReturn(next);
-        when(executorRouter.select(1L, 3L, 50L, 9L)).thenThrow(
+        when(executorRouter.selectStrict(1L, 3L, 50L, 9L)).thenThrow(
                 new ExecutorProtocolCompatibilityException(
                         ExecutorProtocolFeatures.AGENT_ENVIRONMENT_VARIABLES_V1));
         when(turnDao.updateStatusAndContextIfCurrent(eq(1L), eq(56L), eq("QUEUED"), eq("FAILED"),

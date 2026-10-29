@@ -19,7 +19,6 @@ import com.aliyun.autowonder.dispatch.DispatchRuntimeFailure;
 import com.aliyun.autowonder.dispatch.DispatchService;
 import com.aliyun.autowonder.dispatch.DispatchStatus;
 import com.aliyun.autowonder.dispatch.WorkitemAssignedEvent;
-import com.aliyun.autowonder.dispatch.WorkitemExecutorAffinity;
 import com.aliyun.autowonder.executor.ExecutorDO;
 import com.aliyun.autowonder.executor.ExecutorDao;
 import com.aliyun.autowonder.context.AutoWonderContext;
@@ -168,8 +167,6 @@ public class WorkitemService {
     private ScheduledTaskNotificationService scheduledTaskNotificationService;
     @Autowired(required = false)
     private WorkitemServiceRestartHandler restartHandler;
-    @Autowired(required = false)
-    private WorkitemExecutorAffinity executorAffinity;
 
     /** A non-terminal (running) dispatch idle longer than this is treated as stalled. Default 60m. */
     @Value("${autowonder.workitem.stuck-threshold-ms:3600000}")
@@ -756,9 +753,6 @@ public class WorkitemService {
         if (rows == 0) {
             throw new BizException(ErrorCode.WORKITEM_VERSION_CONFLICT);
         }
-        if (WorkitemClassificationEvaluator.isFinishedCategory(toNode.getCategory())) {
-            releaseExecutorAffinity(tenantId, id);
-        }
         writeEvent(tenantId, id, WorkitemEventType.STATUS_CHANGE.code(),
                 fromNode == null ? null : fromNode.getCode(),
                 toNode == null ? null : toNode.getCode(), actorType, actorRef,
@@ -771,23 +765,6 @@ public class WorkitemService {
             vo.setTransitionWarning(SystemMessages.render("workitem.transition.outside_template", new Object[0], OUT_OF_TEMPLATE_TRANSITION_WARNING));
         }
         return vo;
-    }
-
-    /** 工单终结或删除时释放执行器绑定；Redis 失败只留日志，由 7 天 TTL 兜底。 */
-    private void releaseExecutorAffinity(long tenantId, long workitemId) {
-        if (executorAffinity == null) {
-            return;
-        }
-        try {
-            executorAffinity.release(tenantId, workitemId);
-        } catch (RuntimeException releaseFailure) {
-            log.warn("workitem executor affinity release failed workitemId={}", workitemId,
-                    releaseFailure);
-        }
-    }
-
-    void bindExecutorAffinity(WorkitemExecutorAffinity affinity) {
-        this.executorAffinity = affinity;
     }
 
     /**
@@ -1362,7 +1339,6 @@ public class WorkitemService {
         if (rows == 0) {
             throw new BizException(ErrorCode.WORKITEM_VERSION_CONFLICT);
         }
-        releaseExecutorAffinity(tenantId, id);
         writeEvent(tenantId, id, WorkitemEventType.DELETE.code(), null, null, "HUMAN", userId);
         // 提交后再清理派生数据（澄清附件等），清理失败不回滚删除。
         eventPublisher.publishEvent(new WorkitemDeletedEvent(tenantId, id));

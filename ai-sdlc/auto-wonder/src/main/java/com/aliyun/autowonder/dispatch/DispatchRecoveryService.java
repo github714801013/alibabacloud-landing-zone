@@ -57,9 +57,6 @@ public class DispatchRecoveryService {
     private com.aliyun.autowonder.workitem.DeliveryRestartStore restartStore;
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     public void setRestartStore(com.aliyun.autowonder.workitem.DeliveryRestartStore value) { restartStore = value; }
-    private WorkitemExecutorAffinity executorAffinity;
-    @org.springframework.beans.factory.annotation.Autowired(required = false)
-    public void setExecutorAffinity(WorkitemExecutorAffinity value) { executorAffinity = value; }
     // Resolve the callback only after a stop has committed. The orchestrator itself
     // depends on recovery (and DispatchService), so eager injection forms a bean cycle.
     private ObjectProvider<DeliveryRestartOrchestrator> restartOrchestrator;
@@ -559,7 +556,6 @@ public class DispatchRecoveryService {
             }
             audit(tenantId, workitemId, userId, "CLOSE_DELIVERY", "WORKITEM");
         });
-        releaseExecutorAffinity(tenantId, workitemId);
         for (DispatchDO d : dispatches.listByWorkitem(tenantId, workitemId)) sendStop(d);
         return state(tenantId, workitemId);
     }
@@ -598,19 +594,6 @@ public class DispatchRecoveryService {
             if (reason != null) reasons.put(rs.getLong("dispatch_id"), reason);
         }, args.toArray());
         return reasons;
-    }
-
-    /** 关闭交付等于工单会话终结：释放绑定；Redis 失败只留日志，由 TTL 兜底。 */
-    private void releaseExecutorAffinity(long tenantId, long workitemId) {
-        if (executorAffinity == null) {
-            return;
-        }
-        try {
-            executorAffinity.release(tenantId, workitemId);
-        } catch (RuntimeException releaseFailure) {
-            log.warn("workitem executor affinity release failed workitemId={}", workitemId,
-                    releaseFailure);
-        }
     }
 
     public Map<String, Object> state(long tenantId, long workitemId) {

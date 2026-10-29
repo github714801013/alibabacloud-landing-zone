@@ -43,7 +43,7 @@ export type ConversationContentDisplay =
   | { code: 'CANCELED' | 'EMPTY_OUTPUT' | 'QUESTION_EXPIRED'; args: Record<string, never> }
   | { code: 'REPLY_FAILED' | 'DISPATCH_REPLY_FAILED'; args: { detail: string } };
 export type ConversationErrorDisplay =
-  | { code: 'QUESTION_EXPIRED'; args: Record<string, never> }
+  | { code: 'QUESTION_EXPIRED' | 'EXECUTOR_BUSY'; args: Record<string, never> }
   | { code: 'DISPATCH_FAILED' | 'EXECUTOR_COMPATIBILITY_FAILED'; args: { detail: string } }
   | { code: 'DELIVERY_ATTEMPTS_EXHAUSTED'; args: { attempts: number } };
 

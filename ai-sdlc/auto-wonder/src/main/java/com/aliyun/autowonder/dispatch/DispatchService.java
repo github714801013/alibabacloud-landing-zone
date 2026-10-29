@@ -12,7 +12,6 @@ import com.aliyun.autowonder.agent.AgentVersionDao;
 import com.aliyun.autowonder.agent.AgentEnvironmentVariableRefDao;
 import com.aliyun.autowonder.common.error.BizException;
 import com.aliyun.autowonder.common.error.ErrorCode;
-import com.aliyun.autowonder.conversation.WorkitemConversationExecutorSync;
 import com.aliyun.autowonder.debuglog.DebugLogService;
 import com.aliyun.autowonder.evolution.EvolutionTelemetryEvidenceLiteService;
 import com.aliyun.autowonder.evolution.EvolutionTrialAssignmentLiteService;
@@ -60,7 +59,6 @@ public class DispatchService {
     private static final long SYSTEM_USER_ID = 0L;
     private static final long LOCK_TTL_MS = 30_000L;
     private static final long CAPACITY_LOCK_TTL_MS = 10_000L;
-    private static final long AFFINITY_LOCK_TTL_MS = 10_000L;
     private static final Set<String> PERMANENT_PACKAGE_INPUT_MESSAGE_KEYS = Set.of(
             TaskPackager.MESSAGE_KEY_NO_CHECKOUT, TaskPackager.MESSAGE_KEY_QA_UNPUSHED);
 
@@ -118,17 +116,9 @@ public class DispatchService {
         this.environmentVariableRefDao = dao;
     }
 
-    @Autowired(required = false)
-    public void setAffinityStore(WorkitemExecutorAffinity store) { this.affinityStore = store; }
-    @Autowired(required = false)
-    public void setWorkitemConversationSync(WorkitemConversationExecutorSync sync) {
-        this.workitemConversationSync = sync;
-    }
-    /** 绑定机器不可用时的等待窗口，到期视为新会话并在新机器上重新绑定。 */
-    @Value("${autowonder.dispatch.affinity.timeout-ms:1800000}")
-    private long affinityTimeoutMs = 1_800_000L;
-    private WorkitemExecutorAffinity affinityStore;
-    private WorkitemConversationExecutorSync workitemConversationSync;
+    /** 派发绑定机器不可用时的等待窗口，到期派发失败，不换机。 */
+    @Value("${autowonder.dispatch.binding.timeout-ms:1800000}")
+    private long bindingTimeoutMs = 1_800_000L;
 
     private static final Set<String> EXECUTOR_FAILURE_CATEGORIES = Set.of(
             "agent_error.provider_auth_or_access",
@@ -1187,9 +1177,6 @@ public class DispatchService {
                 return false;
             }
             Long executorId;
-            String affinityLockKey = null;
-            String affinityLockOwner = null;
-            boolean affinityLocked = false;
             try {
                 Long preferredExecutorId = preferredResumeExecutor(d);
                 String requiredFeature = hasEnvironmentBindings(workspaceId, version.getId())
@@ -1197,27 +1184,15 @@ public class DispatchService {
                 if (requests != null && requests.requiresHumanRequests(d)) {
                     requiredFeature = requiredFeature == null ? "DISPATCH_REQUESTS_V1" : requiredFeature + ",DISPATCH_REQUESTS_V1";
                 }
-                // 同一工单的选择与绑定必须串行：跨数字人并发派发时只允许第一个选中者写入绑定。
-                if (affinityEnabled(d)) {
-                    affinityLockKey = WorkitemExecutorAffinity.lockKey(d.getTenantId(), d.getWorkitemId());
-                    affinityLockOwner = UUID.randomUUID().toString();
-                    affinityLocked = redisManager.tryAcquireLock(affinityLockKey, affinityLockOwner,
-                            AFFINITY_LOCK_TTL_MS);
-                    if (!affinityLocked) {
-                        if (recoveryService != null) {
-                            recoveryService.waiting(d, DispatchWaitingReason.AFFINITY_LOCK_BUSY.name());
-                        }
-                        log.info("dispatch affinity lock busy dispatchId={}", d.getId());
-                        return false;
-                    }
-                }
                 DispatchWaitingReason selectionFailure = null;
-                Long degradedFromExecutorId = null;
                 try {
-                    AffinitySelection selection = selectWithWorkitemAffinity(
+                    BindingSelection selection = selectWithDispatchBinding(
                             d, preferredExecutorId, requiredFeature);
+                    if (selection == null) {
+                        selection = new BindingSelection(
+                                selectExecutorForDispatch(d, preferredExecutorId, requiredFeature), false);
+                    }
                     executorId = selection.executorId();
-                    degradedFromExecutorId = selection.degradedFromExecutorId();
                     if (selection.waiting()) {
                         return false;
                     }
@@ -1255,11 +1230,7 @@ public class DispatchService {
                 if (!transition(d, DispatchStatus.PACKAGING, version.getId(), executorId, null, null, null)) {
                     return false; // lost optimistic race; another worker owns it
                 }
-                bindWorkitemAffinity(d, executorId, degradedFromExecutorId);
             } finally {
-                if (affinityLocked) {
-                    redisManager.releaseLock(affinityLockKey, affinityLockOwner);
-                }
                 redisManager.releaseLock(capacityLockKey, capacityLockOwner);
             }
             d.setAgentVersionId(version.getId());
@@ -1385,14 +1356,24 @@ public class DispatchService {
                 || !Objects.equals(dispatch.getAgentId(), source.getAgentId())) {
             return null;
         }
+        // 血缘只追溯到仍在飞行中的源派发：源已进入终态即视为已交付，后续重试/继续按新派发重新选机。
+        if (isInteractionResumeMode(dispatch) && DispatchStatus.isTerminal(source.getStatus())) {
+            return null;
+        }
         return source.getExecutorId();
     }
 
-    /** 绑定选择结果：waiting=true 表示已写入等待原因与事件，调用方直接返回。 */
-    private record AffinitySelection(Long executorId, Long degradedFromExecutorId, boolean waiting) { }
+    /** 侧交互与正式交互：血缘严格绑定源执行器。 */
+    private static boolean isInteractionResumeMode(DispatchDO dispatch) {
+        return dispatch != null && ("SIDE_INTERACTION".equals(dispatch.getResumeMode())
+                || "CANONICAL_INTERACTION".equals(dispatch.getResumeMode()));
+    }
+
+    /** 绑定选择结果：waiting=true 表示已写入等待原因（或已失败），调用方直接返回。 */
+    private record BindingSelection(Long executorId, boolean waiting) { }
 
     /** 工单派发才参与执行器绑定：定时任务的 workitem_id 列存的是 run ID。 */
-    private static boolean affinityEnabled(DispatchDO dispatch) {
+    private static boolean bindingEnabled(DispatchDO dispatch) {
         return dispatch != null && dispatch.executionSourceType() == ExecutionSourceType.WORKITEM
                 && dispatch.getWorkitemId() != null && dispatch.getWorkitemId() > 0;
     }
@@ -1421,40 +1402,46 @@ public class DispatchService {
     }
 
     /**
-     * 沿用现有调度选机，但工单已有绑定时只使用绑定机器：可用则直接用；不可用则等待窗口；
-     * 窗口到期视为新会话，重新选机并改绑。
+     * 派发级绑定：已选定执行器的派发重试时严格回到同一台，交互续跑严格回到飞行中源派发的执行器；
+     * 不可用则等待，窗口到期派发失败即交付，不换机。无绑定时返回 null 交回既有选机。
      */
-    private AffinitySelection selectWithWorkitemAffinity(DispatchDO d, Long preferredExecutorId,
+    private BindingSelection selectWithDispatchBinding(DispatchDO d, Long preferredExecutorId,
             String requiredFeature) {
-        if (affinityStore == null || !affinityEnabled(d)) {
-            return new AffinitySelection(
-                    selectExecutorForDispatch(d, preferredExecutorId, requiredFeature), null, false);
+        if (!bindingEnabled(d)) {
+            return null;
         }
-        long workspaceId = d.getTenantId();
-        long workitemId = d.getWorkitemId();
-        Long bound = affinityStore.boundExecutor(workspaceId, workitemId);
-        if (bound == null) {
-            return new AffinitySelection(
-                    selectExecutorForDispatch(d, preferredExecutorId, requiredFeature), null, false);
+        Long binding = d.getExecutorId() != null ? d.getExecutorId()
+                : (isInteractionResumeMode(d) ? preferredExecutorId : null);
+        if (binding == null) {
+            return null;
         }
+        long bound = binding;
         Long usable = selectBoundExecutor(d, bound, requiredFeature);
         if (usable != null) {
-            affinityStore.clearUnavailable(workspaceId, workitemId);
-            return new AffinitySelection(usable, null, false);
+            return new BindingSelection(usable, false);
         }
-        long now = System.currentTimeMillis();
-        long since = affinityStore.unavailableSince(workspaceId, workitemId, now);
-        long waited = Math.max(0L, now - since);
-        if (waited < affinityTimeoutMs) {
-            waitForBoundExecutor(d, bound, since, affinityTimeoutMs - waited);
-            return new AffinitySelection(null, null, true);
+        long waited = Math.max(0L, System.currentTimeMillis() - bindingWaitStart(d));
+        if (waited < bindingTimeoutMs) {
+            if (recoveryService != null) {
+                recoveryService.waiting(d, DispatchWaitingReason.DISPATCH_BINDING_WAIT.name());
+            }
+            log.info("dispatch waiting for bound executor dispatchId={} executorId={} waitedMs={}",
+                    d.getId(), bound, waited);
+            return new BindingSelection(null, true);
         }
-        recordAffinityDegradeEvent(d, bound, waited);
-        affinityStore.release(workspaceId, workitemId);
-        log.warn("workitem affinity degraded dispatchId={} workitemId={} executorId={} waitedMs={}",
-                d.getId(), workitemId, bound, waited);
-        return new AffinitySelection(
-                selectExecutorForDispatch(d, null, requiredFeature), bound, false);
+        log.warn("dispatch bound executor unavailable past window dispatchId={} executorId={} waitedMs={}",
+                d.getId(), bound, waited);
+        failAndDrive(d, DispatchWaitingReason.DISPATCH_BINDING_TIMEOUT.error());
+        return new BindingSelection(null, true);
+    }
+
+    /**
+     * 等待窗口起点：派发最近一次进入当前状态的时间，退回待办即重新计时。
+     * 依赖待办行在等待期间不被其他组件更新；若未来新增更新待办行的路径，需改用专用时间戳字段。
+     */
+    private static long bindingWaitStart(DispatchDO dispatch) {
+        return dispatch.getGmtModified() == null
+                ? System.currentTimeMillis() : dispatch.getGmtModified().getTime();
     }
 
     private Long selectBoundExecutor(DispatchDO d, long executorId, String requiredFeature) {
@@ -1467,92 +1454,6 @@ public class DispatchService {
                     d.getId(), executorId);
             return null;
         }
-    }
-
-    private void waitForBoundExecutor(DispatchDO d, long executorId, long since, long remainingMs) {
-        if (recoveryService != null) {
-            recoveryService.waiting(d, DispatchWaitingReason.AFFINITY_WAIT.name());
-        }
-        recordAffinityWaitEvent(d, executorId, since, remainingMs);
-        log.info("dispatch waiting for bound executor dispatchId={} executorId={} remainingMs={}",
-                d.getId(), executorId, remainingMs);
-    }
-
-    /** 绑定写入失败不阻断派发：退化为无绑定，下次派发重新建立。 */
-    private void bindWorkitemAffinity(DispatchDO d, Long executorId, Long degradedFromExecutorId) {
-        if (affinityStore == null || executorId == null || !affinityEnabled(d)) {
-            return;
-        }
-        try {
-            if (degradedFromExecutorId != null) {
-                affinityStore.rebind(d.getTenantId(), d.getWorkitemId(), executorId);
-                syncWorkitemConversations(d, executorId);
-                return;
-            }
-            Long effective = affinityStore.bindIfAbsent(d.getTenantId(), d.getWorkitemId(), executorId);
-            if (effective != null && !effective.equals(executorId)) {
-                log.warn("workitem affinity already bound dispatchId={} selected={} bound={}",
-                        d.getId(), executorId, effective);
-            }
-        } catch (RuntimeException bindFailure) {
-            log.warn("workitem affinity bind failed dispatchId={}", d.getId(), bindFailure);
-        }
-    }
-
-    private void syncWorkitemConversations(DispatchDO d, long executorId) {
-        if (workitemConversationSync == null) {
-            return;
-        }
-        try {
-            workitemConversationSync.moveToExecutor(d.getTenantId(), d.getWorkitemId(),
-                    d.getAgentId(), executorId);
-        } catch (RuntimeException syncFailure) {
-            log.warn("workitem conversation executor sync failed dispatchId={}", d.getId(), syncFailure);
-        }
-    }
-
-    private void recordAffinityWaitEvent(DispatchDO dispatch, long executorId, long unavailableSince,
-            long remainingMillis) {
-        long retryInSeconds = Math.max(0L, remainingMillis / 1000L);
-        DispatchRuntimeEventDO event = new DispatchRuntimeEventDO();
-        event.setTenantId(dispatch.getTenantId());
-        event.setWorkitemId(dispatch.getWorkitemId());
-        event.setDispatchId(dispatch.getId());
-        event.setAgentId(dispatch.getAgentId());
-        event.setStepId(dispatch.getSdlcStepId());
-        event.setEventId("dispatch:" + dispatch.getId() + ":affinity-wait");
-        event.setEventType("dispatch.affinity_wait");
-        event.setMessage(com.aliyun.autowonder.common.i18n.SystemMessages.render(
-                "dispatch.affinity_wait.waiting", new Object[]{executorId, retryInSeconds},
-                "Bound executor " + executorId + " is unavailable; waiting for recovery"));
-        event.setDetailJson(new JSONObject()
-                .fluentPut("executorId", executorId)
-                .fluentPut("unavailableSince", unavailableSince)
-                .fluentPut("retryInSeconds", retryInSeconds)
-                .fluentPut("retrying", true).toJSONString());
-        event.setEventTime(new java.util.Date());
-        runtimeEventDao.insert(event);
-    }
-
-    private void recordAffinityDegradeEvent(DispatchDO dispatch, long executorId, long waitedMillis) {
-        long waitedSeconds = Math.max(0L, waitedMillis / 1000L);
-        DispatchRuntimeEventDO event = new DispatchRuntimeEventDO();
-        event.setTenantId(dispatch.getTenantId());
-        event.setWorkitemId(dispatch.getWorkitemId());
-        event.setDispatchId(dispatch.getId());
-        event.setAgentId(dispatch.getAgentId());
-        event.setStepId(dispatch.getSdlcStepId());
-        event.setEventId("dispatch:" + dispatch.getId() + ":affinity-degraded");
-        event.setEventType("dispatch.affinity_degraded");
-        event.setMessage(com.aliyun.autowonder.common.i18n.SystemMessages.render(
-                "dispatch.affinity_degraded.rebinding", new Object[]{executorId, waitedSeconds},
-                "Bound executor " + executorId + " stayed unavailable; starting a new session"));
-        event.setDetailJson(new JSONObject()
-                .fluentPut("fromExecutorId", executorId)
-                .fluentPut("waitedSeconds", waitedSeconds)
-                .fluentPut("retrying", true).toJSONString());
-        event.setEventTime(new java.util.Date());
-        runtimeEventDao.insert(event);
     }
 
     private DispatchDO requireWorkitemDispatch(long workspaceId, long workitemId, long dispatchId) {

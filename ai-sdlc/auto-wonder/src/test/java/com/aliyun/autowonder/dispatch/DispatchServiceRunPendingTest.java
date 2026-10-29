@@ -22,6 +22,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.dao.DuplicateKeyException;
 
+import java.util.Date;
 import java.util.List;
 import java.time.Duration;
 import java.util.concurrent.CountDownLatch;
@@ -1059,7 +1060,7 @@ class DispatchServiceRunPendingTest {
     }
 
     @Test
-    void sideInteractionDegradesToCanonicalWhenSelectorCannotUseSourceExecutor() {
+    void sideInteractionWaitsForUnavailableSourceExecutorInsteadOfDegrading() {
         DispatchDO d = pending();
         d.setResumeMode("SIDE_INTERACTION");
         d.setResumeFromDispatchId(750L);
@@ -1070,16 +1071,56 @@ class DispatchServiceRunPendingTest {
         when(dispatchDao.findById(750L)).thenReturn(source);
         when(agentDao.findById(400L)).thenReturn(onlineAgent());
         when(agentVersionDao.findById(410L)).thenReturn(onlineVersion());
-        when(executorSelector.selectForInteraction(400L, 19L)).thenReturn(9L);
+        when(executorSelector.selectStrict(400L, 19L, null, true)).thenReturn(null);
 
+        assertFalse(service.runPending(500L));
+
+        verify(executorSelector, never()).selectForInteraction(400L, 19L);
+        verify(executorSelector, never()).select(400L);
+        verify(transport, never()).dispatch(any(), any());
+        assertEquals("SIDE_INTERACTION", d.getResumeMode());
+    }
+
+    /** 绑定等待窗口到期：派发失败并驱动 SDLC，不换机也不继续排队。 */
+    @Test
+    void bindingWaitFailsAfterWindowInsteadOfSwitchingExecutor() {
+        DispatchDO d = pending();
+        d.setExecutorId(19L);
+        d.setGmtModified(new Date(System.currentTimeMillis() - 1_900_000L));
+        when(dispatchDao.findById(500L)).thenReturn(d);
+        when(agentDao.findById(400L)).thenReturn(onlineAgent());
+        when(agentVersionDao.findById(410L)).thenReturn(onlineVersion());
+        when(executorSelector.selectStrict(400L, 19L, null, false)).thenReturn(null);
+
+        assertFalse(service.runPending(500L));
+
+        verify(sdlcDriver).onFail(TENANT, 200L, 300L);
+        verify(executorSelector, never()).select(400L);
+        verify(transport, never()).dispatch(any(), any());
+    }
+
+    /** 源派发已交付（终态）时血缘不再传播绑定，交互续跑按新派发重新选机。 */
+    @Test
+    void terminalSourceDispatchDoesNotPropagateResumeBinding() {
+        DispatchDO d = pending();
+        d.setResumeMode("SIDE_INTERACTION");
+        d.setResumeFromDispatchId(750L);
+        DispatchDO source = pending();
+        source.setId(750L);
+        source.setExecutorId(19L);
+        source.setStatus(DispatchStatus.SUCCEEDED);
+        when(dispatchDao.findById(500L)).thenReturn(d);
+        when(dispatchDao.findById(750L)).thenReturn(source);
+        when(agentDao.findById(400L)).thenReturn(onlineAgent());
+        when(agentVersionDao.findById(410L)).thenReturn(onlineVersion());
+        when(executorSelector.selectForInteraction(eq(400L), isNull())).thenReturn(19L);
         when(assembler.assemble(eq(d), any(AgentVersionDO.class))).thenReturn(new PackageContext());
         TaskPackageResult pkg = new TaskPackageResult("oss://b/500.zip", "md5", 10L, "http://dl", "deadbeef");
         when(taskPackager.build(any())).thenReturn(pkg);
 
         assertTrue(service.runPending(500L));
 
-        verify(executorSelector).selectForInteraction(400L, 19L);
-        assertEquals("CANONICAL_INTERACTION", d.getResumeMode());
+        verify(executorSelector, never()).selectStrict(anyLong(), anyLong(), any(), anyBoolean());
         verify(transport).dispatch(d, pkg);
     }
 
@@ -1099,14 +1140,14 @@ class DispatchServiceRunPendingTest {
         when(dispatchDao.findById(750L)).thenReturn(source);
         when(agentDao.findById(400L)).thenReturn(onlineAgent());
         when(agentVersionDao.findById(410L)).thenReturn(onlineVersion());
-        when(executorSelector.selectForInteraction(400L, 19L)).thenReturn(19L);
+        when(executorSelector.selectStrict(400L, 19L, null, true)).thenReturn(19L);
         when(assembler.assemble(eq(d), any(AgentVersionDO.class))).thenReturn(new PackageContext());
         TaskPackageResult pkg = new TaskPackageResult("oss://b/500.zip", "md5", 10L, "http://dl", "deadbeef");
         when(taskPackager.build(any())).thenReturn(pkg);
 
         assertTrue(service.runPending(500L));
 
-        verify(executorSelector).selectForInteraction(400L, 19L);
+        verify(executorSelector).selectStrict(400L, 19L, null, true);
         verify(executorSelector, never()).select(400L);
     }
 

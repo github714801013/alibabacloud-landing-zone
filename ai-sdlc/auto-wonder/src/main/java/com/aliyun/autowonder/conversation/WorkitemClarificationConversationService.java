@@ -11,10 +11,8 @@ import com.aliyun.autowonder.conversation.dto.ClarificationConversationVO;
 import com.aliyun.autowonder.conversation.dto.ClarificationElicitationVO;
 import com.aliyun.autowonder.conversation.dto.ClarificationSlashCommandVO;
 import com.aliyun.autowonder.conversation.dto.ClarificationTurnVO;
-import com.aliyun.autowonder.dispatch.WorkitemExecutorAffinity;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -41,11 +39,11 @@ public class WorkitemClarificationConversationService {
     private final ConversationExecutorRouter executorRouter;
     private final ClarificationAttachmentService attachmentService;
 
-    @Autowired(required = false)
-    private WorkitemExecutorAffinity executorAffinity;
+    private ConversationAdmissionService admissionService;
 
-    void bindExecutorAffinity(WorkitemExecutorAffinity affinity) {
-        this.executorAffinity = affinity;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setAdmissionService(ConversationAdmissionService admissionService) {
+        this.admissionService = admissionService;
     }
 
     public WorkitemClarificationConversationService(AgentConversationDao convDao,
@@ -199,12 +197,12 @@ public class WorkitemClarificationConversationService {
         if (agent == null) {
             throw new KeyedIllegalArgumentException("conversation.agent_not_found", null, "agent not found");
         }
-        Long boundExecutorId = executorAffinity == null ? null
-                : executorAffinity.boundExecutor(tenantId, workitemId);
-        Long executorId = boundExecutorId != null
-                ? executorRouter.selectStrict(tenantId, agentId, requireOnlineVersion(agent),
-                        boundExecutorId)
-                : executorRouter.select(tenantId, agentId, requireOnlineVersion(agent), null);
+        Long onlineVersionId = requireOnlineVersion(agent);
+        Long executorId = admissionService == null ? null
+                : admissionService.selectNewConversation(tenantId, agentId, onlineVersionId, false);
+        if (executorId == null) {
+            executorId = executorRouter.select(tenantId, agentId, onlineVersionId, null);
+        }
 
         AgentConversationDO conv = new AgentConversationDO();
         conv.setTenantId(tenantId);
@@ -218,6 +216,9 @@ public class WorkitemClarificationConversationService {
         conv.setStatus("ACTIVE");
         conv.setLastTurnAt(new Date());
         convDao.insert(conv);
+        if (executorId != null && admissionService != null) {
+            admissionService.recordBinding(tenantId, agentId, executorId);
+        }
 
         return toVO(conv, List.of());
     }
@@ -268,26 +269,28 @@ public class WorkitemClarificationConversationService {
             return;
         }
         AgentDO agent = agentDao.findById(conv.getAgentId());
-        Long boundExecutorId = executorAffinity == null ? null
-                : executorAffinity.boundExecutor(tenantId, workitemId);
         Long executorId;
-        if (boundExecutorId != null) {
-            // 工单已绑定机器时严格使用绑定机器：不可用按离线报错，不回落到其他机器。
+        if (conv.getExecutorId() != null) {
+            // 会话硬绑自身执行器：在线但无剩余容量时入队，离线明确报错，不回落其他机器。
             executorId = executorRouter.selectStrict(tenantId, conv.getAgentId(),
-                    requireOnlineVersion(agent), boundExecutorId);
-            if (executorId == null) {
-                throw new BizException(ErrorCode.CLARIFICATION_EXECUTOR_OFFLINE);
-            }
-        } else {
-            executorId = executorRouter.select(tenantId, conv.getAgentId(),
                     requireOnlineVersion(agent), conv.getExecutorId());
             if (executorId == null && !executorRouter.canQueueOnOwner(tenantId, conv.getAgentId(),
                     requireOnlineVersion(agent), conv.getExecutorId(), false)) {
                 throw new BizException(ErrorCode.CLARIFICATION_EXECUTOR_OFFLINE);
             }
+        } else {
+            executorId = executorRouter.select(tenantId, conv.getAgentId(),
+                    requireOnlineVersion(agent), null);
+            if (executorId == null) {
+                throw new BizException(ErrorCode.CLARIFICATION_EXECUTOR_OFFLINE);
+            }
         }
         if (executorId != null && !executorId.equals(conv.getExecutorId())) {
+            boolean firstBinding = conv.getExecutorId() == null;
             convDao.updateExecutor(tenantId, conversationId, executorId);
+            if (firstBinding && admissionService != null) {
+                admissionService.recordBinding(tenantId, conv.getAgentId(), executorId);
+            }
         }
         List<Long> bindableIds = attachmentService.requireBindableIds(
                 tenantId, conversationId, userId, attachmentIds);

@@ -126,42 +126,6 @@ class WorkitemTransitionTest {
     }
 
     @Test
-    void doneTransitionReleasesExecutorAffinity() {
-        com.aliyun.autowonder.dispatch.WorkitemExecutorAffinity affinity =
-                mock(com.aliyun.autowonder.dispatch.WorkitemExecutorAffinity.class);
-        service.bindExecutorAffinity(affinity);
-        WorkitemDO w = workitem(5L, 10L, 20L, 0);
-        when(workitemDao.findById(5L)).thenReturn(w);
-        when(nodeDao.findById(20L)).thenReturn(node(20L, "developing"));
-        StatusNodeDO released = node(21L, "released");
-        released.setCategory("DONE");
-        when(nodeDao.findById(21L)).thenReturn(released);
-        when(workitemDao.updateStatus(5L, 100L, 21L, 0, 9L)).thenReturn(1);
-
-        service.transition(5L, 21L, 100L, 9L);
-
-        verify(affinity).release(100L, 5L);
-    }
-
-    @Test
-    void inProgressTransitionKeepsExecutorAffinity() {
-        com.aliyun.autowonder.dispatch.WorkitemExecutorAffinity affinity =
-                mock(com.aliyun.autowonder.dispatch.WorkitemExecutorAffinity.class);
-        service.bindExecutorAffinity(affinity);
-        WorkitemDO w = workitem(5L, 10L, 20L, 0);
-        when(workitemDao.findById(5L)).thenReturn(w);
-        when(nodeDao.findById(20L)).thenReturn(node(20L, "new"));
-        StatusNodeDO developing = node(21L, "developing");
-        developing.setCategory("IN_PROGRESS");
-        when(nodeDao.findById(21L)).thenReturn(developing);
-        when(workitemDao.updateStatus(5L, 100L, 21L, 0, 9L)).thenReturn(1);
-
-        service.transition(5L, 21L, 100L, 9L);
-
-        verifyNoInteractions(affinity);
-    }
-
-    @Test
     void transitionOutOfTemplateIsAllowedWithWarningAndAudit() {
         WorkitemDO w = workitem(5L, 10L, 20L, 0);
         when(workitemDao.findById(5L)).thenReturn(w);

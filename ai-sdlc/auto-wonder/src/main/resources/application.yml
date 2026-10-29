@@ -61,6 +61,10 @@ autowonder:
   conversation:
     queue-recovery:
       fixed-delay-ms: ${AUTOWONDER_CONVERSATION_QUEUE_RECOVERY_FIXED_DELAY_MS:10000}
+    queue:
+      timeout-ms: ${AUTOWONDER_CONVERSATION_QUEUE_TIMEOUT_MS:1800000}
+    balance:
+      window-ms: ${AUTOWONDER_CONVERSATION_BALANCE_WINDOW_MS:172800000}
     im-delivery:
       fixed-delay-ms: ${AUTOWONDER_CONVERSATION_IM_DELIVERY_FIXED_DELAY_MS:5000}
     elicitation:
@@ -109,8 +113,8 @@ autowonder:
     recovery:
       package-retries: ${AUTOWONDER_DISPATCH_RECOVERY_PACKAGE_RETRIES:3}
       retry-delay-ms: ${AUTOWONDER_DISPATCH_RECOVERY_RETRY_DELAY_MS:30000}
-    affinity:
-      timeout-ms: ${AUTOWONDER_DISPATCH_AFFINITY_TIMEOUT_MS:1800000}
+    binding:
+      timeout-ms: ${AUTOWONDER_DISPATCH_BINDING_TIMEOUT_MS:1800000}
   im:
     notification:
       dlq-stream-key: ${AUTOWONDER_IM_NOTIFICATION_DLQ_STREAM_KEY:autowonder:im-notification:dlq}
