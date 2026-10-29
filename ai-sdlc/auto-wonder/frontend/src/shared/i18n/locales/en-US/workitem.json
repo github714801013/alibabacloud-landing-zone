@@ -961,6 +961,7 @@
     "attachmentDownloadFailed": "Could not download the attachment. Please try again.",
     "attachmentDeleteFailed": "Could not delete the attachment. Please try again.",
     "bootstrapPrompt": "Please read work item #{{workitemId}} using the platform MCP and clarify the requirements with me.",
+    "reclarifyPrompt": "Read this work item's existing clarification result and the current conversation history, then run another round of requirement clarification with me: first briefly restate the goals, scope, and acceptance criteria you have confirmed, then ask only about new, changed, or still-unconfirmed points; do not repeat what is already confirmed.",
     "conversationNumber": "Conversation #{{id}}",
     "lastActive": "Last active {{date}}",
     "createdAt": "Created {{date}}",

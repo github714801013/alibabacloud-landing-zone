@@ -409,6 +409,91 @@ describe('WorkitemClarificationPanel', () => {
     expect(await screen.findByDisplayValue(prompt)).toBeInTheDocument();
   });
 
+  it('prefills the reclarify prompt when the work item already has a clarification result', async () => {
+    writeClarificationPrefill('100', { squadId: 9, agentId: 42 });
+    mockSquads();
+    mockConversationWithTurns(42);
+    server.use(
+      http.get('/api/workitems/:workitemId/clarification', () =>
+        HttpResponse.json({
+          success: true, code: '0', message: '', traceId: null,
+          data: { id: 1, workitemId: 100, contentMd: '已确认的澄清结果', gmtCreate: '', gmtModified: '' },
+        }),
+      ),
+    );
+
+    renderPanel();
+
+    expect(await screen.findByDisplayValue(
+      '请先阅读本工单已有的澄清结果和本次会话历史，在此基础上与我进行再次需求澄清：先简要复述你已确认的目标、范围和验收条件，再只针对新增、变更或仍未确认的点提问；不要重复已经确认的内容。',
+    )).toBeInTheDocument();
+  });
+
+  it('does not prefill the reclarify prompt when there is no clarification result', async () => {
+    writeClarificationPrefill('100', { squadId: 9, agentId: 42 });
+    mockSquads();
+    mockConversationWithTurns(42);
+    server.use(
+      http.get('/api/workitems/:workitemId/clarification', () =>
+        HttpResponse.json({ success: true, code: '0', message: '', traceId: null, data: null }),
+      ),
+    );
+
+    renderPanel();
+
+    await waitFor(() => expect(screen.getByText('你好，我想讨论需求')).toBeInTheDocument());
+    expect(screen.getByPlaceholderText('输入消息...')).toHaveValue('');
+  });
+
+  it('prefills the English reclarify prompt under the en-US locale', async () => {
+    writeClarificationPrefill('100', { squadId: 9, agentId: 42 });
+    mockSquads();
+    mockConversationWithTurns(42);
+    server.use(
+      http.get('/api/workitems/:workitemId/clarification', () =>
+        HttpResponse.json({
+          success: true, code: '0', message: '', traceId: null,
+          data: { id: 1, workitemId: 100, contentMd: '已确认的澄清结果', gmtCreate: '', gmtModified: '' },
+        }),
+      ),
+    );
+    await act(async () => { await i18n.changeLanguage('en-US'); });
+    try {
+      renderPanel();
+      expect(await screen.findByDisplayValue(
+        "Read this work item's existing clarification result and the current conversation history, then run another round of requirement clarification with me: first briefly restate the goals, scope, and acceptance criteria you have confirmed, then ask only about new, changed, or still-unconfirmed points; do not repeat what is already confirmed.",
+      )).toBeInTheDocument();
+    } finally {
+      await act(async () => { await i18n.changeLanguage('zh-CN'); });
+    }
+  });
+
+  it('keeps a draft typed before the clarification result arrives', async () => {
+    writeClarificationPrefill('100', { squadId: 9, agentId: 42 });
+    mockSquads();
+    mockConversationWithTurns(42);
+    let releaseClarification!: () => void;
+    const clarificationGate = new Promise<void>((resolve) => { releaseClarification = resolve; });
+    server.use(
+      http.get('/api/workitems/:workitemId/clarification', async () => {
+        await clarificationGate;
+        return HttpResponse.json({
+          success: true, code: '0', message: '', traceId: null,
+          data: { id: 1, workitemId: 100, contentMd: '已确认的澄清结果', gmtCreate: '', gmtModified: '' },
+        });
+      }),
+    );
+
+    renderPanel();
+    await screen.findByPlaceholderText('输入消息...');
+    await typeComposer('我自己写的草稿');
+    await act(async () => {
+      releaseClarification();
+      await new Promise((resolve) => { setTimeout(() => resolve(undefined), 0); });
+    });
+    expect(screen.getByPlaceholderText('输入消息...')).toHaveValue('我自己写的草稿');
+  });
+
   it('clears prefill for unrelated workitems', () => {
     writeClarificationPrefill('100', { squadId: 9, agentId: 42 });
     clearClarificationPrefill('100');

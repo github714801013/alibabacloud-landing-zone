@@ -706,6 +706,16 @@ export const handlers = [
       traceId: 'trace-workitem-watchers',
     });
   }),
+  // 澄清面板读取工单级结构化澄清结果；默认无结果，不触发「再次澄清」模板。
+  http.get('/api/workitems/:workitemId/clarification', () => {
+    return HttpResponse.json({
+      success: true,
+      code: '0',
+      message: '',
+      data: null,
+      traceId: 'trace-workitem-clarification',
+    });
+  }),
   http.get('/api/users/me/settings', () => {
     return HttpResponse.json({
       success: true,

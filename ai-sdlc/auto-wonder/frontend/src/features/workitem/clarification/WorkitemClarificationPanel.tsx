@@ -61,6 +61,7 @@ import {
   readClarificationPrefill,
   writeClarificationPrefill,
 } from './prefill';
+import { useClarification } from '../hooks';
 import {
   CLARIFICATION_SEND_MODE_KEY,
   CLARIFICATION_SEND_MODE_QUERY_KEY,
@@ -286,6 +287,8 @@ export function WorkitemClarificationPanel({
   // 会话详情先于身份派生：URL 会话的主人就是最可靠的恢复身份——这条会话已经过服务端
   // 权限/归属校验，比 URL 参数更可信。只锁定一次，之后不再跟随当前会话变化。
   const conversation = useClarificationConversation(workitemId, conversationId);
+  // 工单已有结构化澄清结果时，输入框为空则填入「再次澄清」模板。
+  const clarification = useClarification(workitemId);
   const urlConversationAgentIdRef = useRef<number | null>(null);
   if (urlConversationAgentIdRef.current == null
       && conversationId !== null
@@ -875,14 +878,19 @@ export function WorkitemClarificationPanel({
 
   useEffect(() => {
     if (!conversationId || initializedInputRef.current === conversationId
-        || isConversationLoading || agentRestorePending
+        || isConversationLoading || agentRestorePending || clarification.isLoading
         || !conversation.isSuccess || convData?.id !== conversationId) return;
     initializedInputRef.current = conversationId;
-    if (turns.length === 0 && !inputValueRef.current.trim() && !isReplying) {
+    if (inputValueRef.current.trim() || isReplying) return;
+    // 已有结构化澄清结果时填入「再次澄清」模板；否则维持首次澄清的引导提示。
+    if (clarification.data?.contentMd?.trim()) {
+      setInputValue(i18n.t('workitem:clarification.reclarifyPrompt'));
+    } else if (turns.length === 0) {
       setInputValue(clarificationBootstrapPrompt(workitemId));
     }
   }, [conversationId, turns.length, isConversationLoading, isReplying, workitemId,
-    conversation.isSuccess, convData, agentRestorePending]);
+    conversation.isSuccess, convData, agentRestorePending, clarification.isLoading,
+    clarification.data]);
 
   const handleSend = useCallback(() => {
     const content = inputValue.trim();
