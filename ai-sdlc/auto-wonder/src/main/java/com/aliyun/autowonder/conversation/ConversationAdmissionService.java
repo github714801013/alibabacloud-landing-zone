@@ -74,6 +74,16 @@ public class ConversationAdmissionService {
         stats.recordBinding(tenantId, agentId, executorId);
     }
 
+    /** 绑定计数：首次绑定自增；已有绑定改绑时旧执行器释放、新执行器承接。 */
+    public void bindOrTransfer(long tenantId, long agentId, Long previousExecutorId, long executorId) {
+        if (previousExecutorId == null) {
+            stats.recordBinding(tenantId, agentId, executorId);
+        } else {
+            stats.releaseBinding(tenantId, agentId, previousExecutorId);
+            stats.recordBinding(tenantId, agentId, executorId);
+        }
+    }
+
     /** 轮次入队自增、出队自减。 */
     public void recordQueueDepth(long tenantId, long agentId, long executorId, long delta) {
         stats.recordQueueDepth(tenantId, agentId, executorId, delta);

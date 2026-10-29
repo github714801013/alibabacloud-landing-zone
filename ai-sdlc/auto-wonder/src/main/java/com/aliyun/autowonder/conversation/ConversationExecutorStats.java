@@ -21,6 +21,11 @@ public class ConversationExecutorStats {
 
     private static final Logger log = LoggerFactory.getLogger(ConversationExecutorStats.class);
 
+    /** 原子递减：只在计数为正时扣减，缺键或已归零不动，避免产生负计数。 */
+    private static final String RELEASE_BINDING_SCRIPT =
+            "local value = tonumber(redis.call('get', KEYS[1]) or '0') "
+                    + "if value > 0 then redis.call('decr', KEYS[1]) end return value";
+
     private final RedisManager redis;
     private final long balanceWindowSeconds;
     private final long queueTimeoutMillis;
@@ -42,6 +47,20 @@ public class ConversationExecutorStats {
             redis.exIncrBy(bindingKey(tenantId, agentId, executorId), 1L, balanceWindowSeconds);
         } catch (RuntimeException failure) {
             log.warn("conversation binding counter failed tenantId={} agentId={} executorId={}: {}",
+                    tenantId, agentId, executorId, failure.getMessage());
+        }
+    }
+
+    /**
+     * 会话改绑离开执行器时自减：窗口内只统计仍然有效的绑定。
+     * 只在计数为正时递减，避免存量会话（从未计数）改绑后留下负值，让该执行器被系统性低估；
+     * DECR 保留原 TTL，不延长窗口。
+     */
+    public void releaseBinding(long tenantId, long agentId, long executorId) {
+        try {
+            redis.eval(RELEASE_BINDING_SCRIPT, List.of(bindingKey(tenantId, agentId, executorId)), List.of());
+        } catch (RuntimeException failure) {
+            log.warn("conversation binding release failed tenantId={} agentId={} executorId={}: {}",
                     tenantId, agentId, executorId, failure.getMessage());
         }
     }

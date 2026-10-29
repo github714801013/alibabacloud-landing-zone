@@ -30,7 +30,6 @@ import java.util.stream.Collectors;
 public class PlatformConversationService {
     @org.springframework.beans.factory.annotation.Autowired
     private PlatformConversationImageService imageService;
-    @org.springframework.beans.factory.annotation.Autowired(required = false)
     private ConversationAdmissionService admissionService;
 
     private static final String CHANNEL = PlatformConversationChannel.CHANNEL;
@@ -75,6 +74,11 @@ public class PlatformConversationService {
         this.agentDao = agentDao;
         this.workspaceService = workspaceService;
         this.executorRouter = executorRouter;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setAdmissionService(ConversationAdmissionService admissionService) {
+        this.admissionService = admissionService;
     }
 
     /**
@@ -288,8 +292,12 @@ public class PlatformConversationService {
                 agent.getOnlineVersionId(), conv.getExecutorId(), true)) {
             throw new IllegalStateException("RUNTIME_OFFLINE");
         }
-        if (executorId != null && !executorId.equals(conv.getExecutorId())) {
+        Long previousExecutorId = conv.getExecutorId();
+        if (executorId != null && !executorId.equals(previousExecutorId)) {
             convDao.updateExecutor(tenantId, conversationId, executorId);
+            if (admissionService != null) {
+                admissionService.bindOrTransfer(tenantId, conv.getAgentId(), previousExecutorId, executorId);
+            }
         }
         // uk_external_msg 是 (tenant_id, external_msg_id)，幂等键必须自带会话身份：
         // 只拼客户端给的 clientMessageId 时，同租户两个会话复用同一个 id 就会撞键，

@@ -731,12 +731,16 @@ class PlatformConversationServiceTest {
     @Test
     void submitTurnRebindsTheExecutorWhenTheBoundOneIsGone() {
         stubConversation(ownedConversation());
+        ConversationAdmissionService admission = mock(ConversationAdmissionService.class);
+        service.setAdmissionService(admission);
         when(executorSelector.select(AGENT_ID, EXECUTOR_ID)).thenReturn(NEXT_EXECUTOR_ID);
 
         service.submitTurn(TENANT_ID, CONVERSATION_ID, OWNER_ID, "在吗", null);
 
         verify(executorRouter).selectPlatform(TENANT_ID, AGENT_ID, 88L, EXECUTOR_ID);
         verify(conversationDao).updateExecutor(TENANT_ID, CONVERSATION_ID, NEXT_EXECUTOR_ID);
+        // 改绑结转：旧执行器的均衡窗口计数扣回，新执行器计入。
+        verify(admission).bindOrTransfer(TENANT_ID, AGENT_ID, EXECUTOR_ID, NEXT_EXECUTOR_ID);
     }
 
     @Test
@@ -744,11 +748,14 @@ class PlatformConversationServiceTest {
         AgentConversationDO conversation = ownedConversation();
         conversation.setExecutorId(null);
         stubConversation(conversation);
+        ConversationAdmissionService admission = mock(ConversationAdmissionService.class);
+        service.setAdmissionService(admission);
         when(executorSelector.select(AGENT_ID, null)).thenReturn(EXECUTOR_ID);
 
         service.submitTurn(TENANT_ID, CONVERSATION_ID, OWNER_ID, "在吗", null);
 
         verify(conversationDao).updateExecutor(TENANT_ID, CONVERSATION_ID, EXECUTOR_ID);
+        verify(admission).bindOrTransfer(TENANT_ID, AGENT_ID, null, EXECUTOR_ID);
     }
 
     @Test

@@ -70,6 +70,22 @@ class ConversationAdmissionServiceTest {
     }
 
     @Test
+    void bindOrTransferCountsFirstBinding() {
+        service.bindOrTransfer(1L, 3L, null, 10L);
+
+        verify(stats).recordBinding(1L, 3L, 10L);
+        verify(stats, never()).releaseBinding(anyLong(), anyLong(), anyLong());
+    }
+
+    @Test
+    void bindOrTransferReleasesTheOldExecutorOnRebind() {
+        service.bindOrTransfer(1L, 3L, 9L, 10L);
+
+        verify(stats).releaseBinding(1L, 3L, 9L);
+        verify(stats).recordBinding(1L, 3L, 10L);
+    }
+
+    @Test
     void rethrowsProtocolCompatibilityFailure() {
         when(router.requiredFeatures(1L, 50L, false)).thenReturn("FEATURE");
         when(selector.eligibleExecutors(3L, "FEATURE"))

@@ -1761,13 +1761,13 @@ public class AgentConversationService {
     private void bindSelectedExecutor(Long tenantId, AgentConversationDO conv,
             ExecutorSelection selection) {
         Long executorId = selection.executorId();
-        boolean firstBinding = conv.getExecutorId() == null;
-        if (!executorId.equals(conv.getExecutorId())) {
+        Long previousExecutorId = conv.getExecutorId();
+        if (!executorId.equals(previousExecutorId)) {
             conv.setExecutorId(executorId);
             convDao.updateExecutor(tenantId, conv.getId(), executorId);
-        }
-        if (firstBinding) {
-            recordConversationBinding(tenantId, conv.getAgentId(), executorId);
+            if (admissionService != null) {
+                admissionService.bindOrTransfer(tenantId, conv.getAgentId(), previousExecutorId, executorId);
+            }
         }
     }
 

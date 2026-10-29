@@ -2,6 +2,7 @@ package com.aliyun.autowonder.conversation;
 
 import com.aliyun.autowonder.redis.RedisManager;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
@@ -23,6 +24,16 @@ class ConversationExecutorStatsTest {
         stats.recordBinding(1L, 3L, 9L);
 
         verify(redis).exIncrBy("conversation:bind:1:3:9", 1L, 172_800L);
+    }
+
+    @Test
+    void releaseBindingDecrementsOnlyPositiveCounters() {
+        stats.releaseBinding(1L, 3L, 9L);
+
+        ArgumentCaptor<String> script = ArgumentCaptor.forClass(String.class);
+        verify(redis).eval(script.capture(), eq(List.of("conversation:bind:1:3:9")), eq(List.of()));
+        assertTrue(script.getValue().contains("decr"));
+        assertTrue(script.getValue().contains("> 0"));
     }
 
     @Test

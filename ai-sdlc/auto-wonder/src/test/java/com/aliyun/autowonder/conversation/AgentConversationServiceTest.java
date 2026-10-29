@@ -645,6 +645,8 @@ class AgentConversationServiceTest {
     void submitTurnResumeForwardsStickyExecutorAndSendsCurrentSystemPrompt() {
         when(turnDao.findByExternalMsgId(1L, "msg-r")).thenReturn(null);
         AgentConversationDO conv = existingConversationWithSession();
+        ConversationAdmissionService admission = mock(ConversationAdmissionService.class);
+        svc.setAdmissionService(admission);
         when(convDao.findByKey(1L, "DINGTALK", "conv-x", 3L)).thenReturn(conv);
         when(executorSelector.select(eq(3L), eq(9L))).thenReturn(9L);
         when(turnDao.insert(any())).thenAnswer(inv -> {
@@ -664,6 +666,8 @@ class AgentConversationServiceTest {
         verify(turnDao).acquireConversationLock("agent-conversation:1:77", 10);
         verify(turnDao).releaseConversationLock("agent-conversation:1:77");
         verify(convDao, never()).updateExecutor(anyLong(), anyLong(), anyLong());
+        // 选机结果与既有绑定一致时不得结转，否则同一会话会被重复扣减。
+        verifyNoInteractions(admission);
         verify(transport).send(any(), eq(90L), eq("more"), argThat(prompt ->
                 prompt != null && prompt.contains("默认数字人")), any());
     }
@@ -672,6 +676,8 @@ class AgentConversationServiceTest {
     void submitTurnCanFallbackFromPreferredExecutorThroughFeatureAwareRouter() {
         when(turnDao.findByExternalMsgId(1L, "msg-fallback")).thenReturn(null);
         AgentConversationDO conv = existingConversationWithSession();
+        ConversationAdmissionService admission = mock(ConversationAdmissionService.class);
+        svc.setAdmissionService(admission);
         when(convDao.findByKey(1L, "DINGTALK", "conv-x", 3L)).thenReturn(conv);
         when(executorRouter.select(1L, 3L, 50L, 9L)).thenReturn(10L);
         when(turnDao.insert(any())).thenAnswer(inv -> {
@@ -685,6 +691,8 @@ class AgentConversationServiceTest {
 
         verify(convDao).updateExecutor(1L, 77L, 10L);
         assertEquals(10L, conv.getExecutorId());
+        // 改绑结转：旧执行器 9 的均衡窗口计数扣回，新执行器 10 计入。
+        verify(admission).bindOrTransfer(1L, 3L, 9L, 10L);
         verify(transport).send(eq(conv), eq(92L), eq("more"), any(), any());
     }
 
