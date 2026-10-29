@@ -267,6 +267,39 @@ describe('WorkitemClarificationPanel ACP 交互接线', () => {
     await waitFor(() => expect(detailCalls).toBeGreaterThan(callsBeforeReply));
   });
 
+  // 线上重复提交：提交成功但卡片要等 resolved 回声才撤下，期间按钮若恢复可点，
+  // 用户会以为没提交成功再点一次，产生第二个相同 POST。
+  it('提交成功后立即撤下卡片，不再等 resolved 回声', async () => {
+    let replyCalls = 0;
+    await renderPanel({
+      acpInteractionSupported: true,
+      processingStatus: 'PROCESSING',
+      processingTurnId: 3,
+      pendingElicitations: [{
+        requestId: 'req-1', turnId: 3, mode: 'form', message: '选一个',
+        requestedSchema: SELECT_SCHEMA, status: 'PENDING', gmtCreate: '',
+      }],
+      turns: [{ id: 3, direction: 'INBOUND', content: '请给方案', status: 'PROCESSING' }],
+    });
+    server.use(
+      http.post(
+        '/api/workitems/:workitemId/clarification-conversations/:conversationId/elicitations/:requestId/reply',
+        () => {
+          replyCalls += 1;
+          return ok(null);
+        },
+      ),
+    );
+
+    await screen.findByTestId('elicitation-wizard-req-1');
+    fireEvent.click(screen.getByTestId('elicitation-option-q0-0'));
+    fireEvent.click(screen.getByTestId('elicitation-submit-req-1'));
+
+    await waitFor(() => expect(replyCalls).toBe(1));
+    // 详情接口仍返回旧的 pending 数据（回声未到），但服务端已结算，卡片必须立即撤下
+    await waitFor(() => expect(screen.queryByTestId('elicitation-wizard-req-1')).toBeNull());
+  });
+
   // F14：跳过 = decline，Qoder 收到后 end_turn 正常收尾。
   it('declines the card when the user skips it', async () => {
     let replyBody: unknown = null;

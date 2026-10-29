@@ -20,5 +20,9 @@ public class ExecutorLaunchConfigVO {
     private String daemonName;
     private Boolean debug;
     private com.aliyun.autowonder.executor.ModelUpgradePolicy modelUpgradePolicy;
+    /** 手输的扩展命令参数；从未保存过时为 null。与客户端类型无关。 */
+    private String extraArgs;
+    /** 前置命令；从未保存过或仅空白时为 null。与客户端类型无关。 */
+    private String prefixCommand;
     private Integer version;
 }

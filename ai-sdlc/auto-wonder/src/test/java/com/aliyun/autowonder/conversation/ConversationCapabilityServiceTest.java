@@ -252,7 +252,7 @@ class ConversationCapabilityServiceTest {
         verify(tokenService, never()).issue(any(), anyLong());
     }
 
-    /** IM 渠道仍保持旧身份规则；网页澄清另测持久化发送者。 */
+    /** IM 渠道仍保持旧身份规则；尚未固定归属人的历史会话保留创建者回退。 */
     @Test
     void legacyChannelsKeepDerivingThePrincipalFromTheAgentCreator() {
         for (String channel : new String[]{"DINGTALK"}) {
@@ -275,16 +275,55 @@ class ConversationCapabilityServiceTest {
         verify(tokenService).issue(conversation, CHIEF_MODIFIER);
     }
 
-    /** 遗留渠道即使写了 owner_user_id 也不改身份，避免历史数据被误读。 */
     @Test
-    void legacyChannelIgnoresAnUnexpectedOwnerColumn() {
+    void clarificationConversationIssuesTheTokenForItsFixedOwner() {
         agent(CHIEF_CREATOR, CHIEF_MODIFIER);
-        AgentConversationDO conversation = conversation("DINGTALK", OWNER);
+        var turns = mock(AgentConversationTurnDao.class);
+        service = new ConversationCapabilityService(bindingDao, skillDao, agentDao,
+                contextAssembler, packager, tokenService, secretCrypto, turns);
+        AgentConversationDO conversation = conversation("WORKITEM_CLARIFICATION", OWNER);
+        turnFromSender(turns, OWNER);
+        when(tokenService.issueForTurn(conversation, TURN_ID)).thenReturn("awconversation_owner");
+
+        ConversationCapabilitySnapshot snapshot = service.prepare(conversation, TURN_ID);
+
+        assertEquals("awconversation_owner", snapshot.mcpToken());
+        verify(tokenService, never()).issue(conversation, CHIEF_CREATOR);
+    }
+
+    @Test
+    void clarificationOwnerDoesNotDependOnTheAgentCreator() {
+        agent(null, null);
+        var turns = mock(AgentConversationTurnDao.class);
+        service = new ConversationCapabilityService(bindingDao, skillDao, agentDao,
+                contextAssembler, packager, tokenService, secretCrypto, turns);
+        AgentConversationDO conversation = conversation("WORKITEM_CLARIFICATION", OWNER);
+        turnFromSender(turns, OWNER);
 
         service.prepare(conversation, TURN_ID);
 
-        verify(tokenService).issue(conversation, CHIEF_CREATOR);
-        verify(tokenService, never()).issue(conversation, OWNER);
+        verify(tokenService).issueForTurn(conversation, TURN_ID);
+    }
+
+    /** 澄清身份以持久化回合的发送人为准，绝不回退到 Agent 创建者。 */
+    private void turnFromSender(AgentConversationTurnDao turns, long senderId) {
+        var turn = new AgentConversationTurnDO();
+        turn.setSubmittedUserId(senderId);
+        when(turns.findByConversationTurn(TENANT, CONVERSATION_ID, TURN_ID)).thenReturn(turn);
+    }
+
+    /** 外部渠道仍忽略意外写入的归属人，避免改变既有身份解析。 */
+    @Test
+    void externalChannelsIgnoreAnUnexpectedOwnerColumn() {
+        for (String channel : new String[]{"DINGTALK", "FEISHU"}) {
+            agent(CHIEF_CREATOR, CHIEF_MODIFIER);
+            AgentConversationDO conversation = conversation(channel, OWNER);
+
+            service.prepare(conversation, TURN_ID);
+
+            verify(tokenService).issue(conversation, CHIEF_CREATOR);
+            verify(tokenService, never()).issue(conversation, OWNER);
+        }
     }
 
     @Test

@@ -111,17 +111,38 @@ public class DispatchResultCoordinator {
         }
         String category = input.getString("failureCategory");
         boolean failover = !success && DispatchService.isExecutorFailureCategory(category);
+        boolean prepareCandidate = !success && !failover
+                && DispatchService.shouldRetryPrepareFailure(category, input.getString("error"));
         JSONObject handoff = input.getJSONObject("handoff");
-        boolean accepted = failover
-                ? dispatches.onExecutorUnavailableResult(tenantId, executorId, id, category, input.getString("error"),
-                        store.countSessionRecoveryDecisions(tenantId, id))
-                : dispatches.onResult(tenantId, executorId, id, success, input.getString("resultSummary"),
+        boolean prepareRetrying = false;
+        boolean accepted;
+        if (failover) {
+            accepted = dispatches.onExecutorUnavailableResult(tenantId, executorId, id, category, input.getString("error"),
+                    store.countSessionRecoveryDecisions(tenantId, id));
+        } else if (prepareCandidate) {
+            DispatchRecoveryService.PrepareRetryOutcome retry = dispatches.onPrepareFailure(
+                    tenantId, executorId, id, input.getString("error"));
+            prepareRetrying = retry == DispatchRecoveryService.PrepareRetryOutcome.RETRIED;
+            if (prepareRetrying) {
+                accepted = true;
+            } else if (retry == DispatchRecoveryService.PrepareRetryOutcome.EXHAUSTED) {
+                accepted = dispatches.onResult(tenantId, executorId, id, false, input.getString("resultSummary"),
                         input.getString("error"), Boolean.TRUE.equals(input.getBoolean("workflowChanged")),
-                        success && handoff != null, category);
+                        false, category);
+            } else {
+                accepted = false;
+            }
+        } else {
+            accepted = dispatches.onResult(tenantId, executorId, id, success, input.getString("resultSummary"),
+                    input.getString("error"), Boolean.TRUE.equals(input.getBoolean("workflowChanged")),
+                    success && handoff != null, category);
+        }
         if (!accepted) return rejectActive(tenantId, executorId, input, hash, "RESULT_STATE_CONFLICT");
         if (failover) {
             guidance.requeueForExecutorFailover(tenantId, id);
             dispatches.runPending(id);
+        } else if (prepareRetrying) {
+            guidance.requeueForExecutorFailover(tenantId, id);
         } else if (!success) {
             guidance.failForDispatch(tenantId, id, input.getString("error"));
         }

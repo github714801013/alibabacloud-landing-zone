@@ -101,6 +101,8 @@ export interface CreateExecutorRequest {
   model?: string | null;
   reasoningEffort?: string | null;
   contextWindow?: string | null;
+  extraArgs?: string | null;
+  prefixCommand?: string | null;
 }
 
 export type ExecutorModelCatalogProvider = 'qoder' | 'qodercn';
@@ -134,6 +136,10 @@ export interface ExecutorLaunchConfig {
   workspaceRoot?: string | null;
   daemonName?: string | null;
   debug?: boolean | null;
+  // 手输的扩展命令参数，追加到启动命令末尾；与客户端类型无关，从未保存过时为 null
+  extraArgs: string | null;
+  // 前置命令，原样放在启动命令最前；与客户端类型无关，从未保存过时为 null
+  prefixCommand: string | null;
   version: number;
 }
 
@@ -147,6 +153,8 @@ export interface UpdateExecutorLaunchConfigRequest {
   contextWindow?: string | null;
   memoryMode?: string | null;
   maxConcurrentDispatches?: number | null;
+  extraArgs?: string | null;
+  prefixCommand?: string | null;
   version: number;
 }
 

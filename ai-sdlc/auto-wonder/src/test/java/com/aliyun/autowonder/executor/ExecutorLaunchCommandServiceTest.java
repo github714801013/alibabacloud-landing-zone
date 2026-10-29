@@ -510,6 +510,151 @@ class ExecutorLaunchCommandServiceTest {
         assertTrue(ex.getMessage().contains("执行器能力不可用"));
     }
 
+    @Test
+    void extraArgumentsAreAppendedAfterThePlatformFlags() {
+        ExecutorLaunchCommandVO vo = buildWithExtraArgs("--foo bar --msg \"a b\"", false, null);
+
+        assertTrue(vo.getCommand().endsWith("--token-aware-enable --foo bar --msg 'a b'"), vo.getCommand());
+    }
+
+    @Test
+    void extraArgumentsLandBeforeTheDebugFlag() {
+        ExecutorLaunchCommandVO vo = buildWithExtraArgs("--foo bar", true, null);
+
+        assertTrue(vo.getCommand().contains("--token-aware-enable --foo bar --debug"), vo.getCommand());
+    }
+
+    @Test
+    void extraArgumentsAreQuotedForPowerShellToo() {
+        ExecutorLaunchCommandVO vo = buildWithExtraArgs("--msg \"a b\"", false, "windows");
+
+        assertTrue(decode(vo.getCommand()).contains("--token-aware-enable --msg 'a b'"), decode(vo.getCommand()));
+    }
+
+    @Test
+    void extraArgumentsReplaceThePlatformFlagTheyOverride() {
+        ExecutorLaunchCommandVO vo = buildWithExtraArgs("--model my-model --memory-mode none", false, null);
+
+        // 被覆盖的平台参数整条从平台段移除，命令里只剩扩展参数那一份
+        assertTrue(vo.getCommand().endsWith("--token-aware-enable --model my-model --memory-mode none"),
+                vo.getCommand());
+        assertFalse(vo.getCommand().contains("qmodel_latest"), vo.getCommand());
+        assertEquals(1, occurrences(vo.getCommand(), "--memory-mode"), vo.getCommand());
+    }
+
+    @Test
+    void extraArgumentsReplaceThePlatformFlagInTheEqualsSpellingToo() {
+        ExecutorLaunchCommandVO vo = buildWithExtraArgs("--model=my-model", false, null);
+
+        assertFalse(vo.getCommand().contains("qmodel_latest"), vo.getCommand());
+        assertTrue(vo.getCommand().endsWith("--token-aware-enable --model=my-model"), vo.getCommand());
+    }
+
+    @Test
+    void extraArgumentsReplaceAnOverriddenBareFlag() {
+        ExecutorLaunchCommandVO vo = buildWithExtraArgs("--token-aware-enable", false, null);
+
+        assertEquals(1, occurrences(vo.getCommand(), "--token-aware-enable"), vo.getCommand());
+    }
+
+    @Test
+    void extraArgumentsLeaveThePlatformFlagsTheyDoNotOverride() {
+        ExecutorLaunchCommandVO vo = buildWithExtraArgs("--foo bar", false, null);
+
+        assertTrue(vo.getCommand().contains("--model qmodel_latest"), vo.getCommand());
+        assertTrue(vo.getCommand().contains("--memory-mode platform"), vo.getCommand());
+        assertTrue(vo.getCommand().contains("--token-aware-enable"), vo.getCommand());
+    }
+
+    @Test
+    void prefixCommandIsPlacedBeforeTheRuntimeCommand() {
+        ExecutorLaunchCommandVO vo = buildWithPrefix("SHELL=/bin/bash", false, null);
+
+        assertTrue(vo.getCommand().startsWith("SHELL=/bin/bash npx -y autowonder@" + RUNTIME_VERSION + " connect "),
+                vo.getCommand());
+    }
+
+    @Test
+    void prefixCommandIsKeptVerbatim() {
+        String prefix = "export A='x y' && export B=2";
+
+        ExecutorLaunchCommandVO vo = buildWithPrefix(prefix, false, null);
+
+        assertTrue(vo.getCommand().startsWith(prefix + " npx -y"), vo.getCommand());
+    }
+
+    @Test
+    void blankPrefixCommandLeavesTheCommandUnchanged() {
+        ExecutorLaunchCommandVO without = buildWithPrefix(null, false, null);
+        ExecutorLaunchCommandVO blank = buildWithPrefix("   ", false, null);
+
+        assertEquals(without.getCommand(), blank.getCommand());
+        assertTrue(without.getCommand().startsWith("npx -y"), without.getCommand());
+    }
+
+    @Test
+    void prefixCommandLandsBeforeTheDebugPipeline() {
+        ExecutorLaunchCommandVO vo = buildWithPrefix("SHELL=/bin/bash", true, null);
+
+        // 前缀作用于整条命令首，--debug 仍排在扩展参数之后
+        assertTrue(vo.getCommand().startsWith("SHELL=/bin/bash npx -y"), vo.getCommand());
+        assertTrue(vo.getCommand().endsWith("--debug"), vo.getCommand());
+    }
+
+    @Test
+    void prefixCommandLandsInsideTheEncodedPowerShellScript() {
+        ExecutorLaunchCommandVO vo = buildWithPrefix("$env:FOO='1'", false, "windows");
+
+        assertTrue(decode(vo.getCommand()).startsWith(PREAMBLE + "$env:FOO='1' npx -y"),
+                decode(vo.getCommand()));
+    }
+
+    @Test
+    void prefixCommandLandsInsideTheEncodedPowerShellPipelineToo() {
+        ExecutorLaunchCommandVO vo = buildWithPrefix("$env:FOO='1'", true, "windows");
+
+        String script = decode(vo.getCommand());
+        assertTrue(script.startsWith(PREAMBLE + "$env:FOO='1' npx -y"), script);
+        assertTrue(script.endsWith("--debug"), script);
+    }
+
+    @Test
+    void prefixCommandAndExtraArgumentsKeepTheDocumentedOrder() {
+        ExecutorLaunchCommandVO vo = buildWith("--foo bar", "SHELL=/bin/bash", false, null);
+
+        assertEquals("SHELL=/bin/bash npx -y autowonder@" + RUNTIME_VERSION + " connect ", vo.getCommand()
+                .substring(0, ("SHELL=/bin/bash npx -y autowonder@" + RUNTIME_VERSION + " connect ").length()));
+        assertTrue(vo.getCommand().endsWith("--token-aware-enable --foo bar"), vo.getCommand());
+    }
+
+    private static int occurrences(String text, String needle) {
+        int count = 0;
+        for (int at = text.indexOf(needle); at >= 0; at = text.indexOf(needle, at + needle.length())) {
+            count++;
+        }
+        return count;
+    }
+
+    private ExecutorLaunchCommandVO buildWithExtraArgs(String extraArgs, boolean debug, String os) {
+        return buildWith(extraArgs, null, debug, os);
+    }
+
+    private ExecutorLaunchCommandVO buildWithPrefix(String prefixCommand, boolean debug, String os) {
+        return buildWith(null, prefixCommand, debug, os);
+    }
+
+    private ExecutorLaunchCommandVO buildWith(String extraArgs, String prefixCommand, boolean debug, String os) {
+        ExecutorLaunchConfigService.LaunchConfig config = new ExecutorLaunchConfigService.LaunchConfig();
+        config.memoryMode = "platform";
+        config.model = "qmodel_latest";
+        config.reasoningEffort = "medium";
+        config.contextWindow = "260000";
+        config.maxConcurrentDispatches = 5;
+        config.extraArgs = extraArgs;
+        config.prefixCommand = prefixCommand;
+        return service.buildAt("awexec_plain", 9L, "QODER_CLI", config, os, debug, null);
+    }
+
     private ExecutorLaunchCommandVO build(String token, String clientKind, String memoryMode, String model,
             String reasoningEffort, String contextWindow, String os, boolean debug, String shell) {
         return service.buildAt(token, 9L, clientKind, memoryMode, model, reasoningEffort, contextWindow,

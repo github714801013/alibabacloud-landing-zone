@@ -26,6 +26,7 @@ import java.util.List;
 public class ExecutorLaunchConfigService {
 
     public static final int DEFAULT_MAX_CONCURRENT_DISPATCHES = 5;
+    public static final int MAX_PREFIX_COMMAND_LENGTH = 4000;
 
     private static final Logger log = LoggerFactory.getLogger(ExecutorLaunchConfigService.class);
     private static final ObjectMapper JSON_MAPPER = new ObjectMapper()
@@ -106,7 +107,7 @@ public class ExecutorLaunchConfigService {
         LaunchConfig previous = parse(executor.getLaunchConfig());
         LaunchConfig stored = resolve(clientKind,
                 req.getMemoryMode(), req.getModel(),
-                req.getReasoningEffort(), req.getContextWindow(), true);
+                req.getReasoningEffort(), req.getContextWindow(), req.getExtraArgs(), req.getPrefixCommand(), true);
         stored.maxConcurrentDispatches = resolveMaxConcurrentDispatches(req.getMaxConcurrentDispatches() != null
                 ? req.getMaxConcurrentDispatches() : previous.maxConcurrentDispatches);
         stored.modelUpgradePolicy = req.getModelUpgradePolicy() == null
@@ -187,6 +188,8 @@ public class ExecutorLaunchConfigService {
                 explicitModel ? req.getModel() : null,
                 req == null ? null : req.getReasoningEffort(),
                 req == null ? null : req.getContextWindow(),
+                req == null ? null : req.getExtraArgs(),
+                req == null ? null : req.getPrefixCommand(),
                 explicitModel);
         config.maxConcurrentDispatches = resolveMaxConcurrentDispatches(req == null ? null : req.getMaxConcurrentDispatches());
         return config;
@@ -241,10 +244,13 @@ public class ExecutorLaunchConfigService {
      * it is false the caller is asking for a default and the id is demoted to a usable one instead.
      */
     private LaunchConfig resolve(String clientKind, String memoryMode, String model, String reasoningEffort,
-            String contextWindow, boolean requireKnownModel) {
+            String contextWindow, String extraArgs, String prefixCommand, boolean requireKnownModel) {
         String provider = ExecutorLaunchOptionsService.resolveProvider(clientKind);
         LaunchConfig config = new LaunchConfig();
         config.memoryMode = options.resolveMemoryMode(memoryMode);
+        // 扩展参数与前置命令都与客户端类型无关，因此在 Qoder 分支之前就校验并落库。
+        config.extraArgs = ExecutorLaunchExtraArgs.normalize(extraArgs);
+        config.prefixCommand = normalizePrefixCommand(prefixCommand);
         if (!ExecutorLaunchOptionsService.isQoderFamily(provider)) {
             return config;
         }
@@ -259,6 +265,24 @@ public class ExecutorLaunchConfigService {
         config.reasoningEffort = options.resolveReasoningEffort(config.model, reasoningEffort);
         config.contextWindow = options.resolveContextWindow(contextWindow);
         return config;
+    }
+
+    /**
+     * 前置命令是任意 shell 文本，只做长度与 NUL 校验：不解析、不改写、不补分隔符，非空白内容原样落库。
+     */
+    private static String normalizePrefixCommand(String prefixCommand) {
+        if (prefixCommand == null || prefixCommand.isBlank()) {
+            return null;
+        }
+        if (prefixCommand.length() > MAX_PREFIX_COMMAND_LENGTH) {
+            throw new BizException(ErrorCode.EXECUTOR_LAUNCH_CONFIG_PREFIX_COMMAND_INVALID,
+                    "前置命令不能超过 " + MAX_PREFIX_COMMAND_LENGTH + " 个字符");
+        }
+        if (prefixCommand.indexOf('\0') >= 0) {
+            throw new BizException(ErrorCode.EXECUTOR_LAUNCH_CONFIG_PREFIX_COMMAND_INVALID,
+                    "前置命令不能包含 NUL 字符");
+        }
+        return prefixCommand;
     }
 
     private static BizException incomplete() {
@@ -311,6 +335,8 @@ public class ExecutorLaunchConfigService {
         vo.setWorkspaceRoot(config.workspaceRoot);
         vo.setDaemonName(config.daemonName);
         vo.setDebug(config.debug);
+        vo.setExtraArgs(config.extraArgs);
+        vo.setPrefixCommand(config.prefixCommand);
         vo.setVersion(version);
         return vo;
     }
@@ -383,5 +409,7 @@ public class ExecutorLaunchConfigService {
         public String workspaceRoot;
         public String daemonName;
         public Boolean debug;
+        public String extraArgs;
+        public String prefixCommand;
     }
 }

@@ -104,9 +104,13 @@ autowonder:
     reconciliation:
       fixed-delay-ms: ${AUTOWONDER_DEBUG_LOG_RECONCILIATION_FIXED_DELAY_MS:3600000}
   dispatch:
+    compensation:
+      unacknowledged-stuck-ms: ${AUTOWONDER_DISPATCH_COMPENSATION_UNACKNOWLEDGED_STUCK_MS:300000}
     recovery:
       package-retries: ${AUTOWONDER_DISPATCH_RECOVERY_PACKAGE_RETRIES:3}
       retry-delay-ms: ${AUTOWONDER_DISPATCH_RECOVERY_RETRY_DELAY_MS:30000}
+    affinity:
+      timeout-ms: ${AUTOWONDER_DISPATCH_AFFINITY_TIMEOUT_MS:1800000}
   im:
     notification:
       dlq-stream-key: ${AUTOWONDER_IM_NOTIFICATION_DLQ_STREAM_KEY:autowonder:im-notification:dlq}

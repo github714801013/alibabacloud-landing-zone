@@ -7,6 +7,7 @@ public enum DispatchWaitingReason {
     EXECUTOR_AT_CAPACITY(true, "执行器容量已满，等待重试"),
     EXECUTOR_RECOVERING(true, "执行器正在恢复本地任务"),
     NO_EXECUTOR_ONLINE(true, "等待执行器上线"),
+    AFFINITY_WAIT(true, "等待绑定的执行器恢复"),
     AGENT_NOT_PUBLISHED(false, "数字员工尚未发布"),
     AGENT_VERSION_NOT_FOUND(false, "发布版本不存在"),
     RUNTIME_INCOMPATIBLE(false, "执行器版本不兼容"),

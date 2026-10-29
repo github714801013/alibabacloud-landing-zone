@@ -959,6 +959,18 @@ public class TaskPackager {
                         }
                         values.put(CHECKPOINT_FALLBACK, Boolean.toString(checkpointFallback));
                     }
+                    // 远端头是客观事实：首个工件显式报空时（例如只读评审在 detached HEAD 上
+                    // 上报），允许链上更早的工件在同一 headCommit 下补全，避免把「未验证」
+                    // 误判成「未推送」；headCommit 不同绝不共用，无该字段的 legacy 上报仍按
+                    // 上面的 fail-closed 语义处理。
+                    String reportedRemote = revision.getString("remoteHeadCommit");
+                    if (!Boolean.parseBoolean(values.get(CHECKPOINT_FALLBACK))
+                            && validCommit(values.get("headCommit"))
+                            && !validCommit(values.get("remoteHeadCommit"))
+                            && values.get("headCommit").equalsIgnoreCase(revision.getString("headCommit"))
+                            && validCommit(reportedRemote)) {
+                        values.put("remoteHeadCommit", reportedRemote);
+                    }
                     if (!Boolean.parseBoolean(values.get(CHECKPOINT_FALLBACK))
                             && !validCommit(values.get("baseCommit"))
                             && validCommit(revision.getString("baseCommit"))) {

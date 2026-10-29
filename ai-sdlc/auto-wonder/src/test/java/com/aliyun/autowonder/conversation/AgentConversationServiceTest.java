@@ -421,6 +421,119 @@ class AgentConversationServiceTest {
     }
 
     @Test
+    void firstClarificationTurnStoresItsSpeakerAsTheConversationOwner() {
+        when(executorSelector.select(3L, null)).thenReturn(9L);
+        when(convDao.insert(any())).thenAnswer(invocation -> {
+            AgentConversationDO conversation = invocation.getArgument(0);
+            conversation.setId(77L);
+            return 1;
+        });
+        when(turnDao.insert(any())).thenAnswer(invocation -> {
+            AgentConversationTurnDO turn = invocation.getArgument(0);
+            turn.setId(88L);
+            return 1;
+        });
+
+        svc.submitTurn(1L, 3L, "WORKITEM_CLARIFICATION", "conv-x", "澄清", "owner-first",
+                null, 42L);
+        commitTransactionSynchronizations();
+
+        verify(convDao).insert(argThat(conversation -> Long.valueOf(42L).equals(conversation.getOwnerUserId())));
+        verify(transport).send(argThat(conversation -> Long.valueOf(42L).equals(conversation.getOwnerUserId())),
+                eq(88L), eq("澄清"), anyString(), any());
+    }
+
+    @Test
+    void existingClarificationBindsItsFirstSpeakerBeforeDispatch() {
+        AgentConversationDO conversation = existingConversationWithSession();
+        conversation.setChannel("WORKITEM_CLARIFICATION");
+        when(convDao.findByKey(1L, "WORKITEM_CLARIFICATION", "conv-x", 3L)).thenReturn(conversation);
+        when(convDao.bindClarificationOwnerIfAbsent(1L, 77L, 42L)).thenReturn(1);
+        when(executorSelector.select(3L, 9L)).thenReturn(9L);
+        when(turnDao.insert(any())).thenAnswer(invocation -> {
+            AgentConversationTurnDO turn = invocation.getArgument(0);
+            turn.setId(90L);
+            return 1;
+        });
+
+        svc.submitTurn(1L, 3L, "WORKITEM_CLARIFICATION", "conv-x", "澄清", "owner-existing",
+                null, 42L);
+        verifyNoInteractions(transport);
+        commitTransactionSynchronizations();
+
+        verify(transport).send(argThat(value -> Long.valueOf(42L).equals(value.getOwnerUserId())),
+                eq(90L), eq("澄清"), anyString(), any());
+    }
+
+    @Test
+    void queuedClarificationBindsOwnerAndLaterSpeakersCannotReplaceIt() {
+        AgentConversationDO conversation = existingConversationWithSession();
+        conversation.setChannel("WORKITEM_CLARIFICATION");
+        when(convDao.findByKey(1L, "WORKITEM_CLARIFICATION", "conv-x", 3L)).thenReturn(conversation);
+        when(convDao.bindClarificationOwnerIfAbsent(1L, 77L, 42L)).thenReturn(1);
+        when(turnDao.findProcessingInbound(1L, 77L)).thenReturn(processingInboundTurn(77L));
+
+        svc.submitTurn(1L, 3L, "WORKITEM_CLARIFICATION", "conv-x", "排队", "owner-queued",
+                null, 42L);
+        commitTransactionSynchronizations();
+        svc.submitTurn(1L, 3L, "WORKITEM_CLARIFICATION", "conv-x", "接力", "owner-later",
+                null, 99L);
+        commitTransactionSynchronizations();
+
+        assertEquals(42L, conversation.getOwnerUserId());
+        verify(convDao, never()).bindClarificationOwnerIfAbsent(1L, 77L, 99L);
+        verify(turnDao, times(2)).insert(argThat(turn -> "QUEUED".equals(turn.getStatus())));
+        verifyNoInteractions(transport);
+    }
+
+    @Test
+    void clarificationLosingTheOwnerClaimDispatchesAsThePersistedOwner() {
+        AgentConversationDO conversation = existingConversationWithSession();
+        conversation.setChannel("WORKITEM_CLARIFICATION");
+        when(convDao.findByKey(1L, "WORKITEM_CLARIFICATION", "conv-x", 3L)).thenReturn(conversation);
+        when(convDao.findClarificationOwnerForUpdate(1L, 77L)).thenReturn(42L);
+        when(executorSelector.select(3L, 9L)).thenReturn(9L);
+        when(turnDao.insert(any())).thenAnswer(invocation -> {
+            AgentConversationTurnDO turn = invocation.getArgument(0);
+            turn.setId(90L);
+            return 1;
+        });
+
+        svc.submitTurn(1L, 3L, "WORKITEM_CLARIFICATION", "conv-x", "接力", "owner-race",
+                null, 99L);
+        commitTransactionSynchronizations();
+
+        verify(transport).send(argThat(value -> Long.valueOf(42L).equals(value.getOwnerUserId())),
+                eq(90L), eq("接力"), anyString(), any());
+    }
+
+    @Test
+    void duplicateClarificationDoesNotBindAnOwner() {
+        AgentConversationDO conversation = existingConversationWithSession();
+        conversation.setChannel("WORKITEM_CLARIFICATION");
+        AgentConversationTurnDO existing = new AgentConversationTurnDO();
+        existing.setConversationId(77L);
+        existing.setDirection("IN");
+        existing.setSubmittedUserId(42L);
+        when(turnDao.findByExternalMsgId(1L, "owner-duplicate")).thenReturn(existing);
+        when(convDao.findByKey(1L, "WORKITEM_CLARIFICATION", "conv-x", 3L)).thenReturn(conversation);
+
+        svc.submitTurn(1L, 3L, "WORKITEM_CLARIFICATION", "conv-x", "重试", "owner-duplicate",
+                null, 42L);
+
+        verify(convDao, never()).bindClarificationOwnerIfAbsent(anyLong(), anyLong(), anyLong());
+        verify(turnDao, never()).insert(any());
+        verifyNoInteractions(transport);
+    }
+
+    @Test
+    void invalidSpeakerIsRejectedBeforeConversationAccess() {
+        assertThrows(BizException.class, () -> svc.submitTurn(1L, 3L, "WORKITEM_CLARIFICATION",
+                "conv-x", "澄清", "owner-invalid", null, 0L));
+        verifyNoInteractions(convDao, turnDao, transport);
+    }
+
+    @Test
     void submitTurnUsesBoundedHashedLogicalConversationLockName() {
         String longChannelConversationId = "conv-" + "x".repeat(300);
         when(turnDao.findByExternalMsgId(1L, "msg-long")).thenReturn(null);
@@ -1082,6 +1195,29 @@ class AgentConversationServiceTest {
     }
 
     @Test
+    void queuedClarificationDispatchRefreshesAnEmptyOwnerSnapshot() {
+        AgentConversationDO conversation = existingConversationWithSession();
+        conversation.setChannel("WORKITEM_CLARIFICATION");
+        when(convDao.findById(1L, 77L)).thenReturn(conversation);
+        when(convDao.findClarificationOwnerForUpdate(1L, 77L)).thenReturn(42L);
+        when(turnDao.findByConversationTurn(1L, 77L, 55L)).thenReturn(processingInboundTurn(77L));
+        AgentConversationTurnDO next = processingInboundTurn(77L);
+        next.setId(56L);
+        next.setStatus("QUEUED");
+        next.setContent("继续澄清");
+        when(turnDao.findNextQueuedInbound(1L, 77L)).thenReturn(next);
+        when(turnDao.updateStatusIfCurrent(1L, 56L, "QUEUED", "PROCESSING", null)).thenReturn(1);
+        when(turnDao.updateInboundStatusIfProcessing(1L, 77L, 55L, "SUCCESS", null)).thenReturn(1);
+        when(executorSelector.select(3L, 9L)).thenReturn(9L);
+
+        svc.acknowledgeTurn(1L, 9L, 77L, 55L, "SUCCESS", null, "澄清回复", "sess-123");
+        commitTransactionSynchronizations();
+
+        verify(transport).send(argThat(value -> Long.valueOf(42L).equals(value.getOwnerUserId())),
+                eq(56L), eq("继续澄清"), anyString(), any());
+    }
+
+    @Test
     void acknowledgeDeliversReplyWhenQueuedDispatchFailsAfterCommit() {
         AgentConversationDO conv = existingConversationWithSession();
         when(convDao.findById(1L, 77L)).thenReturn(conv);
@@ -1357,6 +1493,27 @@ class AgentConversationServiceTest {
         verify(transport).send(eq(conv), eq(55L), eq("stuck"), argThat(prompt ->
                 prompt != null && prompt.contains("默认数字人")), any());
         verify(turnDao).releaseConversationLock("agent-conversation:1:77");
+    }
+
+    @Test
+    void recoveredClarificationDispatchRefreshesAnEmptyOwnerSnapshot() {
+        Date cutoff = new Date(1_000L);
+        AgentConversationDO conversation = existingConversationWithSession();
+        conversation.setChannel("WORKITEM_CLARIFICATION");
+        AgentConversationTurnDO stale = processingInboundTurn(77L);
+        stale.setContent("恢复澄清");
+        when(turnDao.listStaleProcessingInboundByExecutor(1L, 9L, cutoff, 100))
+                .thenReturn(java.util.List.of(stale));
+        when(convDao.findById(1L, 77L)).thenReturn(conversation);
+        when(convDao.findClarificationOwnerForUpdate(1L, 77L)).thenReturn(42L);
+        when(turnDao.findByConversationTurn(1L, 77L, 55L)).thenReturn(stale);
+        when(executorSelector.select(3L, 9L)).thenReturn(9L);
+
+        svc.recoverStaleTurnsForExecutor(1L, 9L, java.util.Set.of(), true, cutoff, 100);
+        commitTransactionSynchronizations();
+
+        verify(transport).send(argThat(value -> Long.valueOf(42L).equals(value.getOwnerUserId())),
+                eq(55L), eq("恢复澄清"), anyString(), any());
     }
 
     @Test

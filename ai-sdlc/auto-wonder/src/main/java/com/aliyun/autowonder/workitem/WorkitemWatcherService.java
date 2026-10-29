@@ -46,11 +46,7 @@ public class WorkitemWatcherService {
     @Transactional
     public WatchStateVO follow(long workitemId, long tenantId, long userId) {
         requireWorkitem(workitemId, tenantId);
-        WorkitemWatcherDO watcher = new WorkitemWatcherDO();
-        watcher.setTenantId(tenantId);
-        watcher.setWorkitemId(workitemId);
-        watcher.setUserId(userId);
-        watcherDao.insertIgnore(watcher);
+        insertWatchRelation(workitemId, tenantId, userId);
         return watchState(workitemId, tenantId, userId);
     }
 
@@ -58,8 +54,25 @@ public class WorkitemWatcherService {
     @Transactional
     public WatchStateVO unfollow(long workitemId, long tenantId, long userId) {
         requireWorkitem(workitemId, tenantId);
-        watcherDao.delete(tenantId, workitemId, userId);
+        deleteWatchRelation(workitemId, tenantId, userId);
         return watchState(workitemId, tenantId, userId);
+    }
+
+    /**
+     * 关注关系写原语（包内）：只做幂等落库，不校验工单、不重算状态，加入调用方事务、异常原样上抛。
+     * 供本类单人语义与管理端批量代管共享，避免批量逐人重复重建全量名单。
+     */
+    void insertWatchRelation(long workitemId, long tenantId, long userId) {
+        WorkitemWatcherDO watcher = new WorkitemWatcherDO();
+        watcher.setTenantId(tenantId);
+        watcher.setWorkitemId(workitemId);
+        watcher.setUserId(userId);
+        watcherDao.insertIgnore(watcher);
+    }
+
+    /** 取消关注关系写原语（包内）：关系不存在时为空操作，同样加入调用方事务。 */
+    void deleteWatchRelation(long workitemId, long tenantId, long userId) {
+        watcherDao.delete(tenantId, workitemId, userId);
     }
 
     /** 当前用户对某工单的关注状态与关注人总数。 */
@@ -139,7 +152,8 @@ public class WorkitemWatcherService {
         return member != null && member.getStatus() != null && member.getStatus() == 0;
     }
 
-    private WorkitemDO requireWorkitem(long workitemId, long tenantId) {
+    /** 工单归属校验（包内）：管理端批量代管复用同一口径；跨空间按工单不存在拒绝。 */
+    WorkitemDO requireWorkitem(long workitemId, long tenantId) {
         WorkitemDO workitem = workitemDao.findById(workitemId);
         if (workitem == null || workitem.getTenantId() == null || workitem.getTenantId() != tenantId) {
             throw new BizException(ErrorCode.WORKITEM_NOT_FOUND);

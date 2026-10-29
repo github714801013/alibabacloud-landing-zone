@@ -596,10 +596,11 @@ public class DispatchCheckpointService {
         List<DispatchCheckpointDO> checkpoints = source.checkpoints();
         DispatchCheckpointDO checkpoint = checkpoints.isEmpty() ? null : checkpoints.get(0);
         ProviderSession providerSession = source.providerSession();
-        // A continuous Run may continue on a different executor after its
-        // affinity deadline. Checkpoints are portable, provider-native session
-        // ids are not; never leak one to the replacement executor.
-        if ("DEGRADED_CONTINUOUS".equals(dispatch.getResumeMode())) {
+        // Checkpoints are portable, provider-native session ids are not: after an
+        // affinity deadline (or any resume that lands on another machine) never
+        // leak the old machine's session to the replacement executor.
+        if ("DEGRADED_CONTINUOUS".equals(dispatch.getResumeMode())
+                || resumedOnAnotherExecutor(dispatch, source.dispatchId())) {
             providerSession = null;
         }
         if (checkpoint == null) {
@@ -629,6 +630,16 @@ public class DispatchCheckpointService {
                 candidates.isEmpty() ? "sha256:" + checkpoint.getSha256() : candidates.get(0).getSha256(),
                 checkpoint.getCheckpointSeq(),
                 candidates);
+    }
+
+    /** 续跑来源在另一台机器上执行过：provider 会话不可迁移。 */
+    private boolean resumedOnAnotherExecutor(DispatchDO dispatch, Long sourceDispatchId) {
+        if (dispatch.getExecutorId() == null || sourceDispatchId == null) {
+            return false;
+        }
+        DispatchDO source = dispatchDao.findById(sourceDispatchId);
+        return source != null && source.getExecutorId() != null
+                && !Objects.equals(dispatch.getExecutorId(), source.getExecutorId());
     }
 
     /**

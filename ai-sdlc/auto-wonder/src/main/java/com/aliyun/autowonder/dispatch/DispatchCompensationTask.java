@@ -21,9 +21,16 @@ public class DispatchCompensationTask {
     private static final int BATCH = 200;
     private static final long PENDING_STUCK_MS = 60_000L;        // PENDING older than 1m -> re-drive
     private static final long PACKAGING_STUCK_MS = 5 * 60_000L;  // allow normal package/OSS latency before recovery
-    private static final long UNACKNOWLEDGED_STUCK_MS = 2 * 60_000L;
     private static final long PAUSING_STUCK_MS = 2 * 60_000L;
     private static final long INFLIGHT_STUCK_MS = 60 * 60_000L;  // ACKED/RUNNING older than 60m
+
+    /**
+     * Executors whose first turn runs long must not be treated as unacknowledged after two
+     * minutes; the field initializer also covers direct construction outside Spring.
+     */
+    @org.springframework.beans.factory.annotation.Value(
+            "${autowonder.dispatch.compensation.unacknowledged-stuck-ms:300000}")
+    private long unacknowledgedStuckMs = 300_000L;
 
     private static final List<String> PENDING_STATES =
             List.of(DispatchStatus.PENDING);
@@ -112,7 +119,7 @@ public class DispatchCompensationTask {
             List<DispatchDO> packaging = loadPhase(PACKAGING_STATES,
                     now - PACKAGING_STUCK_MS, "packaging");
             List<DispatchDO> unacknowledged = loadPhase(UNACKNOWLEDGED_STATES,
-                    now - UNACKNOWLEDGED_STUCK_MS, "unacknowledged");
+                    now - unacknowledgedStuckMs, "unacknowledged");
             long pausingCutoff = now - PAUSING_STUCK_MS;
             List<DispatchDO> pausing = loadPhase(PAUSING_STATES, pausingCutoff, "pausing");
             List<DispatchDO> inflight = loadPhase(INFLIGHT_STATES,

@@ -441,6 +441,13 @@ class DispatchRecoveryServiceTest {
         service.reopen(1,10,7); service.insert(next); assertNotNull(dao.findById(101L));
         verifyNoInteractions(transport);
     }
+    @Test void closeReleasesTheWorkitemExecutorAffinity() {
+        WorkitemExecutorAffinity affinity = mock(WorkitemExecutorAffinity.class);
+        service.setExecutorAffinity(affinity);
+        dispatch("PENDING",null); guidance("QUEUED");
+        service.close(1,10,7,false);
+        verify(affinity).release(1L,10L);
+    }
     @Test void retriesKeepOldGuidanceIdentitySoLateAckCannotApplyToNewAttempt() {
         dispatch("FAILED",null); guidance("FAILED");
         var next=dao.findById(100L);next.setId(101L);next.setStatus("PENDING");next.setResumeMode("CANONICAL_INTERACTION");next.setIdempotencyKey("continue:100");next.setResumeFromDispatchId(100L);

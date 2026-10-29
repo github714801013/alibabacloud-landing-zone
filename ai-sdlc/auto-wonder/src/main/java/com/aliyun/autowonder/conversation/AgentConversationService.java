@@ -326,6 +326,7 @@ public class AgentConversationService {
         if (conv != null) {
             AgentConversationDO existingConv = conv;
             return withConversationLock(conversationLockName(tenantId, existingConv.getId()), () -> {
+                bindClarificationOwner(existingConv, submittedUserId);
                 if (turnDao.findProcessingInbound(tenantId, existingConv.getId()) != null) {
                     insertInboundTurn(tenantId, existingConv.getId(), content, externalMsgId,
                             sourceContext, STATUS_QUEUED, submittedUserId);
@@ -342,6 +343,19 @@ public class AgentConversationService {
         }
         return createConversationAndFirstDispatch(tenantId, agentId, channel, channelConversationId,
                 content, externalMsgId, sourceContext, submittedUserId);
+    }
+
+    private void bindClarificationOwner(AgentConversationDO conv, Long submittedUserId) {
+        if (!WorkitemClarificationConversationService.CHANNEL.equals(conv.getChannel())
+                || conv.getOwnerUserId() != null || submittedUserId == null) {
+            return;
+        }
+        if (convDao.bindClarificationOwnerIfAbsent(conv.getTenantId(), conv.getId(), submittedUserId) == 1) {
+            conv.setOwnerUserId(submittedUserId);
+        } else {
+            // 当前读避开旧事务快照，不能把条件更新失败的一方当成归属人。
+            conv.setOwnerUserId(convDao.findClarificationOwnerForUpdate(conv.getTenantId(), conv.getId()));
+        }
     }
 
     private PendingDispatch createConversationAndFirstDispatch(Long tenantId, Long agentId,
@@ -363,6 +377,9 @@ public class AgentConversationService {
         conv.setAgentId(agentId);
         conv.setAgentVersionId(identity.agentVersionId());
         conv.setChannel(channel);
+        if (WorkitemClarificationConversationService.CHANNEL.equals(channel)) {
+            conv.setOwnerUserId(submittedUserId);
+        }
         conv.setChannelConversationId(channelConversationId);
         conv.setExecutorId(executorId);
         conv.setStatus("ACTIVE");
@@ -1614,6 +1631,10 @@ public class AgentConversationService {
 
     private AgentIdentitySnapshot refreshConversationIdentity(Long tenantId,
             AgentConversationDO conv, Long agentVersionId) {
+        if (WorkitemClarificationConversationService.CHANNEL.equals(conv.getChannel())
+                && conv.getOwnerUserId() == null) {
+            conv.setOwnerUserId(convDao.findClarificationOwnerForUpdate(tenantId, conv.getId()));
+        }
         AgentIdentitySnapshot identity = resolveIdentity(conv.getAgentId(), agentVersionId, conv.getChannel(),
                 conv.getExecutorId());
         if (!identity.agentVersionId().equals(conv.getAgentVersionId())) {

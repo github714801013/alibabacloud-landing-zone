@@ -118,7 +118,8 @@ public class ConversationCapabilityService {
     /**
      * 平台管家会话的 MCP 身份只能是会话 Owner 本人。此前这里回退到 Agent 的创建者/修改者，
      * 结果是所有人共用最后一个改过 Chief 的人的身份，写操作与审计全部记在他名下。
-     * Owner 缺失时宁可整轮失败，也不能退回旧行为；IM 渠道保留旧规则，网页澄清必须走持久化回合。
+     * Owner 缺失时宁可整轮失败，也不能退回旧行为；IM 渠道保留旧规则，
+     * 网页澄清必须走持久化回合。
      */
     private long resolvePrincipal(AgentConversationDO conversation, AgentDO agent) {
         if (PlatformConversationChannel.CHANNEL.equals(conversation.getChannel())

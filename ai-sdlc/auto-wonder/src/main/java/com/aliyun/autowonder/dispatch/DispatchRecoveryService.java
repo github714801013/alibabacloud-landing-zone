@@ -57,6 +57,9 @@ public class DispatchRecoveryService {
     private com.aliyun.autowonder.workitem.DeliveryRestartStore restartStore;
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     public void setRestartStore(com.aliyun.autowonder.workitem.DeliveryRestartStore value) { restartStore = value; }
+    private WorkitemExecutorAffinity executorAffinity;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setExecutorAffinity(WorkitemExecutorAffinity value) { executorAffinity = value; }
     // Resolve the callback only after a stop has committed. The orchestrator itself
     // depends on recovery (and DispatchService), so eager injection forms a bean cycle.
     private ObjectProvider<DeliveryRestartOrchestrator> restartOrchestrator;
@@ -556,6 +559,7 @@ public class DispatchRecoveryService {
             }
             audit(tenantId, workitemId, userId, "CLOSE_DELIVERY", "WORKITEM");
         });
+        releaseExecutorAffinity(tenantId, workitemId);
         for (DispatchDO d : dispatches.listByWorkitem(tenantId, workitemId)) sendStop(d);
         return state(tenantId, workitemId);
     }
@@ -594,6 +598,19 @@ public class DispatchRecoveryService {
             if (reason != null) reasons.put(rs.getLong("dispatch_id"), reason);
         }, args.toArray());
         return reasons;
+    }
+
+    /** 关闭交付等于工单会话终结：释放绑定；Redis 失败只留日志，由 TTL 兜底。 */
+    private void releaseExecutorAffinity(long tenantId, long workitemId) {
+        if (executorAffinity == null) {
+            return;
+        }
+        try {
+            executorAffinity.release(tenantId, workitemId);
+        } catch (RuntimeException releaseFailure) {
+            log.warn("workitem executor affinity release failed workitemId={}", workitemId,
+                    releaseFailure);
+        }
     }
 
     public Map<String, Object> state(long tenantId, long workitemId) {
@@ -677,6 +694,39 @@ public class DispatchRecoveryService {
                     new Timestamp(System.currentTimeMillis() + (Math.max(1000, retryDelayMs) * (1L << Math.min(count, 8)))), d.getTenantId(), d.getId());
             return dispatches.returnPackagingToPending(d.getId(), d.getTenantId(), d.getVersion(), 0L) == 1;
         });
+    }
+
+    /** 准备阶段（materialize 仓库）瞬时失败的可重试判定结果。 */
+    public enum PrepareRetryOutcome { RETRIED, EXHAUSTED, REJECTED }
+
+    public record PrepareRetry(PrepareRetryOutcome outcome, int attempt, int maxAttempts) {
+        static PrepareRetry rejected() { return new PrepareRetry(PrepareRetryOutcome.REJECTED, 0, 0); }
+        static PrepareRetry exhausted(int maxAttempts) { return new PrepareRetry(PrepareRetryOutcome.EXHAUSTED, maxAttempts, maxAttempts); }
+        static PrepareRetry retried(int attempt, int maxAttempts) { return new PrepareRetry(PrepareRetryOutcome.RETRIED, attempt, maxAttempts); }
+    }
+
+    /** 准备阶段瞬时失败：计入共用重试预算后退回 PENDING，由补偿任务按退避重驱动；不标记执行器不可用。 */
+    public PrepareRetry retryPrepareFailure(DispatchDO d, String reason) {
+        PrepareRetry result = tx.execute(s -> {
+            lockSubject(d);
+            DispatchDO current = dispatches.findById(d.getId());
+            // 只有可退回 PENDING 的活跃执行才重试；暂停、终态、已排队与版本不符一律拒绝，避免重复消费结果时反复占用预算。
+            if (current == null || !DispatchStatus.isPauseable(current.getStatus())
+                    || !Objects.equals(current.getVersion(), d.getVersion()) || fenced(current)) {
+                return PrepareRetry.rejected();
+            }
+            jdbc.update("INSERT IGNORE INTO dispatch_recovery (tenant_id,dispatch_id) VALUES (?,?)", d.getTenantId(), d.getId());
+            int count = jdbc.queryForObject("SELECT retry_count FROM dispatch_recovery WHERE tenant_id=? AND dispatch_id=? FOR UPDATE", Integer.class, d.getTenantId(), d.getId());
+            int maxAttempts = Math.max(0, packageRetries);
+            if (count >= maxAttempts) return PrepareRetry.exhausted(maxAttempts);
+            jdbc.update("UPDATE dispatch_recovery SET retry_count=retry_count+1,phase='PREPARE',reason=?,next_retry_at=?,gmt_modified=NOW() WHERE tenant_id=? AND dispatch_id=?",
+                    reason == null ? "PREPARE_REPO_TRANSIENT_ERROR" : reason.substring(0, Math.min(512, reason.length())),
+                    new Timestamp(System.currentTimeMillis() + (Math.max(1000, retryDelayMs) * (1L << Math.min(count, 8)))), d.getTenantId(), d.getId());
+            int rows = dispatches.returnOwnedActiveToPending(current.getId(), current.getTenantId(), current.getExecutorId(), current.getVersion(), 0L);
+            if (rows != 1) throw new IllegalStateException("PREPARE_RETRY_REQUEUE_CONFLICT");
+            return PrepareRetry.retried(count + 1, maxAttempts);
+        });
+        return result == null ? PrepareRetry.rejected() : result;
     }
 
     /** Bounded repair queries use the same terminal projection as the live transition. */

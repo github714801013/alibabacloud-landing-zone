@@ -256,6 +256,72 @@ class WorkitemClarificationConversationServiceTest {
                 conv.getChannelConversationId(), "clarify", "web-clarification:77:client-1", null, 42L);
     }
 
+    @Test
+    void submitTurnPrefersTheWorkitemExecutorBinding() {
+        com.aliyun.autowonder.dispatch.WorkitemExecutorAffinity affinity =
+                mock(com.aliyun.autowonder.dispatch.WorkitemExecutorAffinity.class);
+        service.bindExecutorAffinity(affinity);
+        AgentConversationDO conv = clarificationConversation(10011L);
+        when(convDao.findById(1L, 77L)).thenReturn(conv);
+        AgentDO agent = new AgentDO();
+        agent.setId(3L);
+        agent.setOnlineVersionId(50L);
+        when(agentDao.findById(3L)).thenReturn(agent);
+        when(affinity.boundExecutor(1L, 10011L)).thenReturn(12L);
+        when(executorRouter.selectStrict(1L, 3L, 50L, 12L)).thenReturn(12L);
+        when(turnDao.findByExternalMsgId(1L, "web-clarification:77:bound"))
+                .thenReturn(null, turn(91L, "IN", "hi"));
+
+        service.submitTurn(1L, 10011L, 77L, 42L, "hi", "bound", null);
+
+        verify(executorRouter).selectStrict(1L, 3L, 50L, 12L);
+        verify(executorRouter, never()).select(anyLong(), anyLong(), anyLong(), any());
+        verify(convDao).updateExecutor(1L, 77L, 12L);
+    }
+
+    /** 绑定机器离线时澄清会话不换机：按离线报错，不投递到其他执行器。 */
+    @Test
+    void submitTurnDoesNotSwitchExecutorWhenTheBoundExecutorIsOffline() {
+        com.aliyun.autowonder.dispatch.WorkitemExecutorAffinity affinity =
+                mock(com.aliyun.autowonder.dispatch.WorkitemExecutorAffinity.class);
+        service.bindExecutorAffinity(affinity);
+        when(convDao.findById(1L, 77L)).thenReturn(clarificationConversation(10011L));
+        AgentDO agent = new AgentDO();
+        agent.setId(3L);
+        agent.setOnlineVersionId(50L);
+        when(agentDao.findById(3L)).thenReturn(agent);
+        when(affinity.boundExecutor(1L, 10011L)).thenReturn(12L);
+        when(executorRouter.selectStrict(1L, 3L, 50L, 12L)).thenReturn(null);
+
+        BizException ex = assertThrows(BizException.class,
+                () -> service.submitTurn(1L, 10011L, 77L, 42L, "hi", "bound-offline", null));
+
+        assertEquals(ErrorCode.CLARIFICATION_EXECUTOR_OFFLINE.getCode(), ex.getCode());
+        verify(executorRouter, never()).select(anyLong(), anyLong(), anyLong(), any());
+        verify(convDao, never()).updateExecutor(anyLong(), anyLong(), anyLong());
+        verify(conversationService, never()).submitTurn(anyLong(), anyLong(), anyString(),
+                nullable(String.class), anyString(), anyString(), nullable(String.class), anyLong());
+    }
+
+    @Test
+    void createConversationUsesTheWorkitemExecutorBinding() {
+        com.aliyun.autowonder.dispatch.WorkitemExecutorAffinity affinity =
+                mock(com.aliyun.autowonder.dispatch.WorkitemExecutorAffinity.class);
+        service.bindExecutorAffinity(affinity);
+        AgentDO agent = new AgentDO();
+        agent.setId(3L);
+        agent.setOnlineVersionId(50L);
+        agent.setName("澄清数字人");
+        when(agentDao.findById(3L)).thenReturn(agent);
+        when(affinity.boundExecutor(1L, 10011L)).thenReturn(12L);
+        when(executorRouter.selectStrict(1L, 3L, 50L, 12L)).thenReturn(12L);
+
+        service.createConversation(1L, 10011L, 3L);
+
+        verify(executorRouter, never()).select(anyLong(), anyLong(), anyLong(), any());
+        verify(convDao).insert(argThat(c -> Long.valueOf(12L).equals(c.getExecutorId())));
+    }
+
     /** E2E 回归：执行器离线返回可判定的业务错误码，而不是落到 10000 系统错误。 */
     @Test
     void submitTurnReportsCodedErrorWhenNoExecutorAvailable() {
@@ -271,7 +337,7 @@ class WorkitemClarificationConversationServiceTest {
 
         assertEquals(ErrorCode.CLARIFICATION_EXECUTOR_OFFLINE.getCode(), ex.getCode());
         verify(conversationService, never()).submitTurn(anyLong(), anyLong(), anyString(),
-                anyString(), anyString(), anyString());
+                nullable(String.class), anyString(), anyString(), nullable(String.class), anyLong());
     }
 
     @Test
@@ -318,6 +384,16 @@ class WorkitemClarificationConversationServiceTest {
     }
 
     @Test
+    void submitTurnRejectsAMissingOrInvalidAuthenticatedSpeaker() {
+        for (Long userId : new Long[]{null, 0L, -1L}) {
+            BizException error = assertThrows(BizException.class,
+                    () -> service.submitTurn(1L, 10011L, 77L, userId, "澄清", "invalid", null));
+            assertEquals(ErrorCode.UNAUTHORIZED.getCode(), error.getCode());
+        }
+        verifyNoInteractions(convDao, turnDao, conversationService);
+    }
+
+    @Test
     void submitTurnRejectsEmptyMessageWithoutAttachments() {
         when(convDao.findById(1L, 77L)).thenReturn(clarificationConversation(10011L));
 
@@ -325,7 +401,7 @@ class WorkitemClarificationConversationServiceTest {
                 () -> service.submitTurn(1L, 10011L, 77L, 42L, "   ", "c-3",
                         java.util.List.of()));
         verify(conversationService, never()).submitTurn(anyLong(), anyLong(), anyString(),
-                anyString(), anyString(), anyString());
+                nullable(String.class), anyString(), anyString(), nullable(String.class), anyLong());
     }
 
     @Test
@@ -343,7 +419,7 @@ class WorkitemClarificationConversationServiceTest {
         verify(attachmentService).verifyReplay(1L, 77L, 42L, java.util.List.of(5L), 90L);
         verify(attachmentService).bindToTurn(1L, 77L, 42L, java.util.List.of(5L), 90L);
         verify(conversationService, never()).submitTurn(anyLong(), anyLong(), anyString(),
-                anyString(), anyString(), anyString());
+                nullable(String.class), anyString(), anyString(), nullable(String.class), anyLong());
     }
 
     @Test

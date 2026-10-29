@@ -16,6 +16,7 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.regex.Pattern;
 
 /**
@@ -85,6 +86,17 @@ public class ExecutorLaunchCommandService {
                 Boolean.TRUE.equals(request.getDebug()), request.getShell());
     }
 
+    /** 平台自己生成的一个启动参数；{@code value} 为 null 表示裸旗标（例如 --token-aware-enable）。 */
+    private record LaunchArg(String flag, String value) {
+        static LaunchArg of(String flag, String value) {
+            return new LaunchArg(flag, value);
+        }
+
+        static LaunchArg bare(String flag) {
+            return new LaunchArg(flag, null);
+        }
+    }
+
     private static <T> T requireDependency(T dependency) {
         if (dependency == null) {
             throw BizException.keyed(ErrorCode.SYSTEM_ERROR, "executor.capabilities_unavailable", null, "执行器能力不可用");
@@ -116,7 +128,7 @@ public class ExecutorLaunchCommandService {
         return buildAt(token, executorId, clientKind, config, os, debug, shell);
     }
 
-    private ExecutorLaunchCommandVO buildAt(String token, long executorId, String clientKind,
+    ExecutorLaunchCommandVO buildAt(String token, long executorId, String clientKind,
             ExecutorLaunchConfigService.LaunchConfig config, String os, boolean debug, String shell) {
         String memoryMode = config.memoryMode;
         String model = config.model;
@@ -144,38 +156,60 @@ public class ExecutorLaunchCommandService {
         String provider = ExecutorLaunchOptionsService.resolveProvider(clientKind);
         boolean qoderFamily = ExecutorLaunchOptionsService.isQoderFamily(provider);
 
-        List<String> argv = new ArrayList<>(List.of(
-                "npx", "-y", "autowonder@" + runtimeVersion, "connect",
-                "--ws-url", wsUrl,
-                "--token", token,
-                "--executor-id", String.valueOf(executorId),
-                "--provider", provider,
-                "--memory-mode", memoryMode,
-                "--max-tasks", String.valueOf(maxConcurrentDispatches)));
+        List<LaunchArg> launchArgs = new ArrayList<>(List.of(
+                LaunchArg.of("--ws-url", wsUrl),
+                LaunchArg.of("--token", token),
+                LaunchArg.of("--executor-id", String.valueOf(executorId)),
+                LaunchArg.of("--provider", provider),
+                LaunchArg.of("--memory-mode", memoryMode),
+                LaunchArg.of("--max-tasks", String.valueOf(maxConcurrentDispatches))));
         if (qoderFamily && model != null) {
-            argv.addAll(List.of("--model", model,
-                    "--reasoning-effort", reasoningEffort,
-                    "--context-window", contextWindow));
+            launchArgs.add(LaunchArg.of("--model", model));
+            launchArgs.add(LaunchArg.of("--reasoning-effort", reasoningEffort));
+            launchArgs.add(LaunchArg.of("--context-window", contextWindow));
         }
         if (qoderFamily) {
-            argv.add("--token-aware-enable");
+            launchArgs.add(LaunchArg.bare("--token-aware-enable"));
         }
-        if (config.workspaceRoot != null) argv.addAll(List.of("--workspace-root", config.workspaceRoot));
-        if (config.daemonName != null) argv.addAll(List.of("--name", config.daemonName));
+        // 工作空间根目录与守护进程名同样是平台参数，一起参与扩展参数的同名覆盖。
+        if (config.workspaceRoot != null) {
+            launchArgs.add(LaunchArg.of("--workspace-root", config.workspaceRoot));
+        }
+        if (config.daemonName != null) {
+            launchArgs.add(LaunchArg.of("--name", config.daemonName));
+        }
+
+        List<String> extraArgv = config.extraArgs == null ? List.of() : ExecutorLaunchExtraArgs.tokenize(config.extraArgs);
+        // 被扩展参数同名的平台参数连同取值一起丢掉，命令里只留覆盖后的那一份，不再两处并列。
+        Set<String> overridden = ExecutorLaunchExtraArgs.flagNames(extraArgv);
+        List<String> argv = new ArrayList<>(List.of("npx", "-y", "autowonder@" + runtimeVersion, "connect"));
+        for (LaunchArg arg : launchArgs) {
+            if (overridden.contains(arg.flag())) {
+                continue;
+            }
+            argv.add(arg.flag());
+            if (arg.value() != null) {
+                argv.add(arg.value());
+            }
+        }
+        // 扩展参数排在平台参数之后、--debug 之前，逐项走同一套转义。
+        argv.addAll(extraArgv);
         if (debug || Boolean.TRUE.equals(config.debug)) argv.add("--debug");
+
+        String prefix = config.prefixCommand == null || config.prefixCommand.isBlank() ? null : config.prefixCommand;
 
         String command;
         if (debug) {
             // --debug turns on the runtime's own diagnostic log and keeps streaming the console; the
             // command must not tee stdout/stderr into a second, unmanaged file.
             command = SHELL_POWERSHELL.equals(resolvedShell)
-                    ? encodedPowerShell(joinPowerShell(argv))
-                    : joinPosix(argv);
+                    ? encodedPowerShell(withPrefix(prefix, joinPowerShell(argv)))
+                    : withPrefix(prefix, joinPosix(argv));
         } else if (OS_WINDOWS.equals(resolvedOs)) {
             // Session-level UTF-8 console so Chinese progress output is not mangled on CP936 systems.
-            command = encodedPowerShell(joinPowerShell(argv));
+            command = encodedPowerShell(withPrefix(prefix, joinPowerShell(argv)));
         } else {
-            command = joinPosix(argv);
+            command = withPrefix(prefix, joinPosix(argv));
         }
 
         ExecutorLaunchCommandVO vo = new ExecutorLaunchCommandVO();
@@ -246,6 +280,11 @@ public class ExecutorLaunchCommandService {
         throw BizException.keyed(ErrorCode.MCP_TOOL_ARGUMENT_INVALID, "executor.option.only_supported",
                 new Object[]{"shell", SHELL_BASH + "/" + SHELL_POWERSHELL},
                 "shell 仅支持 " + SHELL_BASH + "/" + SHELL_POWERSHELL);
+    }
+
+    /** 前置命令原样放在整条命令最前；不解析、不改写，也不补分隔符。 */
+    private static String withPrefix(String prefixCommand, String command) {
+        return prefixCommand == null ? command : prefixCommand + " " + command;
     }
 
     private static String joinPosix(List<String> argv) {

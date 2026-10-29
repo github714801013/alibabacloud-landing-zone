@@ -631,6 +631,52 @@ class TaskPackagerTest {
     }
 
     @Test
+    void explicitEmptyRemoteIsProvenByOlderArtifactWithSameHead() throws Exception {
+        String base = "1111111111111111111111111111111111111111";
+        String head = "2222222222222222222222222222222222222222";
+        // 最近一次派发（只读评审在 detached HEAD 上）显式报了空远端头，更早的开发环节在同一个
+        // headCommit 上验证过推送：远端头可补全，QA 不应再被判成「本地改动未推送」
+        var current = storage.put("artifacts", "current", ("""
+                {"repositories":[{"name":"service","baseCommit":"%s","headCommit":"%s","remoteHeadCommit":""}]}
+                """).formatted(base, head).getBytes(StandardCharsets.UTF_8));
+        var older = storage.put("artifacts", "older", ("""
+                {"repositories":[{"name":"service","branch":"fix/rework","baseCommit":"%s","headCommit":"%s","remoteHeadCommit":"%s"}]}
+                """).formatted(base, head, head).getBytes(StandardCharsets.UTF_8));
+        PackageContext c = baseCtx();
+        c.setRoleCode("AW_QA");
+        c.setRepos(List.of(new LinkedHashMap<>(Map.of("name", "service", "ref", "master"))));
+        c.setSourceRevisionArtifacts(List.of(artifactRef("current", current.getOssRef()),
+                artifactRef("older", older.getOssRef())));
+
+        JSONObject repo = JSON.parseObject(new String(unzip(storage.get(packager.build(c).getOssRef()))
+                .get("repos.json"), StandardCharsets.UTF_8)).getJSONArray("repos").getJSONObject(0);
+        assertEquals(head, repo.getString("ref"));
+        assertFalse(repo.containsKey("deliveryUnpushedHeadCommit"));
+    }
+
+    @Test
+    void olderRemoteHeadCannotProveDifferentHead() {
+        String base = "1111111111111111111111111111111111111111";
+        String head = "2222222222222222222222222222222222222222";
+        String otherHead = "3333333333333333333333333333333333333333";
+        // 补全只接受同一 headCommit 的远端证明；更早工件的头不同则是另一条提交线，必须继续拒绝
+        var current = storage.put("artifacts", "current2", ("""
+                {"repositories":[{"name":"service","baseCommit":"%s","headCommit":"%s","remoteHeadCommit":""}]}
+                """).formatted(base, head).getBytes(StandardCharsets.UTF_8));
+        var older = storage.put("artifacts", "older2", ("""
+                {"repositories":[{"name":"service","branch":"fix/rework","baseCommit":"%s","headCommit":"%s","remoteHeadCommit":"%s"}]}
+                """).formatted(base, otherHead, otherHead).getBytes(StandardCharsets.UTF_8));
+        PackageContext c = baseCtx();
+        c.setRoleCode("AW_QA");
+        c.setRepos(List.of(new LinkedHashMap<>(Map.of("name", "service", "ref", "master"))));
+        c.setSourceRevisionArtifacts(List.of(artifactRef("current", current.getOssRef()),
+                artifactRef("older", older.getOssRef())));
+
+        BizException error = assertThrows(BizException.class, () -> packager.build(c));
+        assertEquals("dispatch.repo_revision.qa_unpushed", error.getMessageKey());
+    }
+
+    @Test
     void localOnlyHeadFallsBackToFetchableBaseForRework() throws Exception {
         String baseCommit = "1111111111111111111111111111111111111111";
         String localHead = "2222222222222222222222222222222222222222";
