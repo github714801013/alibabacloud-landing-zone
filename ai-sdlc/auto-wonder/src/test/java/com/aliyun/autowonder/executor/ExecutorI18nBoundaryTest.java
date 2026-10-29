@@ -109,7 +109,8 @@ class ExecutorI18nBoundaryTest {
 
     @Test void configErrorsKeepStoredRawArgumentsAndValidationOrder() {
         var dao = mock(ExecutorDao.class);
-        var service = new ExecutorLaunchConfigService(dao, new ExecutorLaunchOptionsService(null));
+        var service = new ExecutorLaunchConfigService(dao, new ExecutorLaunchOptionsService(null),
+                mock(com.aliyun.autowonder.workspace.WorkspaceService.class));
         var executor = new ExecutorDO(); executor.setId(7L); executor.setTenantId(1L); executor.setClientKind("QODER_CLI");
         when(dao.findById(7L)).thenReturn(executor);
         boundary(() -> service.updateConfig(7, 1, null, 3), "10001", 400,
@@ -138,7 +139,8 @@ class ExecutorI18nBoundaryTest {
         when(branding.effectivePublicBaseUrl()).thenReturn("https://example.com/api/mcp");
         when(branding.recommendedRuntimeVersion()).thenReturn("1.2.3");
         var launch = new ExecutorLaunchCommandService(branding, null, null);
-        var config = new ExecutorLaunchConfigService(mock(ExecutorDao.class), new ExecutorLaunchOptionsService(null));
+        var config = new ExecutorLaunchConfigService(mock(ExecutorDao.class), new ExecutorLaunchOptionsService(null),
+                mock(com.aliyun.autowonder.workspace.WorkspaceService.class));
         var stored = new ExecutorLaunchConfigService.LaunchConfig();
         stored.model = "<b>raw-model</b>"; stored.memoryMode = "none"; stored.reasoningEffort = "high";
         stored.contextWindow = "1000000"; stored.maxConcurrentDispatches = 10;

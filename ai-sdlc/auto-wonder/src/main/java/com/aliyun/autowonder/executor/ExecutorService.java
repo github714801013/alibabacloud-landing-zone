@@ -86,6 +86,7 @@ public class ExecutorService {
                 req.getClientKind(), ErrorCode.EXECUTOR_CLIENT_KIND_INVALID));
         // 先校验启动配置再落库：非法取值不能留下一个已创建的执行器和一个已签发的 Token。
         ExecutorLaunchConfigService.LaunchConfig launchConfig = launchConfigService.resolveForCreate(req);
+        launchConfigService.requirePrefixCommandAdmin(tenantId, userId, launchConfig.prefixCommand);
 
         ExecutorDO e = new ExecutorDO();
         e.setTenantId(tenantId);

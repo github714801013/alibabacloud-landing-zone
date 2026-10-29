@@ -8,6 +8,7 @@ public enum DispatchWaitingReason {
     EXECUTOR_RECOVERING(true, "执行器正在恢复本地任务"),
     NO_EXECUTOR_ONLINE(true, "等待执行器上线"),
     AFFINITY_WAIT(true, "等待绑定的执行器恢复"),
+    AFFINITY_LOCK_BUSY(true, "等待同工单派发完成执行器绑定"),
     AGENT_NOT_PUBLISHED(false, "数字员工尚未发布"),
     AGENT_VERSION_NOT_FOUND(false, "发布版本不存在"),
     RUNTIME_INCOMPATIBLE(false, "执行器版本不兼容"),

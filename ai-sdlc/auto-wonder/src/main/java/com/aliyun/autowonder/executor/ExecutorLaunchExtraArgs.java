@@ -13,12 +13,14 @@ import java.util.Set;
  * 生成命令时按同一套规则分词，因此落库的值一定能被成功分词。
  *
  * <p>扩展参数一律追加在平台参数之后，因此与平台参数同名时以扩展参数为准——这是有意的：平台界面上没有的
- * 取值（新模型、新档位、临时调试开关）可以就地覆盖，不必先改平台代码。代价是操作者也能覆盖
- * --token/--ws-url/--executor-id 这类连接参数，覆盖错了就是执行器连不上，排查时先看命令预览。
+ * 取值（新模型、新档位、临时调试开关）可以就地覆盖，不必先改平台代码。连接参数
+ * --token/--ws-url/--executor-id 由平台签发，扩展参数覆盖会把令牌导向外部端点，因此直接拒绝。
  */
 public final class ExecutorLaunchExtraArgs {
 
     static final int MAX_LENGTH = 1000;
+    /** 连接类平台参数：只能由平台生成，扩展参数不得覆盖。 */
+    static final Set<String> RESERVED_FLAGS = Set.of("--ws-url", "--token", "--executor-id");
 
     private ExecutorLaunchExtraArgs() {
     }
@@ -35,7 +37,11 @@ public final class ExecutorLaunchExtraArgs {
         if (value.length() > MAX_LENGTH) {
             throw invalid("扩展命令参数最多 " + MAX_LENGTH + " 个字符");
         }
-        tokenize(value);
+        for (String flag : flagNames(tokenize(value))) {
+            if (RESERVED_FLAGS.contains(flag)) {
+                throw invalid("扩展命令参数不能覆盖平台连接参数：" + flag);
+            }
+        }
         return value;
     }
 

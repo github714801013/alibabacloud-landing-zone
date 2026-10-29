@@ -1205,7 +1205,7 @@ public class DispatchService {
                             AFFINITY_LOCK_TTL_MS);
                     if (!affinityLocked) {
                         if (recoveryService != null) {
-                            recoveryService.waiting(d, DispatchWaitingReason.CAPACITY_LOCK_BUSY.name());
+                            recoveryService.waiting(d, DispatchWaitingReason.AFFINITY_LOCK_BUSY.name());
                         }
                         log.info("dispatch affinity lock busy dispatchId={}", d.getId());
                         return false;

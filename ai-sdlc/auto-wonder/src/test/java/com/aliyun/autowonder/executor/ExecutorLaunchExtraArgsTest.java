@@ -28,6 +28,16 @@ class ExecutorLaunchExtraArgsTest {
     }
 
     @Test
+    void normalizeRejectsOverridingPlatformConnectionFlags() {
+        for (String flag : List.of("--ws-url", "--token", "--executor-id")) {
+            BizException ex = assertThrows(BizException.class,
+                    () -> ExecutorLaunchExtraArgs.normalize(flag + "=attacker-value"));
+            assertEquals("17012", ex.getCode());
+        }
+        assertEquals("--model new-model", ExecutorLaunchExtraArgs.normalize("--model new-model"));
+    }
+
+    @Test
     void tokenizeSplitsOnWhitespaceAndGroupsQuotedRuns() {
         assertEquals(List.of("--foo", "bar", "--msg", "a b", "--path", "a\tb"),
                 ExecutorLaunchExtraArgs.tokenize("--foo bar --msg 'a b' --path \"a\tb\""));

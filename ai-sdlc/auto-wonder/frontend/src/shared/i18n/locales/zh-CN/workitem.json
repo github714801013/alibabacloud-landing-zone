@@ -745,6 +745,7 @@
     "atCapacity": "执行器容量已满，等待重试",
     "executorRecovering": "执行器正在恢复本地任务",
     "affinityWait": "等待绑定的执行器恢复",
+    "affinityLockBusy": "等待同工单派发完成执行器绑定",
     "incompatible": "执行器版本不兼容",
     "selectionError": "调度器内部错误",
     "accepted": "操作已受理",

@@ -264,14 +264,17 @@ public class McpToolService {
                     + "Split on shell rules (whitespace, quotes group, backslash escapes) and quoted per shell. An "
                     + "argument that repeats a platform flag (--model, --memory-mode, --context-window, ...) replaces "
                     + "it: the platform's own occurrence is dropped, so the command never carries both. That is "
-                    + "deliberate, so an operator can use a value the platform UI does not offer. Omit this argument "
+                    + "deliberate, so an operator can use a value the platform UI does not offer. The connection "
+                    + "flags --ws-url, --token and --executor-id are rejected, because overriding them would send "
+                    + "the real token to another endpoint. Omit this argument "
                     + "to clear it, because this write is a full replace.";
     /** Verbatim shell text an operator typed on the executor page; placed before the runtime command. */
     private static final String EXECUTOR_PREFIX_COMMAND_DESCRIPTION =
             "Optional. Verbatim shell text placed before the generated runtime command, so an operator can set "
                     + "environment variables or run setup steps. It is not parsed, rewritten, or given a separator; "
-                    + "for Windows it runs inside the encoded PowerShell script. Omit this argument to clear it, "
-                    + "because this write is a full replace.";
+                    + "for Windows it runs inside the encoded PowerShell script. Setting or changing it requires "
+                    + "workspace ADMIN, because the generated command is run by an admin. Omit this argument to "
+                    + "clear it, because this write is a full replace.";
     private static final Set<String> TRANSITION_SCHEDULED_TASK_ACTIONS = Set.of(
             "enable", "pause", "archive", "run-now", "pause-run", "resume-run", "cancel-run");
     private static final Set<String> SCHEDULED_TASK_LIST_STATUSES = Set.of(

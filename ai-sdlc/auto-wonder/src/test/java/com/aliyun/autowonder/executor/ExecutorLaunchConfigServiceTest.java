@@ -1,6 +1,8 @@
 package com.aliyun.autowonder.executor;
 
+import com.aliyun.autowonder.access.WorkspaceAccessLevel;
 import com.aliyun.autowonder.common.error.BizException;
+import com.aliyun.autowonder.workspace.WorkspaceService;
 import com.aliyun.autowonder.executor.dto.CreateExecutorRequest;
 import com.aliyun.autowonder.executor.dto.ExecutorLaunchConfigVO;
 import com.aliyun.autowonder.executor.dto.UpdateExecutorLaunchConfigRequest;
@@ -37,6 +39,7 @@ class ExecutorLaunchConfigServiceTest {
     ExecutorDao executorDao;
     ProviderModelCatalogService modelCatalogService;
     ExecutorLaunchOptionsService options;
+    WorkspaceService workspaceService;
     ExecutorLaunchConfigService service;
 
     @BeforeEach
@@ -45,7 +48,9 @@ class ExecutorLaunchConfigServiceTest {
         // read() 未打桩 → 返回 null → options.models() 回退到 FALLBACK_MODELS（含 qmodel_38max，不含 removed-model）
         modelCatalogService = mock(ProviderModelCatalogService.class);
         options = new ExecutorLaunchOptionsService(modelCatalogService);
-        service = new ExecutorLaunchConfigService(executorDao, options);
+        workspaceService = mock(WorkspaceService.class);
+        when(workspaceService.activeAccessLevel(TENANT, USER)).thenReturn(WorkspaceAccessLevel.ADMIN);
+        service = new ExecutorLaunchConfigService(executorDao, options, workspaceService);
     }
 
     private ExecutorDO executor(long id, String clientKind, String launchConfig, Integer configVersion) {
@@ -450,6 +455,31 @@ class ExecutorLaunchConfigServiceTest {
 
         assertEquals("17013", ex.getCode());
         verify(executorDao, never()).updateLaunchConfig(anyLong(), anyLong(), anyString(), anyInt(), anyLong());
+    }
+
+    @Test
+    void updateConfig_rejects_a_new_prefix_command_without_workspace_admin() {
+        when(executorDao.findById(9L)).thenReturn(executor(9L, "QODER_CLI", null, 1));
+        when(workspaceService.activeAccessLevel(TENANT, USER)).thenReturn(WorkspaceAccessLevel.READ_WRITE);
+
+        BizException ex = assertThrows(BizException.class, () -> service.updateConfig(9L, TENANT,
+                reqWithPrefix(1, "SHELL=/bin/bash"), USER));
+
+        assertEquals("10403", ex.getCode());
+        verify(executorDao, never()).updateLaunchConfig(anyLong(), anyLong(), anyString(), anyInt(), anyLong());
+    }
+
+    @Test
+    void updateConfig_allowsEditingOtherFieldsWithTheStoredPrefixCommand() {
+        String stored = "{\"memoryMode\":\"platform\",\"model\":\"qmodel_38max\",\"reasoningEffort\":\"medium\","
+                + "\"contextWindow\":\"260000\",\"prefixCommand\":\"SHELL=/bin/bash\"}";
+        when(executorDao.findById(9L)).thenReturn(executor(9L, "QODER_CLI", stored, 1));
+        when(workspaceService.activeAccessLevel(TENANT, USER)).thenReturn(WorkspaceAccessLevel.READ_WRITE);
+        when(executorDao.updateLaunchConfig(eq(9L), eq(TENANT), anyString(), eq(1), eq(USER))).thenReturn(1);
+
+        ExecutorLaunchConfigVO vo = service.updateConfig(9L, TENANT, reqWithPrefix(1, "SHELL=/bin/bash"), USER);
+
+        assertEquals("SHELL=/bin/bash", vo.getPrefixCommand());
     }
 
     @Test

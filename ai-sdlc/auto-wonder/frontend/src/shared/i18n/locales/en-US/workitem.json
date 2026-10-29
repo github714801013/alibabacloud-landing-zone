@@ -760,6 +760,7 @@
     "atCapacity": "Executor capacity is full; waiting to retry",
     "executorRecovering": "The executor is recovering local tasks",
     "affinityWait": "Waiting for the bound executor to recover",
+    "affinityLockBusy": "Waiting for another dispatch of this workitem to finish choosing an executor",
     "incompatible": "The executor version is incompatible",
     "selectionError": "Internal scheduler error",
     "accepted": "Operation accepted.",

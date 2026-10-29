@@ -215,7 +215,7 @@ class DispatchServiceWorkitemAffinityTest {
         assertFalse(service.runPending(500L));
 
         verifyNoInteractions(executorSelector);
-        verify(recoveryService).waiting(any(), eq(DispatchWaitingReason.CAPACITY_LOCK_BUSY.name()));
+        verify(recoveryService).waiting(any(), eq(DispatchWaitingReason.AFFINITY_LOCK_BUSY.name()));
         verify(redisManager).releaseLock(eq("dispatch:lock:500"), anyString());
     }
 }

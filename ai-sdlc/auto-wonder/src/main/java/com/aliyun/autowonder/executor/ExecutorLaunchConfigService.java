@@ -1,11 +1,13 @@
 package com.aliyun.autowonder.executor;
 
+import com.aliyun.autowonder.access.WorkspaceAccessLevel;
 import com.aliyun.autowonder.common.error.BizException;
 import com.aliyun.autowonder.common.error.ErrorCode;
 import com.aliyun.autowonder.executor.dto.CreateExecutorRequest;
 import com.aliyun.autowonder.executor.dto.ExecutorLaunchConfigVO;
 import com.aliyun.autowonder.executor.dto.SelectOptionVO;
 import com.aliyun.autowonder.executor.dto.UpdateExecutorLaunchConfigRequest;
+import com.aliyun.autowonder.workspace.WorkspaceService;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.DeserializationFeature;
@@ -35,10 +37,27 @@ public class ExecutorLaunchConfigService {
 
     private final ExecutorDao executorDao;
     private final ExecutorLaunchOptionsService options;
+    private final WorkspaceService workspaceService;
 
-    public ExecutorLaunchConfigService(ExecutorDao executorDao, ExecutorLaunchOptionsService options) {
+    public ExecutorLaunchConfigService(ExecutorDao executorDao, ExecutorLaunchOptionsService options,
+            WorkspaceService workspaceService) {
         this.executorDao = executorDao;
         this.options = options;
+        this.workspaceService = workspaceService;
+    }
+
+    /**
+     * 前置命令会随启动命令一起由管理员复制执行，只有工作空间管理员可以设置或修改；
+     * 编辑其他字段时原值写法不变（调用方先比对旧值）。清空始终允许，攻击面只会缩小。
+     */
+    public void requirePrefixCommandAdmin(long tenantId, long userId, String prefixCommand) {
+        if (prefixCommand == null) {
+            return;
+        }
+        if (!workspaceService.activeAccessLevel(tenantId, userId).allows(WorkspaceAccessLevel.ADMIN)) {
+            throw BizException.keyed(ErrorCode.NO_PERMISSION, "executor.launch.prefix_admin_required",
+                    null, "prefix command requires workspace ADMIN");
+        }
     }
 
     /**
@@ -79,6 +98,10 @@ public class ExecutorLaunchConfigService {
         String kindToPersist = resolveRecoveryClientKind(executor.getClientKind(), req.getClientKind());
         LaunchConfig stored = resolveUpdatedConfig(executor, req,
                 kindToPersist != null ? kindToPersist : executor.getClientKind());
+        LaunchConfig previous = parse(executor.getLaunchConfig());
+        if (stored.prefixCommand != null && !stored.prefixCommand.equals(previous.prefixCommand)) {
+            requirePrefixCommandAdmin(tenantId, userId, stored.prefixCommand);
+        }
         int rows = kindToPersist != null
                 ? executorDao.updateLaunchConfigWithClientKind(id, tenantId, toJson(stored), kindToPersist,
                         expectedVersion, userId)
