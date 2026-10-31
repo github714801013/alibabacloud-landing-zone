@@ -212,5 +212,32 @@
       "SETTING": "系统设置中的 AI、通知和系统默认项；菜单暂时隐藏，不包含个人偏好。",
       "EVOLUTION": "自进化：改进提案、验证、发布和回滚；菜单暂时隐藏。"
     }
+  },
+  "aiDefaults": {
+    "title": "AI 协作默认值",
+    "description": "配置需求澄清与开始交付的默认小队和数字人；空间默认由空间所有者维护，其他成员可本地覆盖",
+    "clarifySection": "需求澄清",
+    "deliverySection": "开始交付",
+    "defaultSquad": "默认小队",
+    "defaultAgent": "默认数字人",
+    "selectSquad": "请选择默认小队",
+    "selectAgent": "请选择默认数字人",
+    "agentOptionLabel": "{{name}} ({{role}})",
+    "selectSquadFirst": "请先选择默认小队",
+    "autoSend": "首次会话自动发送",
+    "autoSendHint": "空会话打开后 5 秒倒计时，可随时取消",
+    "ownerHint": "保存后对所有成员生效",
+    "memberHint": "保存后仅对当前浏览器生效",
+    "spaceDefault": "空间默认：{{value}}",
+    "notSet": "未设置",
+    "invalidDefault": "已失效",
+    "on": "开",
+    "off": "关",
+    "restore": "恢复为空间默认",
+    "save": "保存",
+    "saved": "AI 协作默认值已保存",
+    "restored": "已恢复为空间默认",
+    "loadFailed": "AI 协作默认值加载失败，请刷新重试",
+    "agentRequired": "选择默认小队后需同时选择默认数字人"
   }
 }

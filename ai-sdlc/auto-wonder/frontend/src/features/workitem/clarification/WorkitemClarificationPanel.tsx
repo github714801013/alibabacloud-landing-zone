@@ -65,9 +65,17 @@ import {
   isClarificationReplyingStatus,
 } from './hooks';
 import {
+  clearClarificationPrefill,
   readClarificationPrefill,
   writeClarificationPrefill,
 } from './prefill';
+import { getAiCollaborationDefaults } from '@/features/settings/api';
+import {
+  mergeClarifyDefaults,
+  readLocalClarifyDefaults,
+  resolveClarificationSelection,
+} from '@/features/settings/aiDefaults';
+import { getSquadMembers } from '@/features/squad/api';
 import { useClarification } from '../hooks';
 import {
   CLARIFICATION_SEND_MODE_KEY,
@@ -111,6 +119,8 @@ export const CLARIFICATION_BOTTOM_FOLLOW_THRESHOLD = 8;
 
 /** 问题卡片结算后先播一遍淡出再卸载的保留时长（工单 56330），与卡片淡出动画同长。 */
 export const CLARIFICATION_CARD_DISMISS_MS = 160;
+/** 首次会话自动发送前的可取消倒计时（秒）。 */
+export const CLARIFICATION_AUTO_SEND_SECONDS = 5;
 
 export function isNearScrollBottom(
   el: { scrollTop: number; clientHeight: number; scrollHeight: number },
@@ -204,6 +214,10 @@ export function WorkitemClarificationPanel({
   // 每次进入会话只初始化一次，避免用户清空输入后被重新填入。
   const initializedInputRef = useRef<number | null>(null);
   const [inputValue, setInputValue] = useState('');
+  // inputValue 只是「当前是否为空」的读取条件，不该成为 effect 的触发源：
+  // 否则用户清空输入就会被再塞一遍提示语。
+  const inputValueRef = useRef(inputValue);
+  inputValueRef.current = inputValue;
   // null = 自动模式（默认 6 行高度）；数字 = 手动固定高度（像素）
   const [inputHeight, setInputHeight] = useState<number | null>(null);
   // 待发送附件：上传即落服务端（turn_id 为空），发送成功才绑定轮次。
@@ -239,6 +253,9 @@ export function WorkitemClarificationPanel({
   const [pendingSubmitConversationIds, setPendingSubmitConversationIds] = useState<ReadonlySet<number>>(
     () => new Set(),
   );
+  // 首次会话自动发送：倒计时秒数；settled 一旦置位，本次面板挂载内不再重新计时。
+  const [autoSendCountdown, setAutoSendCountdown] = useState<number | null>(null);
+  const autoSendSettledRef = useRef(false);
   // 发送方式偏好（FR-005~FR-010）。初值就是默认值：偏好请求返回前按回车必须已经有
   // 确定行为，不能出现「先按默认发、拉回来后又改口径」的抖动。
   const [sendMode, setSendMode] = useState<SendMode>(DEFAULT_SEND_MODE);
@@ -400,6 +417,82 @@ export function WorkitemClarificationPanel({
     restoredPrefillWrittenRef.current = true;
     writeClarificationPrefill(workitemId, { squadId: identity.squadId, agentId: identity.agentId });
   }, [urlRestore.identity, workitemId]);
+
+  // 需求澄清默认值：URL 与工单记忆都缺失时的兜底选人，来源为空间默认 + 浏览器本地覆盖。
+  // 默认只做预选、不写工单记忆，用户手动选择仍走 handleSelectionChange 的记忆路径。
+  const aiDefaults = useQuery({
+    queryKey: ['ai-collaboration-defaults'],
+    queryFn: getAiCollaborationDefaults,
+    staleTime: 5 * 60_000,
+  });
+  // 空间拥有人没有本地覆盖，其自身始终按空间默认解析。
+  const localClarifyDefaults = useMemo(
+    () => (aiDefaults.data?.owner ? {} : readLocalClarifyDefaults()),
+    [aiDefaults.data?.owner],
+  );
+  const clarifyDefaults = useMemo(
+    () => mergeClarifyDefaults(aiDefaults.data?.clarify, localClarifyDefaults),
+    [aiDefaults.data, localClarifyDefaults],
+  );
+  const localPairOverridden = localClarifyDefaults.defaultSquadId !== undefined
+    || localClarifyDefaults.defaultAgentId !== undefined;
+  // 本地默认组合必须仍是该小队的当前成员才生效；失效时回退空间默认。
+  const defaultsValidation = useQuery({
+    queryKey: ['clarification', 'default-validation',
+      clarifyDefaults.defaultSquadId, clarifyDefaults.defaultAgentId],
+    queryFn: async () => {
+      const members = await getSquadMembers(clarifyDefaults.defaultSquadId as number);
+      return members.some((member) => member.agentId === clarifyDefaults.defaultAgentId);
+    },
+    enabled: aiDefaults.isSuccess
+      && localPairOverridden
+      && clarifyDefaults.defaultSquadId != null
+      && clarifyDefaults.defaultAgentId != null,
+    staleTime: 5 * 60_000,
+  });
+  const [defaultSkipped, setDefaultSkipped] = useState(false);
+  const defaultResolvedRef = useRef(false);
+  useEffect(() => {
+    if (defaultResolvedRef.current) return;
+    // 用户主动选择、URL 恢复、已有会话都是更高优先级的来源，等它们落定或直接让位。
+    if (userSelectedAgentRef.current || selection != null) {
+      defaultResolvedRef.current = true;
+      return;
+    }
+    if (urlRestore.pending || urlRestore.identity != null || conversationId != null) {
+      defaultResolvedRef.current = true;
+      return;
+    }
+    if (aiDefaults.isLoading) return;
+    // 默认值接口不可用时退回手动选人，不阻塞澄清入口。
+    if (aiDefaults.isError) {
+      defaultResolvedRef.current = true;
+      return;
+    }
+    if (clarifyDefaults.defaultSquadId == null && clarifyDefaults.defaultAgentId == null) {
+      defaultResolvedRef.current = true;
+      return;
+    }
+    if (defaultsValidation.isPending && defaultsValidation.fetchStatus !== 'idle') return;
+    defaultResolvedRef.current = true;
+    const resolved = resolveClarificationSelection({
+      explicit: null,
+      url: null,
+      memory: null,
+      local: localClarifyDefaults,
+      space: aiDefaults.data?.clarify,
+      localValid: defaultsValidation.data === true,
+    });
+    if (resolved.selection) setSelection(resolved.selection);
+    if (resolved.defaultSkipped) {
+      setDefaultSkipped(true);
+      // 回退到空间默认后会直接进入会话，选择页的失效提示不可见，改用轻提示告知。
+      if (resolved.selection) message.warning(t('clarification.defaultInvalid'));
+    }
+  }, [selection, urlRestore.pending, urlRestore.identity, conversationId, aiDefaults.isLoading,
+    aiDefaults.isError, aiDefaults.data, clarifyDefaults.defaultSquadId,
+    clarifyDefaults.defaultAgentId, defaultsValidation.isPending, defaultsValidation.fetchStatus,
+    defaultsValidation.data, localClarifyDefaults, t]);
 
   const conversations = useClarificationConversations(workitemId, effectiveAgentId);
   const createMutation = useCreateClarificationConversation(workitemId);
@@ -793,8 +886,21 @@ export function WorkitemClarificationPanel({
 
   const slashQuery = slashCommandQuery(inputValue);
 
+  // 取消自动发送并结算：点取消、开始输入、改选、切换会话/新对话都走这里。
+  const cancelAutoSend = useCallback(() => {
+    autoSendSettledRef.current = true;
+    setAutoSendCountdown(null);
+  }, []);
+
+  const handleInputChange = useCallback((next: string) => {
+    // 编辑器启用（setEditable）也会触发一次 onUpdate；只有内容真正变化才算用户开始输入。
+    if (next !== inputValueRef.current) cancelAutoSend();
+    setInputValue(next);
+  }, [cancelAutoSend]);
+
   const handleSelectionChange = useCallback(
     (next: SquadAgentSelection | null) => {
+      cancelAutoSend();
       resetStreamedEvents();
       setInputValue('');
       userSelectedAgentRef.current = true;
@@ -807,15 +913,40 @@ export function WorkitemClarificationPanel({
         });
       }
     },
-    [workitemId, resetStreamedEvents],
+    [workitemId, resetStreamedEvents, cancelAutoSend],
   );
+
+  // 「使用空间默认」：清掉工单记忆，回到「浏览器本地覆盖 > 空间默认」。
+  // 不写回记忆，让默认值继续随设置页调整生效。
+  const handleUseSpaceDefault = useCallback(() => {
+    cancelAutoSend();
+    clearClarificationPrefill(workitemId);
+    resetStreamedEvents();
+    setInputValue('');
+    userSelectedAgentRef.current = true;
+    setConversationId(null);
+    const resolved = resolveClarificationSelection({
+      explicit: null,
+      url: null,
+      memory: null,
+      local: aiDefaults.data?.owner ? {} : readLocalClarifyDefaults(),
+      space: aiDefaults.data?.clarify,
+      localValid: defaultsValidation.data === true,
+    });
+    setDefaultSkipped(resolved.defaultSkipped);
+    if (resolved.defaultSkipped && resolved.selection) {
+      message.warning(t('clarification.defaultInvalid'));
+    }
+    setSelection(resolved.selection);
+  }, [workitemId, resetStreamedEvents, aiDefaults.data, defaultsValidation.data, cancelAutoSend, t]);
 
   const handleSelectConversation = useCallback((nextConversationId: number) => {
     if (nextConversationId === conversationIdRef.current) return;
+    cancelAutoSend();
     resetStreamedEvents();
     setConversationId(nextConversationId);
     setInputValue('');
-  }, [resetStreamedEvents]);
+  }, [resetStreamedEvents, cancelAutoSend]);
 
   useEffect(() => {
     if (agentRestorePending) return;
@@ -888,6 +1019,7 @@ export function WorkitemClarificationPanel({
   const handleCreateConversation = useCallback(() => {
     const agentId = effectiveAgentId;
     if (!agentId) return;
+    cancelAutoSend();
     resetStreamedEvents();
     setInputValue('');
     createMutation.mutate(agentId, {
@@ -895,12 +1027,7 @@ export function WorkitemClarificationPanel({
         setConversationId(conv.id);
       },
     });
-  }, [effectiveAgentId, createMutation, resetStreamedEvents]);
-
-  // inputValue 只是「当前是否为空」的读取条件，不该成为 effect 的触发源：
-  // 否则用户清空输入就会被再塞一遍提示语。
-  const inputValueRef = useRef(inputValue);
-  inputValueRef.current = inputValue;
+  }, [effectiveAgentId, createMutation, resetStreamedEvents, cancelAutoSend]);
 
   useEffect(() => {
     initializedInputRef.current = null;
@@ -923,6 +1050,7 @@ export function WorkitemClarificationPanel({
     clarification.data]);
 
   const handleSend = useCallback(() => {
+    cancelAutoSend();
     const content = inputValue.trim();
     const submittedConversationId = conversationId;
     const currentAttachments = pendingAttachmentsRef.current;
@@ -978,7 +1106,45 @@ export function WorkitemClarificationPanel({
       });
   }, [inputValue, conversationId, submitMutation, isSubmittingCurrentConversation, isReplying,
     isConversationLoading, conversationHistoryFailed, agentRestorePending,
-    clearPendingAttachments, t]);
+    clearPendingAttachments, t, cancelAutoSend]);
+
+  // 自动发送只认「首次会话」：会话就绪、无任何轮次、无结构化澄清结果、开关生效且不在回复/恢复中。
+  // 倒计时开始即结算，之后切换会话/新对话都不会重新计时（每次面板挂载最多一次）。
+  const autoSendReady = !!conversationId
+    && conversation.isSuccess
+    && convData?.id === conversationId
+    && turns.length === 0
+    // 结构化澄清结果未加载完成时不能断言「没有」，等查询落定再计时。
+    && clarification.isSuccess
+    && !clarification.data?.contentMd?.trim()
+    && clarifyDefaults.autoSendFirstPrompt
+    && !agentRestorePending
+    && !isConversationLoading
+    && !conversationHistoryFailed
+    && !isReplying
+    && !isSubmittingCurrentConversation
+    && !displayedElicitation;
+  useEffect(() => {
+    if (autoSendSettledRef.current || autoSendCountdown != null) return;
+    if (!autoSendReady) return;
+    autoSendSettledRef.current = true;
+    setAutoSendCountdown(CLARIFICATION_AUTO_SEND_SECONDS);
+  }, [autoSendReady, autoSendCountdown]);
+
+  const handleSendRef = useRef(handleSend);
+  handleSendRef.current = handleSend;
+  useEffect(() => {
+    if (autoSendCountdown == null) return undefined;
+    if (autoSendCountdown <= 0) {
+      setAutoSendCountdown(null);
+      handleSendRef.current();
+      return undefined;
+    }
+    const timer = window.setTimeout(() => {
+      setAutoSendCountdown((current) => (current == null ? null : current - 1));
+    }, 1000);
+    return () => window.clearTimeout(timer);
+  }, [autoSendCountdown]);
 
   const handleCancelReply = useCallback(() => {
     const turnId = convData?.processingTurnId;
@@ -1103,6 +1269,24 @@ export function WorkitemClarificationPanel({
               value={selection}
               onChange={handleSelectionChange}
             />
+            {(clarifyDefaults.defaultSquadId != null || clarifyDefaults.defaultAgentId != null) && (
+              <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-start' }}>
+                <Button
+                  size="small"
+                  type="link"
+                  style={{ paddingInline: 0 }}
+                  disabled={defaultsValidation.isPending && defaultsValidation.fetchStatus !== 'idle'}
+                  onClick={handleUseSpaceDefault}
+                >
+                  {t('clarification.useSpaceDefault')}
+                </Button>
+                {defaultSkipped && (
+                  <Typography.Text type="warning" data-testid="clarification-default-invalid">
+                    {t('clarification.defaultInvalid')}
+                  </Typography.Text>
+                )}
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -1169,6 +1353,7 @@ export function WorkitemClarificationPanel({
               disabled={isCreatingConversation}
               style={{ flexShrink: 0 }}
               onClick={() => {
+                cancelAutoSend();
                 userSelectedAgentRef.current = true;
                 setSelection(null);
               }}
@@ -1218,6 +1403,7 @@ export function WorkitemClarificationPanel({
                 disabled={isCreatingConversation}
                 style={{ flexShrink: 0 }}
                 onClick={() => {
+                  cancelAutoSend();
                   userSelectedAgentRef.current = true;
                   setSelection(null);
                 }}
@@ -1473,6 +1659,19 @@ export function WorkitemClarificationPanel({
               disabled={composerDisabled}
               onRemove={removePendingAttachment}
             />
+            {autoSendCountdown != null ? (
+              <div
+                data-testid="clarification-auto-send-banner"
+                style={{ display: 'flex', alignItems: 'center', gap: 8 }}
+              >
+                <Typography.Text type="secondary">
+                  {t('clarification.autoSendCountdown', { seconds: autoSendCountdown })}
+                </Typography.Text>
+                <Button size="small" type="link" onClick={cancelAutoSend}>
+                  {t('clarification.autoSendCancel')}
+                </Button>
+              </div>
+            ) : null}
             <div ref={inputWrapRef} style={{ minWidth: 0, position: 'relative' }}>
               <SlashCommandPicker
                 commands={slashCommands}
@@ -1486,7 +1685,7 @@ export function WorkitemClarificationPanel({
               <MarkdownComposer
                 handleRef={composerRef}
                 value={inputValue}
-                onChange={setInputValue}
+                onChange={handleInputChange}
                 onSendKey={handleSend}
                 onFiles={selectAttachmentFiles}
                 sendMode={sendMode}

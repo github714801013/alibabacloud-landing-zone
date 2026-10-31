@@ -93,6 +93,7 @@ export const NAV_GROUPS: NavGroup[] = [
       },
       { key: '/settings/backups', get label() { return i18n.t('shell:nav.backups'); }, icon: <HistoryOutlined aria-hidden="true" /> },
       { key: '/settings/environment-variables', get label() { return i18n.t('shell:nav.environment'); }, icon: <KeyOutlined aria-hidden="true" /> },
+      { key: '/settings/ai-defaults', get label() { return i18n.t('shell:nav.aiDefaults'); }, icon: <SettingOutlined aria-hidden="true" /> },
       { key: '/settings', get label() { return i18n.t('shell:nav.settings'); }, icon: <SettingOutlined aria-hidden="true" />, hidden: !SETTINGS_MENU_ENABLED },
     ],
   },

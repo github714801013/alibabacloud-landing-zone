@@ -788,4 +788,23 @@ export const handlers = [
       traceId: 'trace-user-setting-delete',
     });
   }),
+  // 默认无任何 AI 协作默认值；需要覆盖的用例自行 server.use。
+  http.get('/api/workspaces/current/ai-defaults', () => {
+    return HttpResponse.json({
+      success: true,
+      code: '0',
+      message: '',
+      data: {
+        owner: false,
+        clarify: {
+          defaultSquadId: null,
+          defaultAgentId: null,
+          autoSendFirstPrompt: false,
+          valid: true,
+        },
+        delivery: { defaultSquadId: null, defaultAgentId: null, valid: true },
+      },
+      traceId: 'trace-ai-defaults',
+    });
+  }),
 ];

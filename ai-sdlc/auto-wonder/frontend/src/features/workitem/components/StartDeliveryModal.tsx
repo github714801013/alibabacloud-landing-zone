@@ -1,7 +1,7 @@
 import { i18n } from '@/shared/i18n';
 import { useLocalizedValidation } from '@/shared/i18n/useLocalizedValidation';
 import { useTranslation } from 'react-i18next';
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Modal, Form, Select, DatePicker, message } from 'antd';
 import type { Dayjs } from 'dayjs';
@@ -12,8 +12,15 @@ import { useAssignWorkitem } from '../hooks';
 import { useAccessCommand } from '@/shared/auth/useAccessCommand';
 import {
   readClarificationPrefill,
+  writeClarificationPrefill,
   clearClarificationPrefill,
 } from '../clarification/prefill';
+import { getAiCollaborationDefaults } from '@/features/settings/api';
+import {
+  mergeDeliveryDefaults,
+  readLocalDeliveryDefaults,
+  resolveDeliverySelection,
+} from '@/features/settings/aiDefaults';
 
 interface StartDeliveryModalProps {
   open: boolean;
@@ -49,21 +56,84 @@ export function StartDeliveryModal({ open, workitemId, hasSdlc, onClose }: Start
     }
   }, [open]);
 
-  // Prefill from the most recent AI clarification selection when opening the
-  // modal for a fresh (non-reassign) delivery.
+  // 本次选择 > 工单记忆 > 我的本地交付默认 > 交付空间默认。
+  // 记忆命中时不再应用默认值；重新指派（hasSdlc）保持原有的不预填行为。
+  const [memoryPrefill, setMemoryPrefill] = useState<ReturnType<typeof readClarificationPrefill>>(null);
+  const [prefillChecked, setPrefillChecked] = useState(false);
   useEffect(() => {
-    if (!open) return;
-    if (hasSdlc) return;
+    if (!open) {
+      setMemoryPrefill(null);
+      setPrefillChecked(false);
+      return;
+    }
+    if (hasSdlc) {
+      setMemoryPrefill(null);
+      setPrefillChecked(true);
+      return;
+    }
     const prefill = readClarificationPrefill(workitemId);
-    if (!prefill) return;
-    form.setFieldsValue({ squadId: prefill.squadId, agentId: prefill.agentId });
+    setMemoryPrefill(prefill);
+    setPrefillChecked(true);
+    if (prefill) form.setFieldsValue({ squadId: prefill.squadId, agentId: prefill.agentId });
   }, [open, hasSdlc, workitemId, form]);
+
+  const aiDefaults = useQuery({
+    queryKey: ['ai-collaboration-defaults'],
+    queryFn: getAiCollaborationDefaults,
+    staleTime: 5 * 60_000,
+    enabled: open,
+  });
+  // 空间拥有人没有本地覆盖，其自身始终按空间默认解析。
+  const localDeliveryDefaults = useMemo(
+    () => (open && !aiDefaults.data?.owner ? readLocalDeliveryDefaults() : {}),
+    [open, aiDefaults.data?.owner],
+  );
+  const deliveryDefaults = useMemo(
+    () => (open
+      ? mergeDeliveryDefaults(aiDefaults.data?.delivery, localDeliveryDefaults)
+      : { defaultSquadId: null, defaultAgentId: null }),
+    [open, aiDefaults.data, localDeliveryDefaults],
+  );
+  const localPairOverridden = localDeliveryDefaults.defaultSquadId !== undefined
+    || localDeliveryDefaults.defaultAgentId !== undefined;
+  const defaultPairComplete = deliveryDefaults.defaultSquadId != null
+    && deliveryDefaults.defaultAgentId != null;
+  // 本地默认组合必须仍是该小队的当前成员，且不能是平台数字人，才允许预选。
+  const { data: defaultMembers, isPending: defaultMembersPending, fetchStatus: defaultMembersFetchStatus } = useQuery({
+    queryKey: ['squad-members', 'delivery-default', deliveryDefaults.defaultSquadId],
+    queryFn: () => getSquadMembers(deliveryDefaults.defaultSquadId as number),
+    enabled: open && !hasSdlc && localPairOverridden && defaultPairComplete && prefillChecked && !memoryPrefill,
+  });
 
   const { data: squads } = useQuery({
     queryKey: ['squads', 'delivery-start'],
     queryFn: () => listSquads({ pageNum: 1, pageSize: 100 }),
     enabled: open,
   });
+
+  const userTouchedRef = useRef(false);
+  useEffect(() => {
+    if (open) userTouchedRef.current = false;
+  }, [open]);
+  useEffect(() => {
+    if (!open || hasSdlc || !prefillChecked || memoryPrefill || userTouchedRef.current) return;
+    if (!aiDefaults.isSuccess) return;
+    // 只有本地档需要按成员校验；空间档的合法性由服务端 valid 判定。
+    if (localPairOverridden && defaultPairComplete
+        && defaultMembersPending && defaultMembersFetchStatus !== 'idle') return;
+    const localValid = !!defaultMembers?.some((item) => item.agentId === deliveryDefaults.defaultAgentId
+      && item.agentKind !== 'PLATFORM');
+    const resolved = resolveDeliverySelection({
+      memory: null,
+      local: localDeliveryDefaults,
+      space: aiDefaults.data?.delivery,
+      localValid,
+    });
+    if (resolved.selection) form.setFieldsValue(resolved.selection);
+  }, [open, hasSdlc, prefillChecked, memoryPrefill, aiDefaults.isSuccess, aiDefaults.data,
+    localDeliveryDefaults, localPairOverridden, defaultPairComplete, defaultMembers,
+    defaultMembersPending, defaultMembersFetchStatus,
+    deliveryDefaults.defaultAgentId, form]);
   const { data: members = [], isFetching: membersLoading } = useQuery({
     queryKey: ['squad-members', squadId],
     queryFn: () => getSquadMembers(squadId),
@@ -123,7 +193,10 @@ export function StartDeliveryModal({ open, workitemId, hasSdlc, onClose }: Start
           <Select
             placeholder={t('start.squadPlaceholder')}
             options={(squads?.list || []).map((s) => ({ value: s.id, label: s.name }))}
-            onChange={() => form.setFieldValue('agentId', undefined)}
+            onChange={() => {
+              userTouchedRef.current = true;
+              form.setFieldValue('agentId', undefined);
+            }}
           />
         </Form.Item>
         <Form.Item name="agentId" label={t('start.agent')} rules={[{ required: true, message: t('start.agentRequired') }]}>
@@ -137,6 +210,10 @@ export function StartDeliveryModal({ open, workitemId, hasSdlc, onClose }: Start
                 value: member.agentId,
                 label: member.roleCode ? `${member.agentName} (${member.roleCode})` : member.agentName,
               }))}
+            onChange={(value: number) => {
+              userTouchedRef.current = true;
+              if (squadId) writeClarificationPrefill(workitemId, { squadId, agentId: value });
+            }}
           />
         </Form.Item>
         <Form.Item name="scheduledStartAt" label={t('start.scheduledTime')}>

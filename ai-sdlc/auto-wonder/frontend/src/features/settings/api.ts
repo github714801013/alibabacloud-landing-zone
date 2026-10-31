@@ -24,6 +24,37 @@ export async function updateSettings(group: string, items: SettingItem[]): Promi
   await apiClient.put(`/api/settings/${group}`, { items });
 }
 
+// --- AI Collaboration Defaults ---
+
+export interface AiCollaborationDefaultsVO {
+  owner: boolean;
+  clarify: {
+    defaultSquadId: number | null;
+    defaultAgentId: number | null;
+    autoSendFirstPrompt: boolean;
+    valid: boolean;
+  };
+  delivery: {
+    defaultSquadId: number | null;
+    defaultAgentId: number | null;
+    valid: boolean;
+  };
+}
+
+export interface AiCollaborationDefaultItem {
+  key: string;
+  value: string;
+}
+
+export async function getAiCollaborationDefaults(): Promise<AiCollaborationDefaultsVO> {
+  const resp = await apiClient.get<AiCollaborationDefaultsVO>('/api/workspaces/current/ai-defaults');
+  return resp.data;
+}
+
+export async function updateAiCollaborationDefaults(items: AiCollaborationDefaultItem[]): Promise<void> {
+  await apiClient.put('/api/workspaces/current/ai-defaults', { items });
+}
+
 // --- AI Usage / Quota ---
 
 export interface AiQuotaVO {

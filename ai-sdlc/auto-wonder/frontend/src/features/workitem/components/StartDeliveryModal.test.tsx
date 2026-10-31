@@ -8,7 +8,10 @@ import { server } from '@/test/mocks/server';
 import { useAuthStore } from '@/shared/auth/store';
 import { ApiError } from '@/shared/types/common';
 import { StartDeliveryModal } from './StartDeliveryModal';
-import { writeClarificationPrefill } from '../clarification/prefill';
+import {
+  readClarificationPrefill,
+  writeClarificationPrefill,
+} from '../clarification/prefill';
 
 const { mutateAsync } = vi.hoisted(() => ({ mutateAsync: vi.fn() }));
 
@@ -338,6 +341,155 @@ describe('StartDeliveryModal', () => {
     });
     expect(success).toHaveBeenCalledWith('已重新指派，将在计划时间重启交付');
     success.mockRestore();
+  });
+
+  function mockDeliveryDefaults(options: {
+    space: { squadId: number | null; agentId: number | null; valid?: boolean };
+    clarify?: { squadId: number | null; agentId: number | null };
+  }) {
+    server.use(
+      http.get('/api/workspaces/current/ai-defaults', () => HttpResponse.json({
+        success: true, code: '0', message: '', traceId: null,
+        data: {
+          owner: false,
+          clarify: {
+            defaultSquadId: options.clarify?.squadId ?? null,
+            defaultAgentId: options.clarify?.agentId ?? null,
+            autoSendFirstPrompt: true,
+            valid: true,
+          },
+          delivery: {
+            defaultSquadId: options.space.squadId,
+            defaultAgentId: options.space.agentId,
+            valid: options.space.valid ?? true,
+          },
+        },
+      })),
+      http.get('/api/squads', () =>
+        HttpResponse.json({
+          success: true, code: '0', message: '', traceId: null,
+          data: {
+            list: [
+              { id: 1, name: '交付小队', description: '', memberCount: 2, gmtCreate: '' },
+              { id: 2, name: '本地小队', description: '', memberCount: 1, gmtCreate: '' },
+              { id: 9, name: '澄清小队', description: '', memberCount: 1, gmtCreate: '' },
+            ],
+            total: 3,
+            pageNum: 1,
+            pageSize: 100,
+          },
+        })),
+      http.get('/api/squads/:squadId/members', ({ params }) => {
+        const id = String(params.squadId);
+        const members = id === '2'
+          ? [{ agentId: 88, agentName: 'Agent-88', roleCode: 'AW_FS_DEV', agentKind: 'STANDARD' }]
+          : id === '9'
+            ? [{ agentId: 42, agentName: 'Agent-42', roleCode: 'AW_FS_DEV', agentKind: 'STANDARD' }]
+            : [
+              { agentId: 77, agentName: 'Agent-77', roleCode: 'AW_FS_DEV', agentKind: 'STANDARD' },
+              { agentId: 9, agentName: 'Chief of Staff', roleCode: 'chief_of_staff', agentKind: 'PLATFORM' },
+            ];
+        return HttpResponse.json({ success: true, code: '0', message: '', traceId: null, data: members });
+      }),
+    );
+  }
+
+  it('prefills the delivery defaults independently from clarification defaults', async () => {
+    mockDeliveryDefaults({
+      space: { squadId: 1, agentId: 77 },
+      clarify: { squadId: 9, agentId: 42 },
+    });
+
+    renderModal();
+
+    expect(await screen.findByText('交付小队')).toBeInTheDocument();
+    expect(await screen.findByText('Agent-77 (AW_FS_DEV)')).toBeInTheDocument();
+    expect(screen.queryByText('澄清小队')).not.toBeInTheDocument();
+  });
+
+  it('uses the local delivery override before the space delivery default', async () => {
+    window.localStorage.setItem('aw:delivery-defaults:local', JSON.stringify({
+      defaultSquadId: 2,
+      defaultAgentId: 88,
+    }));
+    mockDeliveryDefaults({ space: { squadId: 1, agentId: 77 } });
+
+    renderModal();
+
+    expect(await screen.findByText('本地小队')).toBeInTheDocument();
+    expect(await screen.findByText('Agent-88 (AW_FS_DEV)')).toBeInTheDocument();
+    expect(screen.queryByText('交付小队')).not.toBeInTheDocument();
+  });
+
+  it('skips a delivery default the server marked invalid without blocking the modal', async () => {
+    mockDeliveryDefaults({ space: { squadId: 1, agentId: 99, valid: false } });
+
+    renderModal();
+
+    expect(await screen.findByText('选择交付小队')).toBeInTheDocument();
+    expect(screen.queryByText('交付小队')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /启\s*动\s*交\s*付/ })).toBeInTheDocument();
+  });
+
+  it('falls back to the space delivery default when the local pair is invalid', async () => {
+    window.localStorage.setItem('aw:delivery-defaults:local', JSON.stringify({
+      defaultSquadId: 2,
+      defaultAgentId: 99,
+    }));
+    mockDeliveryDefaults({ space: { squadId: 1, agentId: 77 } });
+
+    renderModal();
+
+    expect(await screen.findByText('交付小队')).toBeInTheDocument();
+    expect(await screen.findByText('Agent-77 (AW_FS_DEV)')).toBeInTheDocument();
+    expect(screen.queryByText('本地小队')).not.toBeInTheDocument();
+  });
+
+  it('ignores stale local delivery defaults for the space owner', async () => {
+    window.localStorage.setItem('aw:delivery-defaults:local', JSON.stringify({
+      defaultSquadId: 2,
+      defaultAgentId: 88,
+    }));
+    mockDeliveryDefaults({ space: { squadId: 1, agentId: 77 } });
+    server.use(
+      http.get('/api/workspaces/current/ai-defaults', () => HttpResponse.json({
+        success: true, code: '0', message: '', traceId: null,
+        data: {
+          owner: true,
+          clarify: {
+            defaultSquadId: null, defaultAgentId: null, autoSendFirstPrompt: false, valid: true,
+          },
+          delivery: { defaultSquadId: 1, defaultAgentId: 77, valid: true },
+        },
+      })),
+    );
+
+    renderModal();
+
+    expect(await screen.findByText('交付小队')).toBeInTheDocument();
+    expect(await screen.findByText('Agent-77 (AW_FS_DEV)')).toBeInTheDocument();
+    expect(screen.queryByText('本地小队')).not.toBeInTheDocument();
+  });
+
+  it('does not use clarification defaults when delivery defaults are unset', async () => {
+    mockDeliveryDefaults({
+      space: { squadId: null, agentId: null },
+      clarify: { squadId: 1, agentId: 77 },
+    });
+
+    renderModal();
+
+    expect(await screen.findByText('选择交付小队')).toBeInTheDocument();
+    expect(screen.queryByText('交付小队')).not.toBeInTheDocument();
+  });
+
+  it('writes the picked pair into the workitem memory', async () => {
+    server.use(...squadHandlers);
+
+    renderModal();
+    await pickSquadAndAgent();
+
+    expect(readClarificationPrefill('10000')).toMatchObject({ squadId: 1, agentId: 77 });
   });
 
   it('allocates a fresh restart token per modal session for explicit new rounds', async () => {

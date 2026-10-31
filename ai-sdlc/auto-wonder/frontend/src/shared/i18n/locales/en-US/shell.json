@@ -20,6 +20,7 @@
     "members": "Members",
     "backups": "Project configuration backups",
     "environment": "Environment variables",
+    "aiDefaults": "AI collaboration defaults",
     "settings": "System settings",
     "insightsGroup": "Insights",
     "insights": "Data insights",

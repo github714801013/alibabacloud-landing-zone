@@ -214,5 +214,32 @@
       "SETTING": "AI, notification, and system defaults in System settings. The menu is currently hidden; personal preferences are separate.",
       "EVOLUTION": "Self-evolution: improvement proposals, validation, releases, and rollbacks. The menu is currently hidden."
     }
+  },
+  "aiDefaults": {
+    "title": "AI collaboration defaults",
+    "description": "Set the default squad and agent for requirement clarification and starting delivery. The space owner manages workspace defaults; other members can override them locally.",
+    "clarifySection": "Requirement clarification",
+    "deliverySection": "Start delivery",
+    "defaultSquad": "Default squad",
+    "defaultAgent": "Default agent",
+    "selectSquad": "Select a default squad",
+    "selectAgent": "Select a default agent",
+    "agentOptionLabel": "{{name}} ({{role}})",
+    "selectSquadFirst": "Select a default squad first",
+    "autoSend": "Automatically send the first prompt",
+    "autoSendHint": "A 5-second countdown starts on an empty conversation and can be cancelled at any time",
+    "ownerHint": "Saved values apply to all members",
+    "memberHint": "Saved values apply to this browser only",
+    "spaceDefault": "Space default: {{value}}",
+    "notSet": "Not set",
+    "invalidDefault": "No longer valid",
+    "on": "On",
+    "off": "Off",
+    "restore": "Restore space defaults",
+    "save": "Save",
+    "saved": "AI collaboration defaults saved",
+    "restored": "Restored to space defaults",
+    "loadFailed": "Failed to load AI collaboration defaults. Refresh and try again.",
+    "agentRequired": "Select a default agent after choosing a default squad"
   }
 }
