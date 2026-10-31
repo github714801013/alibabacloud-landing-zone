@@ -1,6 +1,8 @@
 package com.aliyun.autowonder.dispatch;
 
 import com.aliyun.autowonder.json.JSON;
+import com.aliyun.autowonder.json.JSONArray;
+import com.aliyun.autowonder.json.JSONObject;
 import com.aliyun.autowonder.agent.*;
 import com.aliyun.autowonder.artifact.ArtifactDO;
 import com.aliyun.autowonder.artifact.ArtifactDao;
@@ -214,8 +216,11 @@ public class PackageContextAssembler {
         ctx.setRequirementDocuments(buildRequirementDocuments(tenantId, dispatch.getWorkitemId()));
 
         ctx.setIdentity(buildIdentity(version));
+        Set<String> declaredRepoNames = w != null && tenantId == w.getTenantId()
+                ? declaredRepoNames(w.getContentMd()) : null;
         ctx.setRepos(buildRepos(tenantId, version.getId(),
-                dispatch.getAgentId() == null ? null : agentDao.findById(dispatch.getAgentId())));
+                dispatch.getAgentId() == null ? null : agentDao.findById(dispatch.getAgentId()),
+                declaredRepoNames));
         ctx.setRepoMap(buildRepoMap(tenantId, ctx.getRepos()));
         ctx.setSkills(buildCapabilities(skillDao, skillCatalogDao, tenantId, version.getId()));
         ctx.setSdlc(buildSdlc(tenantId, dispatch.getSdlcStepId()));
@@ -553,10 +558,94 @@ public class PackageContextAssembler {
         return identity;
     }
 
+    private static final String JIRA_STATUS_START = "<!-- autowonder-jira-status:start";
+    private static final String JIRA_STATUS_END = "autowonder-jira-status:end -->";
+
+    /**
+     * 工单同步块中 included 任务声明的仓库名；无块或没有可用声明时返回 null（沿用全部 eager）。
+     * 块存在但没有纳入任何仓库时记 warn，避免范围声明异常被静默忽略。
+     */
+    private Set<String> declaredRepoNames(String contentMd) {
+        if (contentMd == null || contentMd.isBlank()) {
+            return null;
+        }
+        int start = contentMd.indexOf(JIRA_STATUS_START);
+        int end = start < 0 ? -1 : contentMd.indexOf(JIRA_STATUS_END, start);
+        if (start < 0 || end < 0) {
+            return null;
+        }
+        try {
+            JSONObject block = JSON.parseObject(
+                    contentMd.substring(start + JIRA_STATUS_START.length(), end).trim());
+            JSONArray tasks = block == null ? null : block.getJSONArray("tasks");
+            if (tasks == null || tasks.size() == 0) {
+                log.warn("workitem jira status block has no tasks, fallback to all writable eager");
+                return null;
+            }
+            Set<String> names = new HashSet<>();
+            for (int i = 0; i < tasks.size(); i++) {
+                JSONObject task = tasks.getJSONObject(i);
+                if (task == null || !task.containsKey("repos")
+                        || Boolean.FALSE.equals(task.getBoolean("included"))) {
+                    continue;
+                }
+                JSONArray repos = task.getJSONArray("repos");
+                if (repos == null) {
+                    continue;
+                }
+                for (int j = 0; j < repos.size(); j++) {
+                    String name = normalizeRepoName(repos.getString(j));
+                    if (name != null) {
+                        names.add(name);
+                    }
+                }
+            }
+            if (names.isEmpty()) {
+                log.warn("workitem jira status block declares no repos, fallback to all writable eager");
+                return null;
+            }
+            return names;
+        } catch (RuntimeException e) {
+            log.warn("workitem jira status block unparsable, fallback to eager repos: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    private static String normalizeRepoName(String name) {
+        if (name == null || name.isBlank()) {
+            return null;
+        }
+        return name.trim().toLowerCase(java.util.Locale.ROOT);
+    }
+
+    private static Set<String> normalizeRepoNames(Set<String> names) {
+        if (names == null) {
+            return null;
+        }
+        Set<String> normalized = new HashSet<>();
+        for (String name : names) {
+            String key = normalizeRepoName(name);
+            if (key != null) {
+                normalized.add(key);
+            }
+        }
+        return normalized;
+    }
+
     public List<Map<String, Object>> buildRepos(long tenantId, long versionId, AgentDO agent) {
+        return buildRepos(tenantId, versionId, agent, null);
+    }
+
+    /** eagerRepoNames 为非空集合时只把其中声明的仓库标为 eager（按名称、忽略大小写与首尾空白），其余可写仓库保持 lazy；null 或空集合沿用全部 eager。 */
+    public List<Map<String, Object>> buildRepos(long tenantId, long versionId, AgentDO agent,
+            Set<String> eagerRepoNames) {
         if (isPlatformAgent(tenantId, agent)) {
             return buildAllTenantRepos(tenantId);
         }
+        Set<String> declared = normalizeRepoNames(eagerRepoNames);
+        boolean enforceDeclaredScope = declared != null && !declared.isEmpty();
+        java.util.Map<String, Integer> writableMatches = new java.util.HashMap<>();
+        Set<String> readOnlyMatches = new HashSet<>();
         List<Map<String, Object>> repos = new ArrayList<>();
         for (AgentRepoPermDO p : repoPermDao.listByVersion(versionId)) {
             if (tenantId != p.getTenantId()) {
@@ -566,8 +655,32 @@ public class PackageContextAssembler {
             if (repo == null || tenantId != repo.getTenantId()) {
                 continue;
             }
-            repos.add(buildRepoEntry(repo, "WRITE".equalsIgnoreCase(p.getPermLevel()),
-                    BranchPatternPolicy.decode(p.getAllowedBranchPatterns())));
+            String repoName = normalizeRepoName(repo.getName());
+            boolean writable = "WRITE".equalsIgnoreCase(p.getPermLevel());
+            if (enforceDeclaredScope && repoName != null) {
+                if (writable) {
+                    writableMatches.merge(repoName, 1, Integer::sum);
+                } else if (declared.contains(repoName)) {
+                    readOnlyMatches.add(repoName);
+                }
+            }
+            boolean eager = writable && (!enforceDeclaredScope || declared.contains(repoName));
+            repos.add(buildRepoEntry(repo, writable,
+                    BranchPatternPolicy.decode(p.getAllowedBranchPatterns()), eager));
+        }
+        if (enforceDeclaredScope) {
+            for (String name : declared) {
+                int matches = writableMatches.getOrDefault(name, 0);
+                if (matches == 0) {
+                    if (readOnlyMatches.contains(name)) {
+                        log.warn("declared workitem repo is bound read-only, keeps lazy: {}", name);
+                    } else {
+                        log.warn("declared workitem repo is not bound, keeps lazy: {}", name);
+                    }
+                } else if (matches > 1) {
+                    log.warn("declared workitem repo matched multiple writable bindings, all marked eager: {}", name);
+                }
+            }
         }
         return repos;
     }
@@ -594,6 +707,11 @@ public class PackageContextAssembler {
     }
 
     private Map<String, Object> buildRepoEntry(RepoDO repo, boolean writable, List<String> allowedBranchPatterns) {
+        return buildRepoEntry(repo, writable, allowedBranchPatterns, writable);
+    }
+
+    private Map<String, Object> buildRepoEntry(RepoDO repo, boolean writable, List<String> allowedBranchPatterns,
+            boolean eager) {
         RepoNameValidator.Problem problem = RepoNameValidator.inspect(repo.getName());
         if (problem != null) {
             String nameProblem = RepoNameValidator.validate(repo.getName());
@@ -609,7 +727,7 @@ public class PackageContextAssembler {
             m.put("ref", repo.getDefaultBranch().trim());
         }
         m.put("path", repo.getName());
-        m.put("mode", writable ? "eager" : "lazy");
+        m.put("mode", eager ? "eager" : "lazy");
         m.put("allowCommit", writable);
         m.put("allowPush", writable);
         if (allowedBranchPatterns != null && !allowedBranchPatterns.isEmpty()) {
