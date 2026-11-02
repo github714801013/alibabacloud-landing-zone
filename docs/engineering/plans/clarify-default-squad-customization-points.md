@@ -33,8 +33,9 @@
 | 修改 | `src/features/workitem/clarification/WorkitemClarificationPanel.tsx` | 默认解析、「使用空间默认」、首次会话 5 秒倒计时自动发送及全部取消条件 |
 | 新增测试 | `src/features/workitem/clarification/WorkitemClarificationPanel.defaults.test.tsx` / `.autoSend.test.tsx` | 解析链与假定时器自动发送 |
 | 修改 | `src/features/workitem/clarification/MarkdownComposer.tsx` | `onUpdate` 的非文档变化事务仅在编辑器内容尚未上报时补发，避免启用编辑器时的旧内容回写覆盖外部清空或回填的草稿 |
-| 修改 | `src/features/workitem/components/StartDeliveryModal.tsx` | 独立交付默认预选；用户改选写入工单记忆 |
-| 修改 | `src/features/workitem/components/StartDeliveryModal.test.tsx` | 独立解析链、本地覆盖、失效跳过、记忆写入 |
+| 修改 | `src/features/workitem/clarification/prefill.ts` | 工单记忆按用途拆分：澄清用 `aw:clarification-prefill:`，交付用 `aw:delivery-prefill:`，互不读取 |
+| 修改 | `src/features/workitem/components/StartDeliveryModal.tsx` | 独立交付默认预选；用户改选写入交付记忆，成功启动后只清交付记忆 |
+| 修改 | `src/features/workitem/components/StartDeliveryModal.test.tsx` | 独立解析链、本地覆盖、失效跳过、交付记忆写入、与澄清记忆隔离 |
 | 修改 | `src/shared/i18n/locales/{zh-CN,en-US}/{settings,shell,workitem}.json` | 新增文案键：`aiDefaults.*`、`nav.aiDefaults`、`clarification.useSpaceDefault/defaultInvalid/autoSendCountdown/autoSendCancel` |
 | 修改 | `src/test/mocks/handlers.ts` | 新增 ai-defaults 默认 handler（避免 MSW `onUnhandledRequest: 'error'`） |
 
@@ -44,12 +45,13 @@
 | --- | --- | --- |
 | `aw:clarify-defaults:local` | `{defaultSquadId?, defaultAgentId?, autoSendFirstPrompt?}` | 字段未出现=跟随空间默认；`null`=显式取消；有值=覆盖 |
 | `aw:delivery-defaults:local` | `{defaultSquadId?, defaultAgentId?}` | 同上 |
-| `aw:clarification-prefill:<workitemId>`（既有） | `{squadId, agentId, updatedAt}`（30 天） | 工单级记忆，澄清面板与开始交付共用 |
+| `aw:clarification-prefill:<workitemId>`（既有） | `{squadId, agentId, updatedAt}`（30 天） | 澄清面板的工单级记忆，只由澄清面板读写 |
+| `aw:delivery-prefill:<workitemId>` | `{squadId, agentId, updatedAt}`（30 天） | 开始交付的工单级记忆，只由交付弹窗读写；与澄清记忆互不读取 |
 
 ## 4. 行为契约
 
-- 澄清解析：本次选择 > URL > 工单记忆 > 本地默认 > 空间默认；各档缺失保持选人页，不自动选候选第一个；本地组合失效时跳过该档回退空间默认并给轻提示；本地两字段显式清空表示不要默认。
-- 交付解析：本次选择 > 工单记忆 > 本地交付默认 > 交付空间默认；仅预选，不自动发送；本地组合失效时回退空间默认，空间默认失效保持空选。
+- 澄清解析：本次选择 > URL > 澄清记忆 > 本地默认 > 空间默认；各档缺失保持选人页，不自动选候选第一个；本地组合失效时跳过该档回退空间默认并给轻提示；本地两字段显式清空表示不要默认。
+- 交付解析：本次选择 > 交付记忆 > 本地交付默认 > 交付空间默认；仅预选，不自动发送；本地组合失效时回退空间默认，空间默认失效保持空选；交付弹窗不读取澄清记忆。
 - 默认失效（数字人删除/移出小队、交付候选为 `PLATFORM`）：读取侧 `valid=false` 或本地成员校验失败即跳过该档；空间拥有人忽略浏览器本地覆盖。
 - 自动发送：澄清内容查询成功、会话就绪、`turns === 0`、无结构化澄清结果、生效开关为开；5 秒倒计时，点取消/开始输入/改选/切换会话/新对话/手动发送即取消；每次面板挂载最多触发一次；失败回填提示词并提示。
 - 开关语义：空间开关是默认值不是总闸，成员本地可覆盖（含空间关、本地开）。
@@ -58,7 +60,7 @@
 
 1. 对比上游 `SystemSettingController` / `SystemSettingService` 是否变化，确认新分组仍不在 `VALID_GROUPS`。
 2. 对比上游 `WorkitemClarificationPanel.tsx` 的选人初始化、自动建会话、发送与 composer 接线，重新落位本清单的定制 hunk。
-3. 对比上游 `StartDeliveryModal.tsx` 的预填 effect 与 Select onChange，保留交付默认解析与记忆写入。
+3. 对比上游 `StartDeliveryModal.tsx` 的预填 effect 与 Select onChange，保留交付默认解析、交付记忆读写与成功启动后只清交付记忆；对比 `prefill.ts`，保留澄清/交付两个记忆键互不读取。
 4. 对比 `MarkdownComposer.tsx` 的 `onUpdate` 守卫，保留「非文档变化事务仅在内容未上报时补发」的逻辑。
 5. 检查 `router.tsx` / `Sidebar.tsx` 入口是否被上游改动覆盖；`SETTINGS_MENU_ENABLED` 维持上游值。
 6. 跑本清单第 2 节全部前端测试与第 1 节后端测试；`npm run build` 的 i18n 门禁若因上游存量失败，按既有基线单独核对本次文件不新增违规。

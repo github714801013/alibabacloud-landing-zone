@@ -11,9 +11,9 @@ import { ApiError } from '@/shared/types/common';
 import { useAssignWorkitem } from '../hooks';
 import { useAccessCommand } from '@/shared/auth/useAccessCommand';
 import {
-  readClarificationPrefill,
-  writeClarificationPrefill,
-  clearClarificationPrefill,
+  readDeliveryPrefill,
+  writeDeliveryPrefill,
+  clearDeliveryPrefill,
 } from '../clarification/prefill';
 import { getAiCollaborationDefaults } from '@/features/settings/api';
 import {
@@ -56,9 +56,10 @@ export function StartDeliveryModal({ open, workitemId, hasSdlc, onClose }: Start
     }
   }, [open]);
 
-  // 本次选择 > 工单记忆 > 我的本地交付默认 > 交付空间默认。
-  // 记忆命中时不再应用默认值；重新指派（hasSdlc）保持原有的不预填行为。
-  const [memoryPrefill, setMemoryPrefill] = useState<ReturnType<typeof readClarificationPrefill>>(null);
+  // 本次选择 > 交付工单记忆 > 我的本地交付默认 > 交付空间默认。
+  // 交付记忆与需求澄清记忆相互独立；记忆命中时不再应用默认值。
+  // 重新指派（hasSdlc）保持原有的不预填行为。
+  const [memoryPrefill, setMemoryPrefill] = useState<ReturnType<typeof readDeliveryPrefill>>(null);
   const [prefillChecked, setPrefillChecked] = useState(false);
   useEffect(() => {
     if (!open) {
@@ -71,7 +72,7 @@ export function StartDeliveryModal({ open, workitemId, hasSdlc, onClose }: Start
       setPrefillChecked(true);
       return;
     }
-    const prefill = readClarificationPrefill(workitemId);
+    const prefill = readDeliveryPrefill(workitemId);
     setMemoryPrefill(prefill);
     setPrefillChecked(true);
     if (prefill) form.setFieldsValue({ squadId: prefill.squadId, agentId: prefill.agentId });
@@ -164,7 +165,7 @@ export function StartDeliveryModal({ open, workitemId, hasSdlc, onClose }: Start
         }
         queryClient.invalidateQueries({ queryKey: ['workitem-recovery', String(workitemId)] });
         if (!hasSdlc) {
-          clearClarificationPrefill(workitemId);
+          clearDeliveryPrefill(workitemId);
         }
         form.resetFields();
         onClose();
@@ -212,7 +213,7 @@ export function StartDeliveryModal({ open, workitemId, hasSdlc, onClose }: Start
               }))}
             onChange={(value: number) => {
               userTouchedRef.current = true;
-              if (squadId) writeClarificationPrefill(workitemId, { squadId, agentId: value });
+              if (squadId) writeDeliveryPrefill(workitemId, { squadId, agentId: value });
             }}
           />
         </Form.Item>
