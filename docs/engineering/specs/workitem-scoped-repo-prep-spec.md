@@ -41,7 +41,7 @@
 6. **名称匹配**：忽略大小写与首尾空白；未命中、命中多个或命中非 WRITE 绑定只记 warn，不阻塞，不引入 repoId。
 7. **权限字段**：未声明仓库仍保持 `allowCommit=true`、`allowPush=true`（按 WRITE 绑定），只改变 `mode`。
 8. **装配范围**：只改工单装配路径；会话能力包的三参仓库组装、定时任务快照、平台智能体的全租户仓库组装均不变。
-9. **适配器配套**：独立技能仓中的状态同步规则改为“标题包含父需求编号（不要求格式）”；线上数字人职责同步更新。
+9. **适配器配套**：独立技能仓中的状态同步规则改为“所有 `workType=REQ` 工单在范围确认后生成同步块；`parent_key` 优先取标题，其次取 `contentMd` 中的 Jira 链接，无 Jira 时用 `AW-<工单ID>`”；线上数字人职责同步更新。
 10. **不改表结构**：`workitem` 行没有通用 metadata JSON 字段，`tags` 是标签语义，不能作为仓库声明载体。
 
 ## 测试决策
@@ -50,7 +50,7 @@
 - 测试 seam：
   - `PackageContextAssembler.assembleWorkitem`：工单装配端到端，覆盖块解析到最终仓库模式。
   - `PackageContextAssembler.buildRepos` 四参重载：规则边界，覆盖 included、空 repos、大小写、未命中/重名/只读、权限字段。
-  - 适配器 `confirm_document` / `validate_workitem`：标题包含父需求编号的通过/拒绝行为。
+  - 适配器 `confirm_document` / `validate_workitem`：标题或 Jira 链接命中父需求编号的通过/拒绝行为；无 Jira 工单使用 `AW-<工单ID>` 与合成任务 key 的行为。
 - 必测用例：有块且 included repos → 精确 eager；`included=false` 忽略；空/缺失 repos → 全 eager；坏块/无块 → 全 eager；大小写与首尾空白；未命中/重名/只读 warn；权限字段不变；平台/会话/定时路径不变。
 - 先例：`PackageContextAssemblerTest` 已有工单声明范围的同类测试；适配器 `tests/test_jira_status_sync.py` 已覆盖标题与台账规则。
 
@@ -65,8 +65,8 @@
 
 ## 补充说明
 
-- 同步块只由需求澄清数字人在 `workType=REQ` 且标题包含父需求编号时产出；其他工单没有块，统一回退现状。
-- 适配器已按新规则修改并验证：`pytest tests/test_jira_status_sync.py -q` 51 项通过。
+- 同步块由需求澄清数字人在所有 `workType=REQ` 工单范围确认后产出；`parent_key` 优先取标题，其次取 `contentMd` 中的 Jira 链接，无 Jira 时用 `AW-<工单ID>`；Jira 状态回写只处理 `jira_sync=true` 的块。其他工单没有块，统一回退现状。
+- 适配器已按新规则修改并验证：`pytest tests/test_jira_status_sync.py -q` 57 项通过；本次仅本地修改，10046 技能包与 10035 职责待发布。
 - 线上已发布：需求澄清数字人 `10035` 版本 46（标题包含父需求编号）、`auto-wonder-adapter` 技能 `10046` 版本 4（包 MD5 `186efe5fb628b77cfb051c01ec9e857e`）。
 - 调研记录：`docs/engineering/plans/workitem-scoped-repo-prep-gitnexus-inquiry.md`。
 - 当前工作区已有初步实现，实施阶段需按本规格调整“空 repos 回退”和“异常声明 warn”两处，并补齐对应测试。
