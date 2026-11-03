@@ -66,7 +66,7 @@
 ## 补充说明
 
 - 同步块由需求澄清数字人在所有 `workType=REQ` 工单范围确认后产出；`parent_key` 优先取标题，其次取 `contentMd` 中的 Jira 链接，无 Jira 时用 `AW-<工单ID>`；Jira 状态回写只处理 `jira_sync=true` 的块。其他工单没有块，统一回退现状。
-- 适配器已按新规则修改并验证：`pytest tests/test_jira_status_sync.py -q` 57 项通过；本次仅本地修改，10046 技能包与 10035 职责待发布。
-- 线上已发布：需求澄清数字人 `10035` 版本 46（标题包含父需求编号）、`auto-wonder-adapter` 技能 `10046` 版本 4（包 MD5 `186efe5fb628b77cfb051c01ec9e857e`）。
+- 适配器已按新规则修改并验证：`pytest tests/test_jira_status_sync.py -q` 57 项通过；`auto-wonder-adapter` 技能 `10046` 已发布版本 6（包 MD5 `921803a7d2daea53c0a574da6490c657`），需求澄清数字人 `10035` 已发布版本 50。
+- 线上已发布：需求澄清数字人 `10035` 版本 50（所有 `workType=REQ` 工单生成同步块，支持 Jira 链接与无 Jira 工单）、`auto-wonder-adapter` 技能 `10046` 版本 6（包 MD5 `921803a7d2daea53c0a574da6490c657`）。
 - 调研记录：`docs/engineering/plans/workitem-scoped-repo-prep-gitnexus-inquiry.md`。
 - 当前工作区已有初步实现，实施阶段需按本规格调整“空 repos 回退”和“异常声明 warn”两处，并补齐对应测试。
