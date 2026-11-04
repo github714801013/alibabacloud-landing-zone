@@ -312,6 +312,146 @@ class WecomInboundServiceTest {
     }
 
     @Test
+    void quotedTextIsIncludedInAgentInput() {
+        arrangeConfig();
+        WecomRobotBindingDO binding = arrangeBinding("ENABLED");
+        when(bindings.findSharedByConfigAndGroup(9L, "chat-1")).thenReturn(binding);
+        when(bindings.findGlobal(5L)).thenReturn(binding);
+        JsonNode frame = message("group", "text", "请处理", "alice", "msg-1", "bot");
+        ObjectNode quote = ((ObjectNode) frame.path("body")).putObject("quote");
+        quote.put("msgtype", "text");
+        quote.putObject("text").put("content", "被引用的原文");
+
+        service.handle(frame);
+
+        verify(conversations).submitTurn(eq(1L), eq(7L), eq("WECOM"), eq("5:chat-1"),
+                eq("[引用内容: 被引用的原文]\n\n请处理"), eq("WECOM:bot:msg-1"), anyString());
+    }
+
+    @Test
+    void quotedMixedTextIsIncludedInAgentInput() {
+        arrangeConfig();
+        WecomRobotBindingDO binding = arrangeBinding("ENABLED");
+        when(bindings.findSharedByConfigAndGroup(9L, "chat-1")).thenReturn(binding);
+        when(bindings.findGlobal(5L)).thenReturn(binding);
+        JsonNode frame = message("group", "text", "请处理", "alice", "msg-1", "bot");
+        ObjectNode quote = ((ObjectNode) frame.path("body")).putObject("quote");
+        quote.put("msgtype", "mixed");
+        var items = quote.putObject("mixed").putArray("msg_item");
+        items.addObject().put("msgtype", "text").putObject("text").put("content", "第一段");
+        items.addObject().put("msgtype", "text").putObject("text").put("content", "第二段");
+        items.addObject().put("msgtype", "image").putObject("image")
+                .put("url", "https://wwcdn.weixin.qq.com/quote.png");
+
+        service.handle(frame);
+
+        verify(conversations).submitTurn(eq(1L), eq(7L), eq("WECOM"), eq("5:chat-1"),
+                eq("[引用内容: 第一段\n第二段]\n\n请处理"), eq("WECOM:bot:msg-1"), anyString());
+    }
+
+    @Test
+    void imageMessageWithQuoteKeepsQuoteBeforePrompt() {
+        arrangeConfig();
+        WecomRobotBindingDO binding = arrangeBinding("ENABLED");
+        when(bindings.findSharedByConfigAndGroup(9L, "chat-1")).thenReturn(binding);
+        when(bindings.findGlobal(5L)).thenReturn(binding);
+        when(imageDownloader.download("https://wwcdn.weixin.qq.com/a.png", "key"))
+                .thenReturn(png());
+        when(imageStore.upload(eq(1L), eq("wecom/5:chat-1"), any(byte[].class),
+                eq("wecom-image"))).thenReturn(image("img-1"));
+        when(imageStore.attach(anyString(), eq(1L), eq("wecom/5:chat-1"), eq(List.of("img-1"))))
+                .thenAnswer(i -> i.getArgument(0));
+        JsonNode frame = imageMessage("msg-1", "https://wwcdn.weixin.qq.com/a.png", "key");
+        ObjectNode quote = ((ObjectNode) frame.path("body")).putObject("quote");
+        quote.put("msgtype", "text");
+        quote.putObject("text").put("content", "被引用的原文");
+
+        service.handle(frame);
+
+        verify(conversations).submitTurn(eq(1L), eq(7L), eq("WECOM"), eq("5:chat-1"),
+                eq("[引用内容: 被引用的原文]\n\n请查看并处理这张图片。"),
+                eq("WECOM:bot:msg-1"), anyString());
+    }
+
+    @Test
+    void mixedMessageWithQuoteKeepsQuoteBeforeText() {
+        arrangeConfig();
+        WecomRobotBindingDO binding = arrangeBinding("ENABLED");
+        when(bindings.findSharedByConfigAndGroup(9L, "chat-1")).thenReturn(binding);
+        when(bindings.findGlobal(5L)).thenReturn(binding);
+        when(imageDownloader.download("https://wwcdn.weixin.qq.com/a.png", "key"))
+                .thenReturn(png());
+        when(imageStore.upload(eq(1L), eq("wecom/5:chat-1"), any(byte[].class),
+                eq("wecom-image"))).thenReturn(image("img-1"));
+        when(imageStore.attach(anyString(), eq(1L), eq("wecom/5:chat-1"), eq(List.of("img-1"))))
+                .thenAnswer(i -> i.getArgument(0));
+        JsonNode frame = mixedMessage("msg-1", "看看这个", "https://wwcdn.weixin.qq.com/a.png",
+                "key");
+        ObjectNode quote = ((ObjectNode) frame.path("body")).putObject("quote");
+        quote.put("msgtype", "text");
+        quote.putObject("text").put("content", "被引用的原文");
+
+        service.handle(frame);
+
+        verify(conversations).submitTurn(eq(1L), eq(7L), eq("WECOM"), eq("5:chat-1"),
+                eq("[引用内容: 被引用的原文]\n\n看看这个"), eq("WECOM:bot:msg-1"),
+                anyString());
+    }
+
+    @Test
+    void quotedTextKeepsLeadingMentionStripped() {
+        arrangeConfig();
+        WecomRobotBindingDO binding = arrangeBinding("ENABLED");
+        when(bindings.findSharedByConfigAndGroup(9L, "chat-1")).thenReturn(binding);
+        when(bindings.findGlobal(5L)).thenReturn(binding);
+        JsonNode frame = message("group", "text", "@机器人 请处理", "alice", "msg-1", "bot");
+        ObjectNode quote = ((ObjectNode) frame.path("body")).putObject("quote");
+        quote.put("msgtype", "text");
+        quote.putObject("text").put("content", "被引用的原文");
+
+        service.handle(frame);
+
+        verify(conversations).submitTurn(eq(1L), eq(7L), eq("WECOM"), eq("5:chat-1"),
+                eq("[引用内容: 被引用的原文]\n\n请处理"), eq("WECOM:bot:msg-1"), anyString());
+    }
+
+    @Test
+    void quotedGroupInfoCommandIsStillHandledAsCommand() {
+        arrangeConfig();
+        WecomRobotBindingDO binding = arrangeBinding("ENABLED");
+        when(bindings.findSharedByConfigAndGroup(9L, "chat-1")).thenReturn(binding);
+        when(admission.allowsManagement("WECOM")).thenReturn(true);
+        when(manager.respondMarkdown(eq(ImChannelPurpose.GROUP_CHAT), eq("bot"), eq("req-1"),
+                anyString())).thenReturn(WecomSendResult.SENT);
+        JsonNode frame = message("group", "text", "/groupinfo", "alice", "msg-1", "bot");
+        ObjectNode quote = ((ObjectNode) frame.path("body")).putObject("quote");
+        quote.put("msgtype", "text");
+        quote.putObject("text").put("content", "被引用的原文");
+
+        service.handle(frame);
+
+        verify(manager).respondMarkdown(eq(ImChannelPurpose.GROUP_CHAT), eq("bot"), eq("req-1"),
+                contains("群 ID"));
+        verifyNoInteractions(conversations);
+    }
+
+    @Test
+    void unsupportedQuoteTypeDoesNotAlterAgentInput() {
+        arrangeConfig();
+        WecomRobotBindingDO binding = arrangeBinding("ENABLED");
+        when(bindings.findSharedByConfigAndGroup(9L, "chat-1")).thenReturn(binding);
+        when(bindings.findGlobal(5L)).thenReturn(binding);
+        JsonNode frame = message("group", "text", "请处理", "alice", "msg-1", "bot");
+        ObjectNode quote = ((ObjectNode) frame.path("body")).putObject("quote");
+        quote.put("msgtype", "voice");
+
+        service.handle(frame);
+
+        verify(conversations).submitTurn(eq(1L), eq(7L), eq("WECOM"), eq("5:chat-1"),
+                eq("请处理"), eq("WECOM:bot:msg-1"), anyString());
+    }
+
+    @Test
     void leadingMentionIsRemovedBeforeAnyWhitespace() {
         assertEquals("请处理", WecomInboundService.commandText("@机器人\n请处理"));
         assertEquals("请处理", WecomInboundService.commandText("@机器人\t请处理"));

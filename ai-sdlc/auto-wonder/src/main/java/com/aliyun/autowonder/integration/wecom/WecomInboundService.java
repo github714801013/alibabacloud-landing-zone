@@ -161,7 +161,8 @@ public class WecomInboundService implements WecomInboundListener {
             return;
         }
         String senderUserId = body.path("from").path("userid").asText("");
-        admit(binding, config, groupId, msgId, botId, reqId, senderUserId, text, null);
+        admit(binding, config, groupId, msgId, botId, reqId, senderUserId,
+                withQuote(body, text), null);
     }
 
     private void replyUnsupported(PlatformImChannelConfigDO config, String groupId, String botId,
@@ -224,6 +225,7 @@ public class WecomInboundService implements WecomInboundListener {
             return;
         }
         String content = text.isBlank() ? text("im.wecom_image_prompt") : commandText(text);
+        content = withQuote(body, content);
         String senderUserId = body.path("from").path("userid").asText("");
         admit(binding, config, groupId, msgId, botId, reqId, senderUserId, content, imageIds);
     }
@@ -251,14 +253,40 @@ public class WecomInboundService implements WecomInboundListener {
 
     private static String imageText(JsonNode body, String msgType) {
         if (!MIXED.equals(msgType)) return "";
+        return mixedText(body.path("mixed"));
+    }
+
+    private static String mixedText(JsonNode mixed) {
         List<String> parts = new ArrayList<>();
-        for (JsonNode item : body.path("mixed").path("msg_item")) {
+        for (JsonNode item : mixed.path("msg_item")) {
             if (TEXT.equals(item.path("msgtype").asText(""))) {
                 String value = item.path("text").path("content").asText("");
                 if (!value.isBlank()) parts.add(value);
             }
         }
         return String.join("\n", parts);
+    }
+
+    private static String quoteText(JsonNode body) {
+        JsonNode quote = body.path("quote");
+        String quoteType = quote.path("msgtype").asText("");
+        if (TEXT.equals(quoteType)) {
+            return quote.path("text").path("content").asText("").trim();
+        }
+        if (MIXED.equals(quoteType)) {
+            return mixedText(quote.path("mixed")).trim();
+        }
+        return "";
+    }
+
+    private static String withQuote(JsonNode body, String text) {
+        String quote = quoteText(body);
+        if (quote.isEmpty()) {
+            return text;
+        }
+        String prefix = SystemMessages.render("im.wecom_quote_prefix", new Object[]{quote},
+                "引用内容", Locale.CHINA);
+        return prefix + "\n\n" + text;
     }
 
     private static String imageScope(long bindingId, String chatId) {
