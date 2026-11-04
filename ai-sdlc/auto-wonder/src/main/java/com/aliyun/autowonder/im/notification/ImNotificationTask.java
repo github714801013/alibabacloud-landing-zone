@@ -33,6 +33,8 @@ public record ImNotificationTask(
     public static final String TYPE_INPUT_REQUIRED = "WORKITEM_INPUT_REQUIRED";
     public static final String TYPE_WORKSPACE_ACCESS_REQUEST = "WORKSPACE_ACCESS_REQUEST";
     public static final String TYPE_WORKSPACE_ACCESS_REVIEWED = "WORKSPACE_ACCESS_REVIEWED";
+    public static final String TYPE_IM_TEST = "IM_TEST";
+    public static final String WORKITEM_TITLE_KIND_PRE_RENDERED = "PRE_RENDERED";
     public static final String SOURCE_SCHEDULED_TASK_RUN = ExecutionSourceType.SCHEDULED_TASK_RUN.name();
 
     public ImNotificationTask(String notificationKey,
@@ -94,7 +96,19 @@ public record ImNotificationTask(
     public String provider() {
         // Existing queue keys encode provider immediately before recipient id.
         String[] parts = notificationKey == null ? new String[0] : notificationKey.split(":");
-        return parts.length >= 3 && "FEISHU".equals(parts[parts.length - 2]) ? "FEISHU" : "DINGTALK";
+        String candidate = parts.length >= 3 ? parts[parts.length - 2] : "";
+        return "FEISHU".equals(candidate) || "WECOM".equals(candidate) ? candidate : "DINGTALK";
+    }
+
+    @JsonIgnore
+    public boolean isImTest() {
+        return TYPE_IM_TEST.equals(notificationType);
+    }
+
+    /** 入队时已按接收者语言渲染，格式化阶段直接使用快照内容。 */
+    @JsonIgnore
+    public boolean isPreRendered() {
+        return isImTest() || WORKITEM_TITLE_KIND_PRE_RENDERED.equals(workitemTitleKind);
     }
 
     @JsonIgnore

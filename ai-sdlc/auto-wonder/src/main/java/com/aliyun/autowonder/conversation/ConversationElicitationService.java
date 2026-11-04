@@ -59,9 +59,15 @@ public class ConversationElicitationService {
     /** 用 setter 注入：ConversationTurnEventService 也持有本服务，构造器注入会成环。 */
     private ConversationBrowserEventPublisher browserEventPublisher;
     private ConversationAnswerDeliveryService answerDeliveryService;
+    private ClarificationAnswerActorPolicy answerActorPolicy;
     private long expiryCursor;
     @Autowired(required = false)
     public void setAnswerDeliveryService(ConversationAnswerDeliveryService service) { this.answerDeliveryService=service; }
+
+    @Autowired(required = false)
+    public void setAnswerActorPolicy(ClarificationAnswerActorPolicy answerActorPolicy) {
+        this.answerActorPolicy = answerActorPolicy;
+    }
 
     public ConversationElicitationService(AgentConversationElicitationDao elicitationDao,
             AgentConversationDao convDao, ConversationTransport transport,
@@ -192,9 +198,11 @@ public class ConversationElicitationService {
         }
         AgentConversationTurnDO origin = turnDao.findByConversationTurn(tenantId, conversationId, record.getTurnId());
         if (origin != null && origin.getSubmittedUserId() != null
-                && !origin.getSubmittedUserId().equals(respondingUserId)) {
+                && !origin.getSubmittedUserId().equals(respondingUserId)
+                && (answerActorPolicy == null
+                        || !answerActorPolicy.mayAnswer(tenantId, conversationId, respondingUserId))) {
             throw BizException.keyed(ErrorCode.NO_PERMISSION, "conversation.actor_reply_forbidden", null,
-                    "only the original message sender may answer this question");
+                    "only the original message sender or the current work item owner may answer this question");
         }
         if (Integer.valueOf(1).equals(record.getAnswerProtocolVersion()) && answerDeliveryService != null) {
             String normalized = normalizeReply(action, answerJson);

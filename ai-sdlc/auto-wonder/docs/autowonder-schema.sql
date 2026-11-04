@@ -1130,6 +1130,7 @@ CREATE TABLE IF NOT EXISTS `notify_pref` (
   `in_app`     TINYINT         NOT NULL DEFAULT 1 COMMENT '站内（0/1）',
   `dingtalk`   TINYINT         NOT NULL DEFAULT 1 COMMENT '钉钉（0/1）',
   `feishu`    TINYINT         NOT NULL DEFAULT 0 COMMENT '飞书（0/1）',
+  `wecom`     TINYINT         NOT NULL DEFAULT 0 COMMENT '企业微信（0/1）',
   `gmt_create` DATETIME(3)     NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   `gmt_modified` DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   PRIMARY KEY (`id`),
@@ -1571,6 +1572,28 @@ CREATE TABLE IF NOT EXISTS `feishu_robot_binding` (
       AND `credential_ref` IS NULL)
   )
 ) ENGINE=InnoDB AUTO_INCREMENT=10000 DEFAULT CHARSET=utf8mb4 COMMENT='飞书企业自建应用绑定(独立/共享群聊)';
+
+-- 企业微信共享群绑定（仅 SHARED；通知与群聊各自使用平台配置中的独立机器人）
+CREATE TABLE IF NOT EXISTS `wecom_robot_binding` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `tenant_id` BIGINT NOT NULL,
+  `platform_config_id` BIGINT UNSIGNED NOT NULL COMMENT 'SHARED 引用的 platform_im_channel_config.id',
+  `group_id` VARCHAR(256) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL COMMENT 'SHARED chatid，去空白后精确匹配',
+  `agent_id` BIGINT NOT NULL COMMENT '关联数字人；创建人即显式委托的管理员',
+  `route_version` BIGINT NOT NULL DEFAULT 0 COMMENT '群/数字人/启停等路由变化时递增',
+  `status` VARCHAR(16) NOT NULL DEFAULT 'ENABLED',
+  `last_success_at` DATETIME NULL,
+  `last_error` VARCHAR(1024) NULL,
+  `creator_id` BIGINT NULL COMMENT '显式委托授权人（创建人）',
+  `modifier_id` BIGINT NULL,
+  `is_deleted` TINYINT NOT NULL DEFAULT 0,
+  `version` INT NOT NULL DEFAULT 0,
+  `gmt_create` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `gmt_modified` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_wecom_shared_group` (`platform_config_id`, `group_id`),
+  KEY `idx_wecom_tenant_agent` (`tenant_id`, `agent_id`, `is_deleted`)
+) ENGINE=InnoDB AUTO_INCREMENT=10000 DEFAULT CHARSET=utf8mb4 COMMENT='企业微信共享群绑定（仅 SHARED）';
 
 CREATE TABLE IF NOT EXISTS `feishu_message_inbox` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,

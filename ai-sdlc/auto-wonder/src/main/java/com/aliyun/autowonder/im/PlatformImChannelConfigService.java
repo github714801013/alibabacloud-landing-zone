@@ -27,6 +27,8 @@ import java.util.regex.Pattern;
 public class PlatformImChannelConfigService {
     private static final Logger log = LoggerFactory.getLogger(PlatformImChannelConfigService.class);
     private static final Pattern FEISHU_APP_ID = Pattern.compile("cli_[A-Za-z0-9]+");
+    /** 企业微信长连接固定官方端点，避免订阅凭据被配置到任意服务端。 */
+    private static final String WECOM_WSS_HOST = "openws.work.weixin.qq.com";
 
     private final PlatformImChannelConfigDao configDao;
     private final SecretCrypto secretCrypto;
@@ -149,7 +151,9 @@ public class PlatformImChannelConfigService {
             String appKey = normalizeLength(request.getAppKey(), 128, "appKey");
             String appSecret = normalizeLength(request.getAppSecret(), 1024, "appSecret");
             String robotCode = normalizeLength(request.getRobotCode(), 128, "robotCode");
-            String baseUrl = normalizeHttpsUrl(request.getBaseUrl());
+            String baseUrl = "WECOM".equals(provider)
+                    ? normalizeWecomUrl(request.getBaseUrl())
+                    : normalizeHttpsUrl(request.getBaseUrl());
             boolean enabled = request.isEnabled();
             String credentialRef = appSecret == null ? null
                     : normalizeCredentialRef(secretCrypto.encrypt(appSecret));
@@ -163,7 +167,11 @@ public class PlatformImChannelConfigService {
             next.setProvider(provider);
             next.setPurpose(ImChannelPurpose.NOTIFY.name());
             next.setEnabled(enabled ? 1 : 0);
-            next.setRouteVersion(nextRouteVersion(existing, enabled, appKey, robotCode));
+            boolean wecomRouteChanged = "WECOM".equals(provider)
+                    && (credentialRef != null || (existing != null
+                    && !Objects.equals(existing.getBaseUrl(), baseUrl)));
+            next.setRouteVersion(nextRouteVersion(existing, enabled, appKey, robotCode,
+                    wecomRouteChanged));
             next.setAppKey(appKey);
             next.setCredentialRef(credentialRef);
             next.setRobotCode(robotCode);
@@ -341,7 +349,8 @@ public class PlatformImChannelConfigService {
             next.setPurpose(ImChannelPurpose.GROUP_CHAT.name());
             next.setEnabled(enabled ? 1 : 0);
             next.setRouteVersion(groupChatRouteVersion(existing, enabled,
-                    identity.appKey(), identity.robotCode()));
+                    identity.appKey(), identity.robotCode(),
+                    "WECOM".equals(normalized) && credentialsChanged));
             next.setAppKey(identity.appKey());
             next.setRobotCode(identity.robotCode());
             next.setCredentialRef(credentialRef);
@@ -405,6 +414,11 @@ public class PlatformImChannelConfigService {
     public PlatformImChannelConfigDO findGroupChat(String provider) {
         return configDao.findByProviderAndPurpose(
                 ImProviderType.normalize(provider), ImChannelPurpose.GROUP_CHAT.name());
+    }
+
+    public PlatformImChannelConfigDO findNotify(String provider) {
+        return configDao.findByProviderAndPurpose(
+                ImProviderType.normalize(provider), ImChannelPurpose.NOTIFY.name());
     }
 
     public PlatformImChannelConfigDO findGroupChatById(Long id) {
@@ -498,6 +512,9 @@ public class PlatformImChannelConfigService {
                         "飞书 appId 格式不正确");
             }
             robotCode = null;
+        } else if ("WECOM".equals(provider)) {
+            appKey = normalizeLength(request.getAppKey(), 128, "appKey");
+            robotCode = null;
         } else {
             appKey = normalizeLength(request.getAppKey(), 128, "appKey");
             robotCode = normalizeLength(request.getRobotCode(), 128, "robotCode");
@@ -590,7 +607,7 @@ public class PlatformImChannelConfigService {
                                                     boolean clearEncryptKey) {
         ImGroupChatCredentials base = current == null
                 ? new ImGroupChatCredentials(null, null, null) : current;
-        if ("DINGTALK".equals(provider)) {
+        if ("DINGTALK".equals(provider) || "WECOM".equals(provider)) {
             return base.merge(appSecret, null, null, true);
         }
         return base.merge(appSecret, verificationToken, encryptKey, clearEncryptKey);
@@ -608,7 +625,8 @@ public class PlatformImChannelConfigService {
     }
 
     private static long nextRouteVersion(PlatformImChannelConfigDO existing, boolean enabled,
-                                         String appKey, String robotCode) {
+                                         String appKey, String robotCode,
+                                         boolean credentialChanged) {
         long current = currentRouteVersion(existing);
         if (existing == null) {
             return current;
@@ -616,11 +634,12 @@ public class PlatformImChannelConfigService {
         boolean enabledChanged = !Integer.valueOf(enabled ? 1 : 0).equals(existing.getEnabled());
         boolean identityChanged = !Objects.equals(existing.getAppKey(), appKey)
                 || !Objects.equals(existing.getRobotCode(), robotCode);
-        return enabledChanged || identityChanged ? current + 1 : current;
+        return enabledChanged || identityChanged || credentialChanged ? current + 1 : current;
     }
 
     private static long groupChatRouteVersion(PlatformImChannelConfigDO existing,
-                                              boolean enabled, String appKey, String robotCode) {
+                                              boolean enabled, String appKey, String robotCode,
+                                              boolean credentialChanged) {
         long current = currentRouteVersion(existing);
         if (existing == null) {
             return current;
@@ -628,7 +647,7 @@ public class PlatformImChannelConfigService {
         boolean enabledChanged = !Integer.valueOf(enabled ? 1 : 0).equals(existing.getEnabled());
         boolean identityChanged = !Objects.equals(existing.getAppKey(), appKey)
                 || !Objects.equals(existing.getRobotCode(), robotCode);
-        return enabledChanged || identityChanged ? current + 1 : current;
+        return enabledChanged || identityChanged || credentialChanged ? current + 1 : current;
     }
 
     private static long currentRouteVersion(PlatformImChannelConfigDO config) {
@@ -638,13 +657,17 @@ public class PlatformImChannelConfigService {
     private static boolean isNotifyComplete(PlatformImChannelConfigDO config) {
         return hasText(config.getAppKey())
                 && hasText(config.getCredentialRef())
-                && ("FEISHU".equals(config.getProvider()) || hasText(config.getRobotCode()));
+                && (!requiresRobotCode(config.getProvider()) || hasText(config.getRobotCode()));
     }
 
     private static boolean isGroupChatComplete(PlatformImChannelConfigDO config) {
         return hasText(config.getAppKey())
                 && hasText(config.getCredentialRef())
-                && ("FEISHU".equals(config.getProvider()) || hasText(config.getRobotCode()));
+                && (!requiresRobotCode(config.getProvider()) || hasText(config.getRobotCode()));
+    }
+
+    private static boolean requiresRobotCode(String provider) {
+        return "DINGTALK".equals(provider);
     }
 
     private boolean isGroupChatReadyConfig(PlatformImChannelConfigDO config) {
@@ -758,6 +781,31 @@ public class PlatformImChannelConfigService {
             return normalized;
         } catch (Exception e) {
             throw BizException.keyed(ErrorCode.PARAM_INVALID, "im.base_url_https_required", new Object[0], "baseUrl 必须是绝对 HTTPS URL");
+        }
+    }
+
+    /** 企业微信长连接只接受官方 WSS 地址；未填写时由连接管理器使用官方默认地址。 */
+    private static String normalizeWecomUrl(String value) {
+        String normalized = normalizeLength(value, 512, "baseUrl");
+        if (normalized == null) {
+            return null;
+        }
+        try {
+            URI uri = URI.create(normalized);
+            if (!uri.isAbsolute()
+                    || !"wss".equalsIgnoreCase(uri.getScheme())
+                    || !WECOM_WSS_HOST.equalsIgnoreCase(uri.getHost())
+                    || uri.getUserInfo() != null
+                    || uri.getRawQuery() != null
+                    || uri.getRawFragment() != null) {
+                throw new IllegalArgumentException();
+            }
+            while (normalized.endsWith("/")) {
+                normalized = normalized.substring(0, normalized.length() - 1);
+            }
+            return normalized;
+        } catch (Exception e) {
+            throw BizException.keyed(ErrorCode.PARAM_INVALID, "im.base_url_wss_required", new Object[0], "baseUrl 必须是企业微信官方 WSS 地址");
         }
     }
 

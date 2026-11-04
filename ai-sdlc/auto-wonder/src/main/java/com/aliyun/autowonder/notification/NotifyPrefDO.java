@@ -13,4 +13,5 @@ public class NotifyPrefDO extends BaseDO {
     private Integer inApp;
     private Integer dingtalk;
     private Integer feishu;
+    private Integer wecom;
 }

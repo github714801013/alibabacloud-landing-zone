@@ -564,3 +564,44 @@ it('edits and tests the platform-selected Feishu identity', async () => {
   await userEvent.click(screen.getByRole('button', { name: /发送测试/ }));
   await waitFor(() => expect(tests).toBe(1));
 });
+
+it('saves the WeCom userid and polls the test notification to a terminal state', async () => {
+  let saved: UpdateDingTalkIdentityParams | undefined;
+  let tests = 0;
+  let polls = 0;
+  server.use(
+    http.get('/api/users/me/im-identities', () => HttpResponse.json(identityPayload({
+      provider: 'WECOM',
+      externalUserId: saved?.externalUserId ?? 'wecom-user',
+    }))),
+    http.put('/api/users/me/im-identities/wecom', async ({ request }) => {
+      saved = await request.json() as UpdateDingTalkIdentityParams;
+      return HttpResponse.json({ ...identityPayload(), data: { provider: 'WECOM', ...saved } });
+    }),
+    http.post('/api/users/me/im-identities/wecom/test', () => {
+      tests += 1;
+      return HttpResponse.json(mcpPayload({ deliveryKey: 'k1', status: 'QUEUED' }));
+    }),
+    http.get('/api/users/me/im-identities/wecom/test', () => {
+      polls += 1;
+      return HttpResponse.json(mcpPayload({ deliveryKey: 'k1', status: polls >= 2 ? 'SENT' : 'QUEUED' }));
+    }),
+  );
+  renderPage();
+
+  const input = await screen.findByLabelText('企业微信 userid');
+  expect(screen.getByText(/请先与通知机器人发起私聊/)).toBeInTheDocument();
+  expect(screen.queryByLabelText('钉钉工号')).not.toBeInTheDocument();
+  await userEvent.clear(input);
+  await userEvent.type(input, 'wecom-new');
+  expect(screen.getByRole('button', { name: /发送测试/ })).toBeDisabled();
+
+  await userEvent.click(screen.getByRole('button', { name: /保存/ }));
+  await waitFor(() => expect(saved).toEqual({ externalUserId: 'wecom-new' }));
+  await waitFor(() => expect(screen.getByRole('button', { name: /发送测试/ })).toBeEnabled());
+  await userEvent.click(screen.getByRole('button', { name: /发送测试/ }));
+
+  await waitFor(() => expect(tests).toBe(1));
+  expect(successMock).toHaveBeenCalledWith('测试通知已排队');
+  expect(await screen.findByText('已送达', {}, { timeout: 4000 })).toBeInTheDocument();
+});

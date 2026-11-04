@@ -100,7 +100,8 @@ public class SystemSettingService {
 
     private boolean allowedNotifyKey(String key) {
         String selected = imConfigs.selectedProvider().toLowerCase(java.util.Locale.ROOT);
-        return key != null && (!(key.startsWith("dingtalk_") || key.startsWith("feishu_")) || key.startsWith(selected + "_"));
+        return key != null && (!(key.startsWith("dingtalk_") || key.startsWith("feishu_")
+                || key.startsWith("wecom_")) || key.startsWith(selected + "_"));
     }
 
     private void validateGroup(String group) {

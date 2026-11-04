@@ -316,6 +316,52 @@ class AgentConversationServiceTest {
         verify(admission).clearQueueWait(55L);
     }
 
+    /** 排队超时（无 ACK 失败路径）：企微补可投递失败 OUT 并进队列，其他渠道不落 OUT。 */
+    @ParameterizedTest @ValueSource(strings = {"WECOM", "DINGTALK"})
+    void busyQueuedTurnEnqueuesFailureReplyOnlyForWecom(String channel) {
+        ImReplyDeliveryService queue = mock(ImReplyDeliveryService.class);
+        svc.setReplyDeliveryService(queue);
+        var conv = existingConversationWithSession();
+        conv.setChannel(channel);
+        var queued = processingInboundTurn(77L);
+        queued.setStatus("QUEUED");
+        queued.setContent("waiting");
+        queued.setExternalMsgId("msg-55");
+        ConversationAdmissionService admission = mock(ConversationAdmissionService.class);
+        svc.setAdmissionService(admission);
+        when(turnDao.listQueuedInboundAfter(0L, 100)).thenReturn(java.util.List.of(queued));
+        when(convDao.findById(1L, 77L)).thenReturn(conv);
+        when(turnDao.findNextQueuedInbound(1L, 77L)).thenReturn(queued);
+        when(executorSelector.select(3L, 9L)).thenReturn(null);
+        when(admission.queueWaitExpired(55L)).thenReturn(true);
+        when(turnDao.updateStatusIfCurrent(1L, 55L, "QUEUED", "FAILED",
+                "executor busy: queued turn exceeded queue timeout")).thenReturn(1);
+        when(turnDao.insert(any())).thenAnswer(inv -> {
+            ((AgentConversationTurnDO) inv.getArgument(0)).setId(88L);
+            return 1;
+        });
+        ConversationChannelSink sink = mock(ConversationChannelSink.class);
+        when(sinkRegistry.find(channel)).thenReturn(sink);
+
+        svc.recoverQueuedTurns();
+        commitTransactionSynchronizations();
+
+        if ("WECOM".equals(channel)) {
+            verify(turnDao).insert(argThat(t -> "OUT".equals(t.getDirection())
+                    && "FAILED".equals(t.getStatus())
+                    && t.getContent().contains("executor busy")
+                    && t.getContent().startsWith("回复失败：")
+                    && ImReplyDeliveryService.STATUS_PENDING.equals(t.getDeliveryStatus())
+                    && Long.valueOf(55L).equals(t.getSourceInboundTurnId())));
+            verify(queue).deliver(88L);
+            verify(sink, never()).deliverReply(any(), any(), any());
+        } else {
+            verify(turnDao, never()).insert(any());
+            verify(sinkRegistry, never()).find(any());
+            verifyNoInteractions(queue);
+        }
+    }
+
     @Test
     void newSubmissionDoesNotOvertakeAnExistingQueue() {
         AgentConversationDO conv = existingConversationWithSession();
@@ -365,6 +411,31 @@ class AgentConversationServiceTest {
         assertFalse(stored.getValue().getSourceContext().contains("https://oss.example"));
         assertTrue(runtime.getValue().contains(context));
         assertTrue(runtime.getValue().contains("Inspect this workitem"));
+    }
+
+    @Test
+    void wecomImageContextIsInjectedForTheRuntimeWithoutRewritingSavedUserContent() {
+        var conversation=existingConversationWithSession();
+        conversation.setChannel("WECOM");
+        conversation.setChannelConversationId("5:chat-1");
+        when(convDao.findByKey(1L,"WECOM","5:chat-1",3L)).thenReturn(conversation);
+        when(executorSelector.select(3L,9L)).thenReturn(9L);
+        when(turnDao.insert(any())).thenAnswer(invocation->{AgentConversationTurnDO row=invocation.getArgument(0);row.setId(55L);return 1;});
+        String context="{\"conversationImageIds\":[\"img-1\"],\"conversationImageScope\":\"wecom/5:chat-1\"}";
+        var imageService=mock(PlatformConversationImageService.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(svc,"imageService",imageService);
+        when(imageService.runtimeContext(context,1L)).thenReturn("Image URL: https://oss.example/image.png; inspect pixels");
+        svc.submitTurn(1L,3L,"WECOM","5:chat-1","请查看并处理这张图片。","WECOM:bot:msg-1",context);
+        commitTransactionSynchronizations();
+        var stored=ArgumentCaptor.forClass(AgentConversationTurnDO.class);
+        verify(turnDao).insert(stored.capture());
+        assertEquals("请查看并处理这张图片。",stored.getValue().getContent());
+        assertEquals(context,stored.getValue().getSourceContext());
+        var runtime=ArgumentCaptor.forClass(String.class);
+        verify(transport).send(any(),eq(55L),runtime.capture(),any(),any());
+        assertTrue(runtime.getValue().contains("https://oss.example/image.png"));
+        assertTrue(runtime.getValue().contains("请查看并处理这张图片。"));
+        assertFalse(stored.getValue().getSourceContext().contains("https://oss.example"));
     }
 
     @Test
@@ -1202,6 +1273,113 @@ class AgentConversationServiceTest {
         verify(sinkRegistry, never()).find(any());
     }
 
+    static java.util.stream.Stream<Arguments> wecomTerminalAcks() {
+        return java.util.stream.Stream.of(
+                Arguments.of("FAILED", "boom", null, "回复失败：boom"),
+                Arguments.of("FAILED", "boom", "partial reply", "partial reply"),
+                Arguments.of("CANCELED", null, "部分内容", "部分内容"),
+                Arguments.of("CANCELED", null, null, "响应已终止"),
+                Arguments.of("SUCCESS", null, null, "本次处理已完成，但数字人没有返回答复内容。"));
+    }
+
+    /** 企微终态回归：FAILED/CANCELED/空成功同样入持久队列；原文与 error 不改写，
+     *  群侧安全文案由 sink 按入站终态渲染，服务不得把内容直发 sink。 */
+    @ParameterizedTest @MethodSource("wecomTerminalAcks")
+    void wecomTerminalAckEnqueuesDeliveryRowThroughDurableQueue(String status, String error,
+            String replyMarkdown, String expectedContent) {
+        ImReplyDeliveryService queue = mock(ImReplyDeliveryService.class);
+        svc.setReplyDeliveryService(queue);
+        AgentConversationDO conv = new AgentConversationDO();
+        conv.setId(77L);
+        conv.setTenantId(1L);
+        conv.setChannel("WECOM");
+        conv.setExecutorId(9L);
+        when(convDao.findById(1L, 77L)).thenReturn(conv);
+        AgentConversationTurnDO inTurn = processingInboundTurn(77L);
+        inTurn.setExternalMsgId("msg-55");
+        when(turnDao.findByConversationTurn(1L, 77L, 55L)).thenReturn(inTurn);
+        ConversationChannelSink sink = mock(ConversationChannelSink.class);
+        when(sinkRegistry.find("WECOM")).thenReturn(sink);
+        when(turnDao.updateInboundStatusIfProcessing(1L, 77L, 55L, status, error)).thenReturn(1);
+        when(turnDao.insert(any())).thenAnswer(inv -> {
+            ((AgentConversationTurnDO) inv.getArgument(0)).setId(88L);
+            return 1;
+        });
+
+        svc.acknowledgeTurn(1L, 9L, 77L, 55L, status, error, replyMarkdown, null);
+
+        verify(queue, never()).deliver(any());
+        commitTransactionSynchronizations();
+
+        verify(turnDao).updateInboundStatusIfProcessing(1L, 77L, 55L, status, error);
+        verify(turnDao).insert(argThat(t -> "OUT".equals(t.getDirection())
+                && status.equals(t.getStatus())
+                && expectedContent.equals(t.getContent())
+                && java.util.Objects.equals(error, t.getError())
+                && ImReplyDeliveryService.STATUS_PENDING.equals(t.getDeliveryStatus())
+                && Long.valueOf(55L).equals(t.getSourceInboundTurnId())));
+        verify(queue).deliver(88L);
+        verify(sink, never()).deliverReply(any(), any(), any());
+    }
+
+    /** 重复 ACK：条件更新只放行一次，投递队列也只唤醒一次。 */
+    @ParameterizedTest @ValueSource(strings = {"FAILED", "CANCELED"})
+    void wecomDuplicateAckDoesNotDeliverTwice(String status) {
+        ImReplyDeliveryService queue = mock(ImReplyDeliveryService.class);
+        svc.setReplyDeliveryService(queue);
+        AgentConversationDO conv = new AgentConversationDO();
+        conv.setId(77L);
+        conv.setTenantId(1L);
+        conv.setChannel("WECOM");
+        conv.setExecutorId(9L);
+        when(convDao.findById(1L, 77L)).thenReturn(conv);
+        AgentConversationTurnDO inTurn = processingInboundTurn(77L);
+        inTurn.setExternalMsgId("msg-55");
+        when(turnDao.findByConversationTurn(1L, 77L, 55L)).thenReturn(inTurn);
+        ConversationChannelSink sink = mock(ConversationChannelSink.class);
+        when(sinkRegistry.find("WECOM")).thenReturn(sink);
+        when(turnDao.updateInboundStatusIfProcessing(1L, 77L, 55L, status, "boom"))
+                .thenReturn(1).thenReturn(0);
+        when(turnDao.insert(any())).thenAnswer(inv -> {
+            ((AgentConversationTurnDO) inv.getArgument(0)).setId(88L);
+            return 1;
+        });
+
+        svc.acknowledgeTurn(1L, 9L, 77L, 55L, status, "boom", null, null);
+        commitTransactionSynchronizations();
+        svc.acknowledgeTurn(1L, 9L, 77L, 55L, status, "boom", null, null);
+        commitTransactionSynchronizations();
+
+        verify(turnDao, times(1)).insert(any());
+        verify(queue, times(1)).deliver(88L);
+        verify(sink, never()).deliverReply(any(), any(), any());
+    }
+
+    /** 其他渠道现状回归：FAILED/CANCELED/空成功 ACK 一律不进群、不进队列。 */
+    @ParameterizedTest @ValueSource(strings = {"FAILED", "CANCELED", "SUCCESS"})
+    void dingTalkTerminalAckStillSkipsGroupDelivery(String status) {
+        ImReplyDeliveryService queue = mock(ImReplyDeliveryService.class);
+        svc.setReplyDeliveryService(queue);
+        AgentConversationDO conv = new AgentConversationDO();
+        conv.setId(77L);
+        conv.setTenantId(1L);
+        conv.setChannel("DINGTALK");
+        conv.setExecutorId(9L);
+        when(convDao.findById(1L, 77L)).thenReturn(conv);
+        AgentConversationTurnDO inTurn = processingInboundTurn(77L);
+        inTurn.setExternalMsgId("msg-55");
+        when(turnDao.findByConversationTurn(1L, 77L, 55L)).thenReturn(inTurn);
+        when(turnDao.updateInboundStatusIfProcessing(1L, 77L, 55L, status, "boom"))
+                .thenReturn(1);
+        when(turnDao.insert(any())).thenReturn(1);
+
+        svc.acknowledgeTurn(1L, 9L, 77L, 55L, status, "boom", null, null);
+        commitTransactionSynchronizations();
+
+        verify(sinkRegistry, never()).find(any());
+        verifyNoInteractions(queue);
+    }
+
     @Test
     void acknowledgeDispatchesNextQueuedTurnAfterDelivery() {
         AgentConversationDO conv = existingConversationWithSession();
@@ -1659,6 +1837,51 @@ class AgentConversationServiceTest {
         verify(transport, never()).send(any(), any(), any(), any(), any());
     }
 
+    /** 执行器兼容失败（无 ACK 失败路径）：企微补可投递失败 OUT 并进队列，其他渠道不落 OUT。 */
+    @ParameterizedTest @ValueSource(strings = {"WECOM", "DINGTALK"})
+    void compatibilityFailureEnqueuesFailureReplyOnlyForWecom(String channel) {
+        ImReplyDeliveryService queue = mock(ImReplyDeliveryService.class);
+        svc.setReplyDeliveryService(queue);
+        Date cutoff = new Date(1_000L);
+        AgentConversationDO conv = existingConversationWithSession();
+        conv.setChannel(channel);
+        AgentConversationTurnDO stale = processingInboundTurn(77L);
+        stale.setExternalMsgId("msg-55");
+        when(turnDao.listStaleProcessingInboundByExecutor(1L, 9L, cutoff, 100))
+                .thenReturn(java.util.List.of(stale));
+        when(convDao.findById(1L, 77L)).thenReturn(conv);
+        when(turnDao.findByConversationTurn(1L, 77L, 55L)).thenReturn(stale);
+        when(executorRouter.select(1L, 3L, 50L, 9L)).thenThrow(
+                new ExecutorProtocolCompatibilityException(
+                        ExecutorProtocolFeatures.AGENT_ENVIRONMENT_VARIABLES_V1));
+        when(turnDao.updateInboundStatusIfProcessing(eq(1L), eq(77L), eq(55L), eq("FAILED"),
+                contains(ExecutorProtocolFeatures.AGENT_ENVIRONMENT_VARIABLES_V1))).thenReturn(1);
+        when(turnDao.insert(any())).thenAnswer(inv -> {
+            ((AgentConversationTurnDO) inv.getArgument(0)).setId(88L);
+            return 1;
+        });
+        ConversationChannelSink sink = mock(ConversationChannelSink.class);
+        when(sinkRegistry.find(channel)).thenReturn(sink);
+
+        svc.recoverStaleTurnsForExecutor(1L, 9L, java.util.Set.of(), true, cutoff, 100);
+        commitTransactionSynchronizations();
+
+        if ("WECOM".equals(channel)) {
+            verify(turnDao).insert(argThat(t -> "OUT".equals(t.getDirection())
+                    && "FAILED".equals(t.getStatus())
+                    && t.getContent().startsWith("回复失败：")
+                    && t.getContent().contains("executor compatibility failed")
+                    && ImReplyDeliveryService.STATUS_PENDING.equals(t.getDeliveryStatus())
+                    && Long.valueOf(55L).equals(t.getSourceInboundTurnId())));
+            verify(queue).deliver(88L);
+            verify(sink, never()).deliverReply(any(), any(), any());
+        } else {
+            verify(turnDao, never()).insert(any());
+            verify(sinkRegistry, never()).find(channel);
+            verifyNoInteractions(queue);
+        }
+    }
+
     @Test
     void recoverStaleTurnsFailsAfterBoundedDeliveryAttempts() {
         Date cutoff = new Date(1_000L);
@@ -1680,6 +1903,49 @@ class AgentConversationServiceTest {
         verify(turnDao, never()).claimStaleDispatchAttemptIfProcessing(anyLong(), anyLong(),
                 anyLong(), any());
         verify(transport, never()).send(any(), any(), any(), any(), any());
+    }
+
+    /** 重试耗尽（无 ACK 失败路径）：企微补可投递失败 OUT 并进队列，其他渠道不落 OUT。 */
+    @ParameterizedTest @ValueSource(strings = {"WECOM", "DINGTALK"})
+    void staleAttemptExhaustionEnqueuesFailureReplyOnlyForWecom(String channel) {
+        ImReplyDeliveryService queue = mock(ImReplyDeliveryService.class);
+        svc.setReplyDeliveryService(queue);
+        Date cutoff = new Date(1_000L);
+        AgentConversationDO conv = existingConversationWithSession();
+        conv.setChannel(channel);
+        AgentConversationTurnDO stale = processingInboundTurn(77L);
+        stale.setDispatchAttempt(3);
+        stale.setExternalMsgId("msg-55");
+        when(turnDao.listStaleProcessingInboundByExecutor(1L, 9L, cutoff, 100))
+                .thenReturn(java.util.List.of(stale));
+        when(convDao.findById(1L, 77L)).thenReturn(conv);
+        when(turnDao.findByConversationTurn(1L, 77L, 55L)).thenReturn(stale);
+        when(turnDao.updateInboundStatusIfProcessing(eq(1L), eq(77L), eq(55L),
+                eq("FAILED"), anyString())).thenReturn(1);
+        when(turnDao.insert(any())).thenAnswer(inv -> {
+            ((AgentConversationTurnDO) inv.getArgument(0)).setId(88L);
+            return 1;
+        });
+        ConversationChannelSink sink = mock(ConversationChannelSink.class);
+        when(sinkRegistry.find(channel)).thenReturn(sink);
+
+        svc.recoverStaleTurnsForExecutor(1L, 9L, java.util.Set.of(), true, cutoff, 100);
+        commitTransactionSynchronizations();
+
+        if ("WECOM".equals(channel)) {
+            verify(turnDao).insert(argThat(t -> "OUT".equals(t.getDirection())
+                    && "FAILED".equals(t.getStatus())
+                    && t.getContent().startsWith("回复失败：")
+                    && t.getContent().contains("3 delivery attempts")
+                    && ImReplyDeliveryService.STATUS_PENDING.equals(t.getDeliveryStatus())
+                    && Long.valueOf(55L).equals(t.getSourceInboundTurnId())));
+            verify(queue).deliver(88L);
+            verify(sink, never()).deliverReply(any(), any(), any());
+        } else {
+            verify(turnDao, never()).insert(any());
+            verify(sinkRegistry, never()).find(any());
+            verifyNoInteractions(queue);
+        }
     }
 
     /**
@@ -1995,6 +2261,46 @@ class AgentConversationServiceTest {
                 && "CANCELED".equals(t.getStatus())
                 && "响应已终止".equals(t.getContent())));
         verify(transport, never()).sendCancel(any(), anyLong());
+    }
+
+    /** 主动取消终态：企微的取消 OUT 行进持久队列（安全文案由 sink 渲染），钉钉保持不投递。 */
+    @ParameterizedTest @ValueSource(strings = {"WECOM", "DINGTALK"})
+    void queuedTurnCancelEnqueuesDeliveryRowOnlyForWecom(String channel) {
+        ImReplyDeliveryService queue = mock(ImReplyDeliveryService.class);
+        AgentConversationService cancelSvc = serviceWithPresence(mock(ConversationRuntimePresence.class));
+        cancelSvc.setReplyDeliveryService(queue);
+        AgentConversationDO conv = existingConversationWithSession();
+        conv.setChannel(channel);
+        when(convDao.findById(1L, 77L)).thenReturn(conv);
+        AgentConversationTurnDO queued = processingInboundTurn(77L);
+        queued.setStatus("QUEUED");
+        queued.setExternalMsgId("msg-55");
+        when(turnDao.findByConversationTurn(1L, 77L, 55L)).thenReturn(queued);
+        when(turnDao.updateStatusIfCurrent(1L, 55L, "QUEUED", "CANCELED", null)).thenReturn(1);
+        ConversationChannelSink sink = mock(ConversationChannelSink.class);
+        when(sinkRegistry.find(channel)).thenReturn(sink);
+        when(turnDao.insert(any())).thenAnswer(inv -> {
+            ((AgentConversationTurnDO) inv.getArgument(0)).setId(88L);
+            return 1;
+        });
+
+        cancelSvc.requestTurnCancel(1L, 77L, 55L);
+        commitTransactionSynchronizations();
+
+        if ("WECOM".equals(channel)) {
+            verify(turnDao).insert(argThat(t -> "OUT".equals(t.getDirection())
+                    && "CANCELED".equals(t.getStatus())
+                    && "响应已终止".equals(t.getContent())
+                    && ImReplyDeliveryService.STATUS_PENDING.equals(t.getDeliveryStatus())
+                    && Long.valueOf(55L).equals(t.getSourceInboundTurnId())));
+            verify(queue).deliver(88L);
+            verify(sink, never()).deliverReply(any(), any(), any());
+        } else {
+            verify(turnDao).insert(argThat(t -> "OUT".equals(t.getDirection())
+                    && t.getDeliveryStatus() == null));
+            verify(sinkRegistry, never()).find(any());
+            verifyNoInteractions(queue);
+        }
     }
 
     @Test

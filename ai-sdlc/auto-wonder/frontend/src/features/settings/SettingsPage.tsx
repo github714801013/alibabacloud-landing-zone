@@ -212,11 +212,14 @@ function NotifySettingsTab() {
 
   const channelQuery = useQuery({ queryKey: PLATFORM_IM_CHANNELS_QUERY_KEY, queryFn: getPlatformImChannels });
   const provider = selectedImProvider(channelQuery.data ?? []);
-  const providerKey = provider === 'FEISHU' ? 'feishu' : 'dingtalk';
-  const providerLabel = provider === 'FEISHU' ? t('feishu') : t('dingtalk');
+  const providerKey = provider === 'FEISHU' ? 'feishu' : provider === 'WECOM' ? 'wecom' : 'dingtalk';
+  const providerLabel = t(providerKey);
+  const enableLabelKey = providerKey === 'feishu'
+    ? 'enableFeishu' as const
+    : providerKey === 'wecom' ? 'enableWecom' as const : 'enableDingTalk' as const;
   const notifySettings = useMemo(() => NOTIFY_SETTINGS.map((item) => ({
-    ...item, key: `${providerKey}_enabled`, labelKey: providerKey === 'feishu' ? 'enableFeishu' as const : item.labelKey,
-  })), [providerKey]);
+    ...item, key: `${providerKey}_enabled`, labelKey: enableLabelKey,
+  })), [providerKey, enableLabelKey]);
   const prefsQuery = useQuery({ queryKey: ['notify-prefs'], queryFn: listNotifyPrefs });
   const settingsQuery = useSettingsGroup('NOTIFY', settingsForm, notifySettings);
 
@@ -243,6 +246,7 @@ function NotifySettingsTab() {
           inApp: Boolean(prefValues[`${type}.inApp`]),
           dingtalk: providerKey === 'dingtalk' && Boolean(prefValues[`${type}.dingtalk`]),
           feishu: providerKey === 'feishu' && Boolean(prefValues[`${type}.feishu`]),
+          wecom: providerKey === 'wecom' && Boolean(prefValues[`${type}.wecom`]),
         }))),
         updateSettings('NOTIFY', buildSettingItems(notifySettings, settingValues)),
       ]);

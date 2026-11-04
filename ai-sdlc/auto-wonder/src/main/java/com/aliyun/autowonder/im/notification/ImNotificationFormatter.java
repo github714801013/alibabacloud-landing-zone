@@ -11,8 +11,12 @@ public class ImNotificationFormatter {
     private static final String OUTCOME_APPROVED = "APPROVED";
 
     public String format(ImNotificationMessageContext context, ImNotificationTask task) {
-        String normalizedBaseUrl = trimTrailingSlash(context.baseUrl());
         Locale locale = task.deliveryLocale();
+        if (task.isPreRendered()) {
+            // 测试通知与通用平台通知在入队时已按接收者语言快照渲染，格式化阶段只取回原内容。
+            return safeText(task.commentContentMd());
+        }
+        String normalizedBaseUrl = trimTrailingSlash(context.baseUrl());
         String workspace = safeText(context.workspaceName());
         String actor = safeText(AssignmentActor.recipientDisplayName(task.actorDisplayName(), task.actorNameKind(), locale));
         String title = task.isScheduledTaskRun()
@@ -49,6 +53,17 @@ public class ImNotificationFormatter {
                 ? SystemMessages.render("im.status.assigned", null, context.statusName(), locale) : safeText(context.statusName());
         return render("assigned", locale, workspace, title, status, actor,
                 workitemUrl(normalizedBaseUrl, task.workitemId(), context.tenantId()));
+    }
+
+    /** 测试通知标题与正文共用同一组资源，同步测试与队列测试保持一致。 */
+    public static String testTitle(String brand, Locale locale) {
+        return SystemMessages.render("im.test.success_title", new Object[]{brand},
+                brand + " 协作通知测试成功", locale);
+    }
+
+    public static String testMarkdown(String title, Locale locale) {
+        return SystemMessages.render("im.test.success_body", new Object[]{title},
+                "## " + title + "\n\n你的 IM 协作通知配置可正常使用。", locale);
     }
 
     private static String render(String template, Locale locale, Object... args) {

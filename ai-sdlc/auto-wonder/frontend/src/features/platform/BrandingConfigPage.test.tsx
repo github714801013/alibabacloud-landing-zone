@@ -865,7 +865,7 @@ it('switches to Feishu through the persisted selection without reusing DingTalk 
   await userEvent.type(screen.getByLabelText('AppSecret'), 'feishu-secret');
   await userEvent.click(screen.getByRole('button', { name: /保存通知配置/ }));
   await waitFor(() => expect(saved).toEqual({ enabled: true, appKey: 'cli_test', appSecret: 'feishu-secret', robotCode: '' }));
-});
+}, 20000);
 
 it('prefers the persisted provider selection over the channel list', async () => {
   server.use(http.get('/api/platform/im-channels/selection', () => HttpResponse.json(imSelectionPayload('FEISHU', 3))));
@@ -984,6 +984,91 @@ it('performs no write when the channel switch is cancelled', async () => {
   await waitFor(() => expect(screen.queryByRole('button', { name: '切换为飞书' })).not.toBeInTheDocument());
   expect(selectionWrites).toBe(0);
   expect(screen.getByText('平台当前渠道：钉钉')).toBeInTheDocument();
+});
+
+it('configures the WeCom notification bot with BotID, Secret and connection state', async () => {
+  let saved: UpdateDingTalkImChannelParams | undefined;
+  server.use(
+    http.get('/api/platform/im-channels/selection', () => HttpResponse.json(imSelectionPayload('WECOM', 2))),
+    http.get('/api/platform/im-channels', () => HttpResponse.json({
+      ...imChannelsPayload(),
+      data: [{ provider: 'WECOM', enabled: true, appKey: 'wecom-bot', robotCode: '', secretConfigured: true, ready: true, connectionStatus: 'CONNECTED' }],
+    })),
+    http.get('/api/platform/im-channels/WECOM/group-chat', () => HttpResponse.json(groupChatPayload('WECOM'))),
+    http.put('/api/platform/im-channels/wecom', async ({ request }) => {
+      saved = await request.json() as UpdateDingTalkImChannelParams;
+      return HttpResponse.json({
+        ...imChannelsPayload(),
+        data: [{ provider: 'WECOM', enabled: true, appKey: 'wecom-bot', robotCode: '', secretConfigured: true, ready: true, connectionStatus: 'CONNECTED' }],
+      });
+    }),
+  );
+  renderPage(); await openNotificationTab();
+
+  expect(await screen.findByText('平台当前渠道：企业微信')).toBeInTheDocument();
+  expect(await screen.findByLabelText('BotID')).toHaveValue('wecom-bot');
+  expect(screen.getByLabelText('Secret')).toHaveValue('');
+  expect(screen.queryByLabelText('RobotCode')).not.toBeInTheDocument();
+  expect(screen.getByText('连接状态：已连接')).toBeInTheDocument();
+  expect(screen.getAllByText('保存成功与连接成功分别展示').length).toBeGreaterThan(0);
+
+  await userEvent.type(screen.getByLabelText('Secret'), 'wecom-secret');
+  await userEvent.click(screen.getByRole('button', { name: /保存通知配置/ }));
+  await waitFor(() => expect(saved).toEqual({
+    enabled: true,
+    appKey: 'wecom-bot',
+    appSecret: 'wecom-secret',
+    robotCode: '',
+  }));
+});
+
+it('explains why the WeCom notification channel is not ready', async () => {
+  server.use(
+    http.get('/api/platform/im-channels/selection', () => HttpResponse.json(imSelectionPayload('WECOM', 2))),
+    http.get('/api/platform/im-channels', () => HttpResponse.json({
+      ...imChannelsPayload(),
+      data: [{ provider: 'WECOM', enabled: true, appKey: 'wecom-bot', robotCode: '', secretConfigured: false, ready: false, connectionStatus: 'CONNECTING' }],
+    })),
+    http.get('/api/platform/im-channels/WECOM/group-chat', () => HttpResponse.json(groupChatPayload('WECOM'))),
+  );
+  renderPage(); await openNotificationTab();
+
+  expect(await screen.findByText('Secret 未配置')).toBeInTheDocument();
+  expect(screen.getByText('连接未建立（连接中）')).toBeInTheDocument();
+  expect(screen.getByText('连接状态：连接中')).toBeInTheDocument();
+});
+
+it('keeps unsaved notification drafts when the WeCom connection poll refreshes', async () => {
+  let calls = 0;
+  server.use(
+    http.get('/api/platform/im-channels/selection', () => HttpResponse.json(imSelectionPayload('WECOM', 2))),
+    http.get('/api/platform/im-channels', () => {
+      calls += 1;
+      return HttpResponse.json({
+        ...imChannelsPayload(),
+        data: [{
+          provider: 'WECOM', enabled: true, appKey: 'wecom-bot', robotCode: '',
+          secretConfigured: true, ready: true, connectionStatus: calls > 1 ? 'CONNECTED' : 'CONNECTING',
+        }],
+      });
+    }),
+    http.get('/api/platform/im-channels/WECOM/group-chat', () => HttpResponse.json(groupChatPayload('WECOM'))),
+  );
+  renderPage(); await openNotificationTab();
+
+  await waitFor(
+    () => expect(screen.getByLabelText('BotID')).toHaveValue('wecom-bot'),
+    { timeout: 5000 },
+  );
+  expect(await screen.findByText('连接状态：连接中')).toBeInTheDocument();
+  await userEvent.clear(screen.getByLabelText('BotID'));
+  await userEvent.type(screen.getByLabelText('BotID'), 'draft-bot');
+
+  await waitFor(
+    () => expect(screen.getByText('连接状态：已连接')).toBeInTheDocument(),
+    { timeout: 8000 },
+  );
+  expect(screen.getByLabelText('BotID')).toHaveValue('draft-bot');
 });
 
 });

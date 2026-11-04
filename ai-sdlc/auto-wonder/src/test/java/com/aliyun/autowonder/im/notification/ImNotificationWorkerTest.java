@@ -103,6 +103,7 @@ class ImNotificationWorkerTest {
                 ImNotificationTask.TYPE_WORKSPACE_ACCESS_REQUEST, "READ_WRITE", null)));
         assertEquals("权限申请审批结果", titleFor(workspaceAccessTask(
                 ImNotificationTask.TYPE_WORKSPACE_ACCESS_REVIEWED, "READ_WRITE", "APPROVED")));
+        assertEquals("AutoWonder collaboration notification test succeeded", titleFor(imTestTask()));
     }
 
     @Test
@@ -150,6 +151,26 @@ class ImNotificationWorkerTest {
                 notificationType,
                 payload,
                 outcome);
+    }
+
+    private static ImNotificationTask imTestTask() {
+        return new ImNotificationTask(
+                "IM_TEST:abc:DINGTALK:9",
+                0L,
+                7L,
+                0L,
+                9L,
+                "SYSTEM",
+                0L,
+                null,
+                null,
+                "AutoWonder collaboration notification test succeeded",
+                ImNotificationTask.TYPE_IM_TEST,
+                "## AutoWonder collaboration notification test succeeded\n\nbody",
+                null,
+                "en-US",
+                null,
+                null);
     }
 
     private static ImNotificationTask commentMentionTask() {
@@ -296,6 +317,106 @@ class ImNotificationWorkerTest {
 
         verify(channelDown.provider, never()).send(org.mockito.ArgumentMatchers.any());
         verify(channelDown.queue).ack("1-0");
+    }
+
+    @Test
+    void nonHolderDoesNotConsumeOrReclaimTheStream() {
+        Fixture fixture = new Fixture();
+        when(fixture.provider.canDeliverNow()).thenReturn(false);
+
+        fixture.worker.pollOnce();
+        fixture.worker.recoverOnce();
+
+        verify(fixture.queue, never()).readNew(
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyInt());
+        verify(fixture.queue, never()).claimStale(
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyInt());
+    }
+
+    @Test
+    void providerThatCannotSendDefersWithoutAckingOrDropping() {
+        Fixture fixture = new Fixture();
+        when(fixture.provider.canDeliverNow()).thenReturn(false);
+        when(fixture.identityService.find(9L, "DINGTALK")).thenReturn(identity("staff-001"));
+        when(fixture.channelConfigService.isReady("DINGTALK")).thenReturn(true);
+
+        fixture.worker.process(envelope(1L));
+
+        verify(fixture.provider, never()).send(org.mockito.ArgumentMatchers.any());
+        verify(fixture.queue, never()).ack("1-0");
+        verify(fixture.queue, never()).sendToDlq(org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.anyString());
+        verify(fixture.queue, never()).markDelivered("notification-key-1");
+    }
+
+    @Test
+    void unknownOutcomeIsWrittenToDlqAndAckedWithoutResending() {
+        Fixture fixture = new Fixture();
+        when(fixture.identityService.find(9L, "DINGTALK")).thenReturn(identity("staff-001"));
+        when(fixture.channelConfigService.isReady("DINGTALK")).thenReturn(true);
+        doThrow(ImDeliveryException.outcomeUnknown("DINGTALK", "ackLost"))
+                .when(fixture.provider).send(org.mockito.ArgumentMatchers.any());
+
+        fixture.worker.process(envelope(1L));
+
+        verify(fixture.queue).sendToDlq(org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.contains("outcome unknown"));
+        verify(fixture.queue).ack("1-0");
+        verify(fixture.queue, never()).markDelivered("notification-key-1");
+    }
+
+    @Test
+    void testNotificationBypassesPreferenceAndContextAndReportsSent() {
+        Fixture fixture = new Fixture();
+        when(fixture.identityService.find(9L, "DINGTALK")).thenReturn(identity("staff-001"));
+        when(fixture.channelConfigService.isReady("DINGTALK")).thenReturn(true);
+        ImNotificationTask task = imTestTask();
+
+        fixture.worker.process(new ImNotificationEnvelope("1-0", task, 1L));
+
+        verify(fixture.preferenceService, never()).isDisabled(
+                org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString());
+        verify(fixture.contextResolver, never()).resolve(org.mockito.ArgumentMatchers.any());
+        ArgumentCaptor<ImSendCommand> command = ArgumentCaptor.forClass(ImSendCommand.class);
+        verify(fixture.provider).send(command.capture());
+        assertEquals("AutoWonder collaboration notification test succeeded", command.getValue().title());
+        assertEquals("## AutoWonder collaboration notification test succeeded\n\nbody",
+                command.getValue().markdown());
+        verify(fixture.testNotifications).markTerminal(task, ImTestNotificationService.STATUS_SENT);
+        verify(fixture.queue).markDelivered("IM_TEST:abc:DINGTALK:9");
+    }
+
+    @Test
+    void preRenderedProjectNoticeUsesItsSnapshotWithoutResolvingContext() {
+        Fixture fixture = new Fixture();
+        when(fixture.identityService.find(9L, "DINGTALK")).thenReturn(identity("staff-001"));
+        when(fixture.channelConfigService.isReady("DINGTALK")).thenReturn(true);
+        ImNotificationTask task = new ImNotificationTask(
+                "notice:99:DINGTALK:9", 99L, 7L, 0L, 9L, "SYSTEM", 0L, null, null,
+                "定时任务完成", "SCHEDULED_TASK_RUN_SUCCEEDED", "任务内容", null,
+                "en-US", null, ImNotificationTask.WORKITEM_TITLE_KIND_PRE_RENDERED);
+
+        fixture.worker.process(new ImNotificationEnvelope("1-0", task, 1L));
+
+        verify(fixture.contextResolver, never()).resolve(org.mockito.ArgumentMatchers.any());
+        ArgumentCaptor<ImSendCommand> command = ArgumentCaptor.forClass(ImSendCommand.class);
+        verify(fixture.provider).send(command.capture());
+        assertEquals("定时任务完成", command.getValue().title());
+        assertEquals("任务内容", command.getValue().markdown());
+    }
+
+    @Test
+    void testNotificationWithMissingIdentityReportsFailure() {
+        Fixture fixture = new Fixture();
+        when(fixture.identityService.find(9L, "DINGTALK")).thenReturn(null);
+        when(fixture.channelConfigService.isReady("DINGTALK")).thenReturn(true);
+        ImNotificationTask task = imTestTask();
+
+        fixture.worker.process(new ImNotificationEnvelope("1-0", task, 1L));
+
+        verify(fixture.testNotifications).markTerminal(task, ImTestNotificationService.STATUS_FAILED);
+        verify(fixture.queue).ack("1-0");
     }
 
     @Test
@@ -563,6 +684,7 @@ class ImNotificationWorkerTest {
         final ImNotificationMessageContextResolver contextResolver = mock(ImNotificationMessageContextResolver.class);
         final ImNotificationProperties properties = new ImNotificationProperties();
         final ImNotificationPreferenceService preferenceService = mock(ImNotificationPreferenceService.class);
+        final ImTestNotificationService testNotifications = mock(ImTestNotificationService.class);
         final ImNotificationWorker worker;
 
         Fixture() {
@@ -571,6 +693,8 @@ class ImNotificationWorkerTest {
                     .thenReturn(new ImNotificationMessageContext(
                             "真实研发工作空间", "待决策", "https://auto.example.com", 7L));
             when(provider.provider()).thenReturn("DINGTALK");
+            when(provider.canDeliverNow()).thenReturn(true);
+            when(channelConfigService.selectedProvider()).thenReturn("DINGTALK");
             worker = new ImNotificationWorker(
                     queue,
                     new ImNotificationFormatter(),
@@ -578,7 +702,7 @@ class ImNotificationWorkerTest {
                     channelConfigService,
                     new ImProviderRegistry(List.of(provider)),
                     properties,
-                    contextResolver, preferenceService);
+                    contextResolver, preferenceService, testNotifications);
         }
     }
 
@@ -591,6 +715,7 @@ class ImNotificationWorkerTest {
         final ImProvider provider = mock(ImProvider.class);
         final ImNotificationMessageContextResolver contextResolver = mock(ImNotificationMessageContextResolver.class);
         final ImNotificationPreferenceService preferenceService = mock(ImNotificationPreferenceService.class);
+        final ImTestNotificationService testNotifications = mock(ImTestNotificationService.class);
         final ImNotificationWorker worker;
 
         RedisWorkerFixture() {
@@ -599,6 +724,8 @@ class ImNotificationWorkerTest {
                     .thenReturn(new ImNotificationMessageContext(
                             "真实研发工作空间", "待决策", "https://auto.example.com", 7L));
             when(provider.provider()).thenReturn("DINGTALK");
+            when(provider.canDeliverNow()).thenReturn(true);
+            when(channelConfigService.selectedProvider()).thenReturn("DINGTALK");
             worker = new ImNotificationWorker(
                     queue,
                     new ImNotificationFormatter(),
@@ -606,7 +733,7 @@ class ImNotificationWorkerTest {
                     channelConfigService,
                     new ImProviderRegistry(List.of(provider)),
                     properties,
-                    contextResolver, preferenceService);
+                    contextResolver, preferenceService, testNotifications);
         }
     }
 }

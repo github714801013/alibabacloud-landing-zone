@@ -121,6 +121,8 @@ export const CLARIFICATION_BOTTOM_FOLLOW_THRESHOLD = 8;
 export const CLARIFICATION_CARD_DISMISS_MS = 160;
 /** 首次会话自动发送前的可取消倒计时（秒）。 */
 export const CLARIFICATION_AUTO_SEND_SECONDS = 5;
+/** 网络中断等系统级失败被拦截器统一包成该 code，message 是不可读的英文技术文案。 */
+const SYSTEM_ERROR_CODE = '10000';
 
 export function isNearScrollBottom(
   el: { scrollTop: number; clientHeight: number; scrollHeight: number },
@@ -749,7 +751,11 @@ export function WorkitemClarificationPanel({
               message.info(i18n.t('workitem:clarification.questionExpired'));
               return;
             }
-            message.error(i18n.t('workitem:clarification.answerFailed'));
+            // 业务失败直接展示后端文案（如权限被拒的真实原因）；系统级失败没有可读信息，回退通用文案。
+            const backendMessage = error instanceof ApiError && error.code !== SYSTEM_ERROR_CODE
+              ? error.message
+              : '';
+            message.error(backendMessage || i18n.t('workitem:clarification.answerFailed'));
           },
         },
       );

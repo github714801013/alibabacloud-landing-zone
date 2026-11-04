@@ -51,6 +51,7 @@ class DispatchServiceRetryTest {
         d.setAgentId(400L);
         d.setStatus(DispatchStatus.FAILED);
         d.setAttempt(attempt);
+        d.setIdempotencyKey("200:300:" + attempt);
         d.setVersion(1);
         return d;
     }
@@ -59,6 +60,7 @@ class DispatchServiceRetryTest {
     void retryEnqueuesNextAttemptWhenBudgetRemains() {
         doAnswer(inv -> { ((DispatchDO) inv.getArgument(0)).setId(501L); return null; })
                 .when(dispatchDao).insert(any());
+        when(dispatchDao.listByWorkitem(TENANT, 200L)).thenReturn(java.util.List.of(failed(1)));
         when(dispatchDao.findByIdempotencyKey(TENANT, "200:300:2")).thenReturn(null);
         service.retry(failed(1), 3);
         verify(dispatchDao).insert(argThat(d ->
@@ -69,9 +71,37 @@ class DispatchServiceRetryTest {
 
     @Test
     void retryHandsToHumanWhenBudgetExhausted() {
+        when(dispatchDao.listByWorkitem(TENANT, 200L)).thenReturn(java.util.List.of(failed(3)));
         service.retry(failed(3), 3);
         verify(dispatchDao, never()).insert(any());
         verify(sdlcDriver).onFail(TENANT, 200L, 300L);
+    }
+
+    @Test
+    void prepareAndRecoveryRowsDoNotConsumeBusinessAttemptBudget() {
+        DispatchDO business = failed(1);
+        DispatchDO second = row(502L, 2, "200:300:2");
+        DispatchDO prepared = row(503L, 9, "prepare:500");
+        DispatchDO recovered = row(504L, 12, "continue:500");
+        DispatchDO handedOff = row(505L, 11, "handoff:500");
+        when(dispatchDao.listByWorkitem(TENANT, 200L))
+                .thenReturn(java.util.List.of(business, second, prepared, recovered, handedOff));
+        when(dispatchDao.findByIdempotencyKey(TENANT, "200:300:3")).thenReturn(null);
+        doAnswer(inv -> { ((DispatchDO) inv.getArgument(0)).setId(505L); return null; })
+                .when(dispatchDao).insert(any());
+
+        service.retry(business, 3);
+
+        verify(dispatchDao).insert(argThat(d ->
+                d.getAttempt() == 3 && "200:300:3".equals(d.getIdempotencyKey())));
+    }
+
+    private DispatchDO row(long id, int attempt, String idempotencyKey) {
+        DispatchDO d = failed(attempt);
+        d.setId(id);
+        d.setStatus(DispatchStatus.SUCCEEDED);
+        d.setIdempotencyKey(idempotencyKey);
+        return d;
     }
 
     @Test

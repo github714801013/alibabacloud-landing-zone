@@ -355,6 +355,38 @@ describe('WorkitemClarificationPanel ACP 交互接线', () => {
     expect(screen.getByTestId('elicitation-skip-req-1')).toBeEnabled();
   });
 
+  // 业务失败（如回答权限被拒）必须原样展示后端文案，不能被通用文案吞掉。
+  it('shows the backend message for a business reply failure', async () => {
+    await renderPanel({
+      acpInteractionSupported: true,
+      processingStatus: 'PROCESSING',
+      processingTurnId: 3,
+      pendingElicitations: [{
+        requestId: 'req-1', turnId: 3, mode: 'form', message: '选一个',
+        requestedSchema: SELECT_SCHEMA, status: 'PENDING', gmtCreate: '',
+      }],
+      turns: [{ id: 3, direction: 'INBOUND', content: '请给方案', status: 'PROCESSING' }],
+    });
+    server.use(
+      http.post(
+        '/api/workitems/:workitemId/clarification-conversations/:conversationId/elicitations/:requestId/reply',
+        () => HttpResponse.json(
+          {
+            success: false, code: '10403',
+            message: '只有原消息发送者或当前工单负责人可以回答这个问题。',
+            traceId: null, data: null,
+          },
+          { status: 403 },
+        ),
+      ),
+    );
+
+    fireEvent.click(await screen.findByTestId('elicitation-skip-req-1'));
+
+    expect(await screen.findByText('只有原消息发送者或当前工单负责人可以回答这个问题。')).toBeInTheDocument();
+    expect(screen.getByTestId('elicitation-skip-req-1')).toBeEnabled();
+  });
+
   // 线上 bug：轮次取消把卡片结算成 CANCELED，但该 resolved 事件不落库，前端时间线仍当作 pending，
   // 提交/跳过都吃 409「already settled」，卡片关不掉、对话卡死。修复：CONFLICT 即撤下卡片。
   it('对已结算（409 CONFLICT）的问题：撤下卡片并提示已失效，解除卡死', async () => {

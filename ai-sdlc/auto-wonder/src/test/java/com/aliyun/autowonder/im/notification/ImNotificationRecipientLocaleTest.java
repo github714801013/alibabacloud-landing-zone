@@ -103,6 +103,7 @@ class ImNotificationRecipientLocaleTest {
                 var resolver = mock(ImNotificationMessageContextResolver.class);
                 when(resolver.resolve(any())).thenReturn(new ImNotificationMessageContext("raw workspace", "原始状态", "https://example.com", 7));
                 var provider = c.getBean(ImProvider.class); when(c.getBean(ImProviderRegistry.class).require(channel)).thenReturn(provider);
+                when(provider.canDeliverNow()).thenReturn(true);
                 doThrow(new ImDeliveryException(channel, true, "429", "fake-rid", null)).doNothing().when(provider).send(any());
                 var worker = new ImNotificationWorker(queue, new ImNotificationFormatter(), identities,
                         c.getBean(PlatformImChannelConfigService.class), c.getBean(ImProviderRegistry.class), properties,

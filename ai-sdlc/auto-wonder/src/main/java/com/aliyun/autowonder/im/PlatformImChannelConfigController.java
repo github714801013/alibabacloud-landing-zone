@@ -9,6 +9,7 @@ import com.aliyun.autowonder.im.dto.PlatformImSelectionVO;
 import com.aliyun.autowonder.im.dto.SelectImChannelRequest;
 import com.aliyun.autowonder.im.dto.UpdateDingTalkChannelRequest;
 import com.aliyun.autowonder.im.dto.UpdateGroupChatConfigRequest;
+import com.aliyun.autowonder.integration.wecom.WecomConnectionStatusService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -26,26 +27,43 @@ public class PlatformImChannelConfigController {
     private final PlatformImChannelConfigService configService;
     private final SystemAdminService systemAdminService;
     private final ImChannelRuntimeStatusService statusService;
+    private final WecomConnectionStatusService wecomStatusService;
 
     public PlatformImChannelConfigController(
             PlatformImChannelConfigService configService,
             SystemAdminService systemAdminService) {
-        this(configService, systemAdminService, null);
+        this(configService, systemAdminService, null, null);
+    }
+
+    public PlatformImChannelConfigController(
+            PlatformImChannelConfigService configService,
+            SystemAdminService systemAdminService,
+            ImChannelRuntimeStatusService statusService) {
+        this(configService, systemAdminService, statusService, null);
     }
 
     @Autowired
     public PlatformImChannelConfigController(
             PlatformImChannelConfigService configService,
             SystemAdminService systemAdminService,
-            ImChannelRuntimeStatusService statusService) {
+            ImChannelRuntimeStatusService statusService,
+            WecomConnectionStatusService wecomStatusService) {
         this.configService = configService;
         this.systemAdminService = systemAdminService;
         this.statusService = statusService;
+        this.wecomStatusService = wecomStatusService;
     }
 
     @GetMapping
     public Result<List<PlatformImChannelConfigVO>> list() {
-        return Result.ok(configService.list(AutoWonderContext.get().getUserId()));
+        List<PlatformImChannelConfigVO> channels =
+                configService.list(AutoWonderContext.get().getUserId());
+        for (PlatformImChannelConfigVO channel : channels) {
+            if ("WECOM".equals(channel.getProvider())) {
+                channel.setConnectionStatus(connectionStatus(ImChannelPurpose.NOTIFY));
+            }
+        }
+        return Result.ok(channels);
     }
 
     @PutMapping("/feishu")
@@ -61,6 +79,16 @@ public class PlatformImChannelConfigController {
         systemAdminService.requireSystemAdmin(AutoWonderContext.get().getUserId(), "配置协作通知", "access.admin.im_denied");
         return Result.ok(configService.updateDingTalk(
                 AutoWonderContext.get().getUserId(), request));
+    }
+
+    @PutMapping("/wecom")
+    public Result<PlatformImChannelConfigVO> updateWecom(
+            @Valid @RequestBody UpdateDingTalkChannelRequest request) {
+        systemAdminService.requireSystemAdmin(AutoWonderContext.get().getUserId(), "配置协作通知", "access.admin.im_denied");
+        PlatformImChannelConfigVO result = configService.update(
+                AutoWonderContext.get().getUserId(), "WECOM", request);
+        result.setConnectionStatus(connectionStatus(ImChannelPurpose.NOTIFY));
+        return Result.ok(result);
     }
 
     @GetMapping("/selection")
@@ -91,6 +119,9 @@ public class PlatformImChannelConfigController {
     }
 
     private GroupChatConfigVO withStatus(GroupChatConfigVO vo) {
+        if ("WECOM".equals(vo.getProvider())) {
+            vo.setConnectionStatus(connectionStatus(ImChannelPurpose.GROUP_CHAT));
+        }
         if (statusService == null) {
             vo.setStatus(ImChannelRuntimeStatusService.Status.DISABLED.name());
             return vo;
@@ -102,5 +133,9 @@ public class PlatformImChannelConfigController {
         vo.setFailedCount(status.failedCount());
         vo.setUnknownCount(status.unknownCount());
         return vo;
+    }
+
+    private String connectionStatus(ImChannelPurpose purpose) {
+        return wecomStatusService == null ? null : wecomStatusService.status(purpose).name();
     }
 }

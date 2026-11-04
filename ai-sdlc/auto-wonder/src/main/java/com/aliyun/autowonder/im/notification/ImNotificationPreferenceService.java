@@ -21,8 +21,12 @@ public class ImNotificationPreferenceService {
         // Preserve existing assignment delivery until the project explicitly configures a switch.
         if (enabled != null && !Boolean.parseBoolean(enabled)) return true;
         var pref = preferences.findByUserAndType(tenantId, userId, type);
-        if (pref == null) return false;
-        Integer selected = "FEISHU".equals(provider) ? pref.getFeishu() : pref.getDingtalk();
+        // 企业微信通知默认关闭：没有偏好行即视为未开启，站点内通知不受影响。
+        if (pref == null) return "WECOM".equals(provider);
+        Integer selected;
+        if ("FEISHU".equals(provider)) selected = pref.getFeishu();
+        else if ("WECOM".equals(provider)) selected = pref.getWecom();
+        else selected = pref.getDingtalk();
         return !Integer.valueOf(1).equals(selected);
     }
 }

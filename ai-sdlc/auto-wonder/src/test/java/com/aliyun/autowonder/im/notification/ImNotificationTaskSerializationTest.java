@@ -106,6 +106,21 @@ class ImNotificationTaskSerializationTest {
     }
 
     @Test
+    void wecomTestTaskKeepsProviderTypeAndRecipientLocaleSnapshot() throws JsonProcessingException {
+        ImNotificationTask original = new ImNotificationTask(
+                "IM_TEST:abc:WECOM:9", 0L, 7L, 0L, 9L, "SYSTEM", 0L, null, null,
+                "AutoWonder collaboration notification test succeeded",
+                ImNotificationTask.TYPE_IM_TEST, "## body", null, "en-US", null, null);
+
+        ImNotificationTask deserialized = objectMapper.readValue(
+                objectMapper.writeValueAsString(original), ImNotificationTask.class);
+
+        assertEquals("WECOM", deserialized.provider());
+        org.junit.jupiter.api.Assertions.assertTrue(deserialized.isImTest());
+        assertEquals(java.util.Locale.US, deserialized.deliveryLocale());
+    }
+
+    @Test
     void deserializesLegacyPayloadMissingSourceType() throws JsonProcessingException {
         String legacyJson = """
                 {"notificationKey":"92860:DINGTALK:10002","workitemEventId":92860,\

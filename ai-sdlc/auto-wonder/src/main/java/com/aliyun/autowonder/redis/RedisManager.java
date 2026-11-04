@@ -293,6 +293,38 @@ public class RedisManager extends AbstractRedisManager {
         }
     }
 
+    /**
+     * Renews a lease only while the stored value still starts with {@code ownerToken + "|"},
+     * so a stale owner cannot refresh a lease that another instance already owns.
+     */
+    public boolean renewLease(String key, String ownerToken, String value, int expireSec) {
+        if (key == null || ownerToken == null || value == null || expireSec <= 0) {
+            return false;
+        }
+        String script = "local current = redis.call('get', KEYS[1]); "
+                + "if current and string.sub(current, 1, string.len(ARGV[1])) == ARGV[1] then "
+                + "redis.call('set', KEYS[1], ARGV[2], 'EX', ARGV[3]); return 1 else return 0 end";
+        try (Jedis jedis = jedisPool.getResource()) {
+            Object result = jedis.eval(script, List.of(key),
+                    List.of(ownerToken + "|", value, String.valueOf(expireSec)));
+            return result instanceof Number number && number.longValue() == 1L;
+        }
+    }
+
+    /** Deletes a lease only while it still belongs to {@code ownerToken}. */
+    public boolean releaseLease(String key, String ownerToken) {
+        if (key == null || ownerToken == null) {
+            return false;
+        }
+        String script = "local current = redis.call('get', KEYS[1]); "
+                + "if current and string.sub(current, 1, string.len(ARGV[1])) == ARGV[1] then "
+                + "return redis.call('del', KEYS[1]) else return 0 end";
+        try (Jedis jedis = jedisPool.getResource()) {
+            Object result = jedis.eval(script, List.of(key), List.of(ownerToken + "|"));
+            return result instanceof Number number && number.longValue() == 1L;
+        }
+    }
+
     public String getString(String key) {
         try (Jedis jedis = jedisPool.getResource()) {
             return jedis.get(key);

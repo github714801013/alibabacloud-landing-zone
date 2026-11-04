@@ -629,7 +629,7 @@ public class AgentConversationService {
             out.setDirection("OUT");
             out.setContent(STATUS_CANCELED.equalsIgnoreCase(status)
                     ? canceledReplyContent(replyMarkdown)
-                    : outboundReplyContent(replyMarkdown, error));
+                    : outboundReplyContent(conv.getChannel(), replyMarkdown, error));
             if (inboundTurn.getSourceContext() == null && (replyMarkdown == null || replyMarkdown.isBlank())) {
                 String code = STATUS_CANCELED.equalsIgnoreCase(status) ? "CANCELED"
                         : error != null && !error.isBlank() ? "REPLY_FAILED" : "EMPTY_OUTPUT";
@@ -640,7 +640,12 @@ public class AgentConversationService {
             out.setStatus(status);
             out.setError(error);
             preserveFullError(out, error);
-            boolean replyToChannel = "SUCCESS".equalsIgnoreCase(status) && replyMarkdown != null;
+            // 企微终态进群：FAILED/CANCELED 与空回复成功也入持久队列；群安全文案由 sink 按入站终态渲染，OUT 原文/诊断不改写。
+            boolean wecom = ImReplyDeliveryService.CHANNEL_WECOM.equals(conv.getChannel());
+            boolean replyToChannel = "SUCCESS".equalsIgnoreCase(status)
+                    ? replyMarkdown != null || wecom
+                    : wecom && ("FAILED".equalsIgnoreCase(status)
+                            || STATUS_CANCELED.equalsIgnoreCase(status));
             boolean deliveryMarked = replyToChannel && markImReplyDeliverable(conv, turnId, out);
             turnDao.insert(out);
             convDao.updateStatusAndLastTurn(tenantId, conversationId, "ACTIVE", new Date());
@@ -653,8 +658,9 @@ public class AgentConversationService {
             PendingChannelReply channelReply = null;
             if (replyToChannel) {
                 String sourceExternalMsgId = inboundTurn == null ? null : inboundTurn.getExternalMsgId();
-                channelReply = new PendingChannelReply(conv, replyMarkdown, sourceExternalMsgId,
-                        currentRequestId(), deliveryMarked ? out.getId() : null);
+                channelReply = new PendingChannelReply(conv,
+                        replyMarkdown != null ? replyMarkdown : out.getContent(),
+                        sourceExternalMsgId, currentRequestId(), deliveryMarked ? out.getId() : null);
             }
             return new PostCommitEffects(channelReply, nextQueuedDispatch(tenantId, conv),
                     terminalNotice(conv, status,
@@ -672,13 +678,18 @@ public class AgentConversationService {
         out.setSourceContext(context.toJSONString());
     }
 
-    private String outboundReplyContent(String replyMarkdown, String error) {
+    private String outboundReplyContent(String channel, String replyMarkdown, String error) {
         if (replyMarkdown != null && !replyMarkdown.isBlank()) {
             return replyMarkdown;
         }
         // 空内容 OUT turn 在澄清界面渲染为空泡，会造成问答断裂；落库可见兜底文案。
         if (error != null && !error.isBlank()) {
             return "回复失败：" + error;
+        }
+        if (ImReplyDeliveryService.CHANNEL_WECOM.equals(channel)) {
+            // 企微群不展示内部兜底措辞，直接入队可直接发送的终态文案。
+            return com.aliyun.autowonder.common.i18n.SystemMessages.render("im.wecom_turn_empty",
+                    null, "本次处理已完成，但数字人没有返回答复内容。", java.util.Locale.CHINA);
         }
         return "（数字人未返回内容）";
     }
@@ -1004,9 +1015,16 @@ public class AgentConversationService {
         }
         out.setRequestId(currentRequestId());
         out.setStatus(STATUS_CANCELED);
+        // 企微主动取消进群：同一 OUT 行入持久队列，安全文案由 sink 按 CANCELED 终态渲染；其他渠道不投递。
+        boolean cancelDeliveryMarked = ImReplyDeliveryService.CHANNEL_WECOM.equals(conv.getChannel())
+                && markImReplyDeliverable(conv, turnId, out);
         turnDao.insert(out);
         convDao.updateStatusAndLastTurn(tenantId, conv.getId(), "ACTIVE", new Date());
-        return new PostCommitEffects(null, nextQueuedDispatch(tenantId, conv),
+        PendingChannelReply cancelChannelReply = cancelDeliveryMarked
+                ? new PendingChannelReply(conv, out.getContent(), turn.getExternalMsgId(),
+                        currentRequestId(), out.getId())
+                : null;
+        return new PostCommitEffects(cancelChannelReply, nextQueuedDispatch(tenantId, conv),
                 terminalNotice(conv, STATUS_CANCELED, partialContent));
     }
 
@@ -1108,7 +1126,8 @@ public class AgentConversationService {
                 log.warn("conversation stale turn exhausted delivery attempts conversationId={} "
                                 + "turnId={} attempts={}", stale.getConversationId(), stale.getId(),
                         current.getDispatchAttempt());
-                return new PostCommitEffects(null,
+                return new PostCommitEffects(
+                        queueWecomFailureReply(conv, current, error, current.getRequestId()),
                         nextQueuedDispatch(stale.getTenantId(), conv));
             }
             ExecutorSelection selection;
@@ -1358,6 +1377,12 @@ public class AgentConversationService {
             String content = attachmentContext != null ? attachmentContext : dispatch.content();
             return actorContext.isEmpty() ? content : actorContext + content;
         }
+        if (ImReplyDeliveryService.CHANNEL_WECOM.equals(dispatch.conv().getChannel())) {
+            String imageContext = imageService == null ? "" : imageService.runtimeContext(
+                    dispatch.sourceContext(), dispatch.conv().getTenantId());
+            return actorContext.isEmpty() ? imageContext + dispatch.content()
+                    : actorContext + imageContext + "User message:\n" + dispatch.content();
+        }
         if (!"DINGTALK".equalsIgnoreCase(dispatch.conv().getChannel())) {
             return actorContext.isEmpty() ? dispatch.content() : actorContext + "User message:\n" + dispatch.content();
         }
@@ -1591,7 +1616,34 @@ public class AgentConversationService {
 
     private static boolean isImChannel(String channel) {
         return ImReplyDeliveryService.CHANNEL_DINGTALK.equals(channel)
-                || ImReplyDeliveryService.CHANNEL_FEISHU.equals(channel);
+                || ImReplyDeliveryService.CHANNEL_FEISHU.equals(channel)
+                || ImReplyDeliveryService.CHANNEL_WECOM.equals(channel);
+    }
+
+    /**
+     * 企微在非 ACK 失败路径补群反馈：调用方条件更新已把 IN 置为 FAILED（独占终结）时，
+     * 追加一条可投递 OUT 行（保留诊断原文）并入持久队列；其他渠道返回 null，行为不变。
+     */
+    private PendingChannelReply queueWecomFailureReply(AgentConversationDO conv,
+            AgentConversationTurnDO inbound, String error, String requestId) {
+        if (!ImReplyDeliveryService.CHANNEL_WECOM.equals(conv.getChannel())) {
+            return null;
+        }
+        AgentConversationTurnDO out = new AgentConversationTurnDO();
+        out.setTenantId(conv.getTenantId());
+        out.setConversationId(conv.getId());
+        out.setDirection("OUT");
+        out.setContent(com.aliyun.autowonder.common.i18n.SystemMessages.render(
+                "im.wecom_failure_reply", new Object[]{error}, "回复失败：" + error,
+                java.util.Locale.CHINA));
+        out.setRequestId(requestId);
+        out.setStatus("FAILED");
+        out.setError(error);
+        preserveFullError(out, error);
+        boolean marked = markImReplyDeliverable(conv, inbound.getId(), out);
+        turnDao.insert(out);
+        return marked ? new PendingChannelReply(conv, out.getContent(),
+                inbound.getExternalMsgId(), requestId, out.getId()) : null;
     }
 
     private void sendPendingChannelReply(PendingChannelReply reply) {
@@ -1738,11 +1790,16 @@ public class AgentConversationService {
     /** 排队超时：轮次标记失败并呈现「执行器繁忙」，同时释放队列深度与起算点。 */
     private void failQueuedTurnForBusy(Long tenantId, AgentConversationDO conv,
             AgentConversationTurnDO turn) {
+        String error = "executor busy: queued turn exceeded queue timeout";
         int rows = updateOwnedFailure(tenantId, conv, turn.getId(), STATUS_QUEUED, null,
-                "executor busy: queued turn exceeded queue timeout", "EXECUTOR_BUSY",
-                java.util.Map.of());
+                error, "EXECUTOR_BUSY", java.util.Map.of());
         if (rows == 1) {
             admissionService.clearQueueWait(turn.getId());
+            PendingChannelReply reply = queueWecomFailureReply(conv, turn, error,
+                    turn.getRequestId());
+            if (reply != null) {
+                runAfterCommit(() -> sendPostCommitEffects(new PostCommitEffects(reply, null)));
+            }
         }
     }
 
@@ -1776,14 +1833,16 @@ public class AgentConversationService {
             ExecutorProtocolCompatibilityException failure) {
         String error = "conversation executor compatibility failed: " + failure.getMessage();
         runAfterCommit(() -> {
-            Runnable finalizeTarget = () -> {
-                updateOwnedFailure(tenantId, conv, turn.getId(), expectedStatus, turn.getSourceContext(),
+            Supplier<PendingChannelReply> finalizeTarget = () -> {
+                int rows = updateOwnedFailure(tenantId, conv, turn.getId(), expectedStatus, turn.getSourceContext(),
                         error, "EXECUTOR_COMPATIBILITY_FAILED", java.util.Map.of("detail", failure.getMessage()));
+                return rows == 1 ? queueWecomFailureReply(conv, turn, error, turn.getRequestId()) : null;
             };
-            if (failureTransactionTemplate != null) {
-                failureTransactionTemplate.executeWithoutResult(status -> finalizeTarget.run());
-            } else {
-                finalizeTarget.run();
+            PendingChannelReply reply = failureTransactionTemplate != null
+                    ? failureTransactionTemplate.execute(status -> finalizeTarget.get())
+                    : finalizeTarget.get();
+            if (reply != null) {
+                sendPostCommitEffects(new PostCommitEffects(reply, null));
             }
         });
     }

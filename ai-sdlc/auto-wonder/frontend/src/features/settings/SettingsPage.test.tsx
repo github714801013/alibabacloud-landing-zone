@@ -207,6 +207,31 @@ it('only saves Feishu settings and preferences when the platform selects Feishu'
   expect(await screen.findByLabelText('启用飞书通知')).toBeInTheDocument();
   expect(screen.queryByLabelText('启用钉钉通知')).not.toBeInTheDocument();
   await userEvent.click(screen.getByRole('button', { name: /保存通知配置/ }));
-  await waitFor(() => expect(saved.prefs?.items[0]).toEqual({ type: 'WORKITEM_ASSIGNED', inApp: true, feishu: true, dingtalk: false }));
+  await waitFor(() => expect(saved.prefs?.items[0]).toEqual({ type: 'WORKITEM_ASSIGNED', inApp: true, feishu: true, dingtalk: false, wecom: false }));
   expect(saved.settings?.items).toEqual([{ key: 'feishu_enabled', valueJson: 'true', secret: false }]);
+});
+
+it('starts the WeCom preference off and saves only the WeCom switch', async () => {
+  const saved: { prefs?: { items: NotifyPrefItem[] }; settings?: { items: SettingItem[] } } = {};
+  useCommonSettingsHandlers([
+    http.get('/api/platform/im-channels', () => HttpResponse.json(apiOk([{ provider: 'WECOM', selected: true, enabled: false }]))),
+    http.get('/api/settings/NOTIFY', () => HttpResponse.json(apiOk([{ key: 'wecom_enabled', valueJson: 'true', secret: false }]))),
+    http.get('/api/notifications/prefs', () => HttpResponse.json(apiOk([{ type: 'WORKITEM_ASSIGNED', inApp: true, wecom: false }]))),
+    http.put('/api/notifications/prefs', async ({ request }) => { saved.prefs = await request.json() as { items: NotifyPrefItem[] }; return HttpResponse.json(apiOk(null)); }),
+    http.put('/api/settings/NOTIFY', async ({ request }) => { saved.settings = await request.json() as { items: SettingItem[] }; return HttpResponse.json(apiOk(null)); }),
+  ]);
+  renderPage();
+  await userEvent.click(await screen.findByRole('tab', { name: '通知配置' }));
+
+  expect(await screen.findByLabelText('启用企业微信通知')).toBeInTheDocument();
+  expect(screen.queryByLabelText('启用飞书通知')).not.toBeInTheDocument();
+  expect(screen.queryByLabelText('启用钉钉通知')).not.toBeInTheDocument();
+  const preference = screen.getByRole('switch', { name: '工单指派：企业微信' });
+  expect(preference).not.toBeChecked();
+
+  await userEvent.click(preference);
+  await userEvent.click(screen.getByRole('button', { name: /保存通知配置/ }));
+
+  await waitFor(() => expect(saved.prefs?.items[0]).toEqual({ type: 'WORKITEM_ASSIGNED', inApp: true, wecom: true, dingtalk: false, feishu: false }));
+  expect(saved.settings?.items).toEqual([{ key: 'wecom_enabled', valueJson: 'true', secret: false }]);
 });

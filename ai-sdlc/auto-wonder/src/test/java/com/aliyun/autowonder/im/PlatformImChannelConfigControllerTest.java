@@ -8,6 +8,8 @@ import com.aliyun.autowonder.im.dto.PlatformImSelectionVO;
 import com.aliyun.autowonder.im.dto.SelectImChannelRequest;
 import com.aliyun.autowonder.im.dto.UpdateDingTalkChannelRequest;
 import com.aliyun.autowonder.im.dto.UpdateGroupChatConfigRequest;
+import com.aliyun.autowonder.integration.wecom.WecomConnectionStatus;
+import com.aliyun.autowonder.integration.wecom.WecomConnectionStatusService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -180,6 +182,31 @@ class PlatformImChannelConfigControllerTest {
         verify(systemAdminService).requireSystemAdmin(10000L, "配置共享群聊机器人",
                 "access.admin.im_group_chat_denied");
         verify(configService).updateGroupChat(10000L, "DINGTALK", request);
+    }
+
+    @Test
+    void updateWecomRequiresPlatformAdminAndReturnsConnectionStatus() {
+        PlatformImChannelConfigService configService = mock(PlatformImChannelConfigService.class);
+        SystemAdminService systemAdminService = mock(SystemAdminService.class);
+        WecomConnectionStatusService wecomStatus = mock(WecomConnectionStatusService.class);
+        UpdateDingTalkChannelRequest request = new UpdateDingTalkChannelRequest();
+        PlatformImChannelConfigVO channel = channel();
+        channel.setProvider("WECOM");
+        when(configService.update(10000L, "WECOM", request)).thenReturn(channel);
+        when(wecomStatus.status(ImChannelPurpose.NOTIFY))
+                .thenReturn(WecomConnectionStatus.CONNECTED);
+        AutoWonderContext.get().setUserId(10000L);
+        PlatformImChannelConfigController controller =
+                new PlatformImChannelConfigController(configService, systemAdminService, null,
+                        wecomStatus);
+
+        PlatformImChannelConfigVO result = controller.updateWecom(request).getData();
+
+        assertEquals(channel, result);
+        assertEquals("CONNECTED", result.getConnectionStatus());
+        verify(systemAdminService).requireSystemAdmin(10000L, "配置协作通知",
+                "access.admin.im_denied");
+        verify(configService).update(10000L, "WECOM", request);
     }
 
     private static PlatformImChannelConfigVO channel() {

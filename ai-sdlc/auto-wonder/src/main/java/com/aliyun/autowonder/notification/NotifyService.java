@@ -99,6 +99,10 @@ public class NotifyService {
     }
 
     private boolean shouldDeliver(String channelName, NotifyPrefDO pref) {
+        if ("wecom".equals(channelName)) {
+            // 企业微信默认关闭，没有偏好行时不投递。
+            return pref != null && pref.getWecom() != null && pref.getWecom() == 1;
+        }
         if (pref == null) {
             return true;
         }

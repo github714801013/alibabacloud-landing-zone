@@ -45,8 +45,11 @@ class SystemSettingServiceTest {
         verify(settingDao, never()).insert(any());
         var old = new SystemSettingDO(); old.setSettingKey("dingtalk_enabled"); old.setIsSecret(0);
         var selected = new SystemSettingDO(); selected.setSettingKey("feishu_enabled"); selected.setIsSecret(0);
-        when(settingDao.listByGroup(1L, "NOTIFY")).thenReturn(List.of(old, selected));
+        var wecom = new SystemSettingDO(); wecom.setSettingKey("wecom_enabled"); wecom.setIsSecret(0);
+        when(settingDao.listByGroup(1L, "NOTIFY")).thenReturn(List.of(old, selected, wecom));
         assertEquals(List.of("feishu_enabled"), service.listByGroup("NOTIFY", 1L).stream().map(SettingVO::getKey).toList());
+        item.setKey("wecom_enabled");
+        assertThrows(BizException.class, () -> service.updateGroup("NOTIFY", request, 1L, 2L));
         item.setKey("feishu_enabled");
         service.updateGroup("NOTIFY", request, 1L, 2L);
         verify(settingDao).insert(argThat(row -> row.getSettingKey().equals("feishu_enabled")));

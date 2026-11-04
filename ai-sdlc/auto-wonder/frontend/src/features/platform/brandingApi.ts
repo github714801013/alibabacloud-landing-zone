@@ -21,13 +21,14 @@ export interface UpdatePlatformBrandingParams {
 }
 
 export interface PlatformImChannel {
-  provider: 'DINGTALK' | 'FEISHU' | string;
+  provider: 'DINGTALK' | 'FEISHU' | 'WECOM' | string;
   selected?: boolean;
   enabled: boolean;
   appKey: string;
   robotCode: string;
   secretConfigured: boolean;
   ready: boolean;
+  connectionStatus?: string | null;
 }
 
 export interface UpdateDingTalkImChannelParams {
@@ -38,13 +39,13 @@ export interface UpdateDingTalkImChannelParams {
 }
 
 export interface ImSelection {
-  provider: 'DINGTALK' | 'FEISHU' | string;
+  provider: 'DINGTALK' | 'FEISHU' | 'WECOM' | string;
   generation: number;
   activatedAt: string | null;
 }
 
 export interface GroupChatConfig {
-  provider: 'DINGTALK' | 'FEISHU' | string;
+  provider: 'DINGTALK' | 'FEISHU' | 'WECOM' | string;
   configured: boolean;
   ready: boolean;
   desiredEnabled: boolean;
@@ -58,6 +59,7 @@ export interface GroupChatConfig {
   routeVersion: number;
   selectionGeneration: number;
   status: 'ACTIVE' | 'DRAINING' | 'PAUSED' | 'DISABLED' | 'ERROR' | string;
+  connectionStatus?: string | null;
   drainingCount: number;
   failedCount: number;
   unknownCount: number;
@@ -65,7 +67,7 @@ export interface GroupChatConfig {
 
 /** Workspace-visible summary of the selected shared group-chat bot; never contains secrets. */
 export interface GroupChatPublicConfig {
-  provider: 'DINGTALK' | 'FEISHU' | string;
+  provider: 'DINGTALK' | 'FEISHU' | 'WECOM' | string;
   configured: boolean;
   ready: boolean;
   desiredEnabled: boolean;
@@ -150,6 +152,11 @@ export async function updateDingTalkImChannel(params: UpdateDingTalkImChannelPar
 
 export async function updateFeishuImChannel(params: UpdateDingTalkImChannelParams): Promise<PlatformImChannel> {
   const resp = await apiClient.put<PlatformImChannel>('/api/platform/im-channels/feishu', params);
+  return resp.data;
+}
+
+export async function updateWecomImChannel(params: UpdateDingTalkImChannelParams): Promise<PlatformImChannel> {
+  const resp = await apiClient.put<PlatformImChannel>('/api/platform/im-channels/wecom', params);
   return resp.data;
 }
 

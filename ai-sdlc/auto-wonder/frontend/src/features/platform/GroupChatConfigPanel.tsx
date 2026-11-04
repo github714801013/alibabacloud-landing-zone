@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Alert, Button, Card, Form, Input, Space, Switch, Tag, Tooltip, Typography, message } from 'antd';
 import { EyeInvisibleOutlined, EyeOutlined, SaveOutlined } from '@ant-design/icons';
@@ -28,6 +28,24 @@ interface GroupChatFormValues {
 
 const FEISHU_PROVIDER = 'FEISHU';
 const DINGTALK_PROVIDER = 'DINGTALK';
+const WECOM_PROVIDER = 'WECOM';
+const WECOM_CONNECTED = 'CONNECTED';
+
+const WECOM_CONNECTION_LABEL_KEYS = {
+  CONNECTING: 'wecomConnectionConnecting',
+  CONNECTED: 'wecomConnectionConnected',
+  DISCONNECTED: 'wecomConnectionDisconnected',
+  ERROR: 'wecomConnectionError',
+  UNKNOWN: 'wecomConnectionUnknown',
+} as const;
+
+const WECOM_CONNECTION_COLORS: Readonly<Record<string, string>> = {
+  CONNECTING: 'processing',
+  CONNECTED: 'green',
+  DISCONNECTED: 'default',
+  ERROR: 'red',
+  UNKNOWN: 'default',
+};
 
 type GroupChatStatusLabelKey =
   | 'groupChatStatusActive'
@@ -64,17 +82,30 @@ export function GroupChatConfigPanel({ provider, onDirtyChange }: Props) {
   const [conflictError, setConflictError] = useState<unknown>(null);
   const [identityChanged, setIdentityChanged] = useState(false);
   const [applicationChanged, setApplicationChanged] = useState(false);
+  const hydratedConfigRef = useRef<string | null>(null);
   const queryClient = useQueryClient();
   const queryKey = groupChatQueryKey(provider);
   const { data: config, error, isLoading } = useQuery({
     queryKey,
     queryFn: () => getGroupChatConfig(provider),
     retry: false,
+    // 企业微信连接状态由长连接实时上报，未连接时不能显示为已连接。
+    refetchInterval: provider === WECOM_PROVIDER ? 5000 : false,
   });
   useLocalizedValidation(form, !error);
-  const providerLabel = provider === FEISHU_PROVIDER ? t('feishu') : t('dingtalk');
+  const providerLabel = provider === FEISHU_PROVIDER ? t('feishu') : provider === WECOM_PROVIDER ? t('wecom') : t('dingtalk');
+  const isWecom = provider === WECOM_PROVIDER;
+  const connection = config?.connectionStatus ?? 'UNKNOWN';
+  const connectionLabelKey = WECOM_CONNECTION_LABEL_KEYS[
+    connection as keyof typeof WECOM_CONNECTION_LABEL_KEYS
+  ];
+  const connectionLabel = connectionLabelKey ? t(connectionLabelKey) : t('wecomConnectionUnknown');
 
   useEffect(() => {
+    // 连接状态轮询会刷新 config；只在渠道或版本变化时回填，避免每 5 秒清空管理员草稿。
+    const hydrationKey = `${provider}:${config ? config.version ?? 'none' : 'loading'}`;
+    if (hydratedConfigRef.current === hydrationKey) return;
+    hydratedConfigRef.current = hydrationKey;
     form.resetFields();
     onDirtyChange?.(false);
     setIdentityChanged(false);
@@ -193,6 +224,11 @@ export function GroupChatConfigPanel({ provider, onDirtyChange }: Props) {
             <Tag color={config?.desiredEnabled ? 'blue' : 'default'}>
               {config?.desiredEnabled ? t('enabled') : t('disabled')}
             </Tag>
+            {isWecom && (
+              <Tag color={WECOM_CONNECTION_COLORS[connection] ?? 'default'}>
+                {t('wecomConnectionLabel', { status: connectionLabel })}
+              </Tag>
+            )}
             {config && !config.configured && <Tag color="orange">{t('groupChatNotConfigured')}</Tag>}
             {config && config.drainingCount > 0 && (
               <Tag color="orange">{t('groupChatDrainingCount', { items: config.drainingCount })}</Tag>
@@ -212,6 +248,17 @@ export function GroupChatConfigPanel({ provider, onDirtyChange }: Props) {
             description={t('groupChatDescription')}
           />
 
+          {isWecom && (
+            <Alert
+              type={connection === WECOM_CONNECTED && config?.ready ? 'success' : 'warning'}
+              showIcon
+              message={t('wecomConnectionSeparate')}
+              description={connection === WECOM_CONNECTED
+                ? config?.ready ? t('wecomReadyHint') : t('wecomNotReadyConfig')
+                : t('wecomNotReadyConnection', { status: connectionLabel })}
+            />
+          )}
+
           <Form
             form={form}
             name="groupChatConfig"
@@ -227,18 +274,22 @@ export function GroupChatConfigPanel({ provider, onDirtyChange }: Props) {
           >
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 16 }}>
               <Form.Item
-                label={provider === FEISHU_PROVIDER ? t('groupChatAppIdLabel') : t('groupChatAppKeyLabel')}
+                label={provider === FEISHU_PROVIDER
+                  ? t('groupChatAppIdLabel')
+                  : isWecom ? t('groupChatWecomBotIdLabel') : t('groupChatAppKeyLabel')}
                 name="appKey"
                 validateTrigger={[]}
                 extra={config?.configured ? t('groupChatIdentityEditable') : undefined}
                 rules={[({ getFieldValue }) => ({
                   validator: (_, value) => !getFieldValue('enabled') || value
                     ? Promise.resolve()
-                    : Promise.reject(new Error(t('appKeyRequired'))),
+                    : Promise.reject(new Error(isWecom ? t('wecomBotIdRequired') : t('appKeyRequired'))),
                 })]}
               >
                 <Input
-                  placeholder={provider === FEISHU_PROVIDER ? t('appIdPlaceholder') : t('appKeyPlaceholder')}
+                  placeholder={provider === FEISHU_PROVIDER
+                    ? t('appIdPlaceholder')
+                    : isWecom ? t('wecomBotIdPlaceholder') : t('appKeyPlaceholder')}
                 />
               </Form.Item>
               {provider === DINGTALK_PROVIDER && (
@@ -257,7 +308,7 @@ export function GroupChatConfigPanel({ provider, onDirtyChange }: Props) {
                 </Form.Item>
               )}
               <Form.Item
-                label={t('groupChatAppSecretLabel')}
+                label={isWecom ? t('groupChatWecomSecretLabel') : t('groupChatAppSecretLabel')}
                 name="appSecret"
                 validateTrigger={[]}
                 extra={applicationChanged
@@ -271,7 +322,7 @@ export function GroupChatConfigPanel({ provider, onDirtyChange }: Props) {
                     const changed = appKeyDiffers({ appKey: getFieldValue('appKey') });
                     return value || (!changed && config?.secretConfigured)
                       ? Promise.resolve()
-                      : Promise.reject(new Error(t('appSecretRequired')));
+                      : Promise.reject(new Error(isWecom ? t('wecomSecretRequired') : t('appSecretRequired')));
                   },
                 })]}
               >

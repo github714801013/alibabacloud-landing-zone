@@ -39,4 +39,34 @@ class PlatformImNotifyChannelTest {
         assertTrue(channel.deliver(notification));
         verifyNoInteractions(registry); // Assignment delivery belongs exclusively to the IM queue.
     }
+
+    @Test
+    void wecomProjectNotificationsGoThroughTheReliableQueue() {
+        var configs = mock(PlatformImChannelConfigService.class);
+        var settings = mock(SystemSettingService.class);
+        var queue = mock(com.aliyun.autowonder.im.notification.ImNotificationQueue.class);
+        var registry = mock(ImProviderRegistry.class);
+        when(configs.selectedProvider()).thenReturn("WECOM");
+        when(configs.isReady("WECOM")).thenReturn(true);
+        when(settings.getDecryptedValue("NOTIFY", "wecom_enabled", 1L)).thenReturn("true");
+        var channel = new PlatformImNotifyChannel(configs, mock(UserImIdentityService.class),
+                registry, settings, queue);
+        var notification = new NotificationDO();
+        notification.setId(99L); notification.setTenantId(1L); notification.setRecipientId(2L);
+        notification.setType("SCHEDULED_TASK_RUN_SUCCEEDED");
+        notification.setTitle("定时任务完成"); notification.setContent("任务内容");
+        notification.setRecipientLocale("en-US");
+
+        assertTrue(channel.deliver(notification));
+
+        var task = ArgumentCaptor.forClass(com.aliyun.autowonder.im.notification.ImNotificationTask.class);
+        verify(queue).enqueue(task.capture());
+        assertEquals("WECOM", task.getValue().provider());
+        assertEquals("SCHEDULED_TASK_RUN_SUCCEEDED", task.getValue().notificationType());
+        assertEquals("en-US", task.getValue().recipientLocale());
+        assertTrue(task.getValue().isPreRendered());
+        assertEquals("定时任务完成", task.getValue().workitemTitle());
+        assertEquals("## 定时任务完成\n\n任务内容", task.getValue().commentContentMd());
+        verifyNoInteractions(registry);
+    }
 }

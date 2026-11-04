@@ -2076,7 +2076,7 @@ public class DispatchService {
         return false;
     }
 
-    /** 准备阶段瞬时失败：退回 PENDING 自动重试；不消耗业务重试预算、不标记执行器不可用。 */
+    /** 准备阶段瞬时失败：重新排队或新建 attempt 行自动重试；不消耗业务重试预算、不标记执行器不可用。 */
     public DispatchRecoveryService.PrepareRetryOutcome onPrepareFailure(long workspaceId, Long executorId,
             long dispatchId, String error) {
         DispatchDO current = loadInboundRow(workspaceId, executorId, dispatchId);
@@ -2305,9 +2305,9 @@ public class DispatchService {
         dispatchDao.touchOwnedActive(workspaceId, executorId, owned);
     }
 
-    /** Re-enqueue the same (workitem, step) at attempt+1 while budget remains; else hand to human. */
+    /** Re-enqueue the same (workitem, step) at the next business attempt while budget remains; else hand to human. */
     void retry(DispatchDO failed, int maxAttempts) {
-        int nextAttempt = failed.getAttempt() + 1;
+        int nextAttempt = nextBusinessAttempt(failed);
         log.info("dispatch retry dispatchId={} attempt={}/{}", failed.getId(), nextAttempt, maxAttempts);
         if (nextAttempt > maxAttempts) {
             // budget exhausted -> human handoff via the fail branch (no retry action returned)
@@ -2317,6 +2317,23 @@ public class DispatchService {
         DispatchDO retryRow = enqueue(failed.getTenantId(), failed.getWorkitemId(),
                 failed.getSdlcStepId(), failed.getAgentId(), nextAttempt, SYSTEM_USER_ID);
         runPending(retryRow.getId());
+    }
+
+    /** 业务重试只统计标准业务键；prepare/continue 等平台链不占业务 attempt 预算。 */
+    private int nextBusinessAttempt(DispatchDO failed) {
+        Integer maxAttempt = null;
+        List<DispatchDO> rows = dispatchDao.listByWorkitem(failed.getTenantId(), failed.getWorkitemId());
+        if (rows != null) {
+            for (DispatchDO row : rows) {
+                if (!Objects.equals(row.getSdlcStepId(), failed.getSdlcStepId())) continue;
+                String key = row.getIdempotencyKey();
+                // 标准业务键是 <workitem>:<step>:<attempt> 或其 WORKITEM: 前缀别名。
+                if (key == null || !key.matches("(?:WORKITEM:)?\\d+:\\d+:\\d+")) continue;
+                int attempt = row.getAttempt() == null ? 0 : row.getAttempt();
+                if (maxAttempt == null || attempt > maxAttempt) maxAttempt = attempt;
+            }
+        }
+        return (maxAttempt == null ? (failed.getAttempt() == null ? 0 : failed.getAttempt()) : maxAttempt) + 1;
     }
 
     /** Executor deadline exceeded: terminate as TIMEOUT and drive the fail branch. */

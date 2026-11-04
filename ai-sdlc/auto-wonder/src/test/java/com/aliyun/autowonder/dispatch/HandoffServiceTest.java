@@ -131,6 +131,31 @@ class HandoffServiceTest {
         return dispatch;
     }
 
+    private static String jiraStatusTasks(long... ownerIds) {
+        StringBuilder tasks = new StringBuilder();
+        for (int i = 0; i < ownerIds.length; i++) {
+            if (i > 0) {
+                tasks.append(',');
+            }
+            tasks.append("{\"key\":\"HS-").append(i + 1).append("\",\"included\":true,\"aw_user_id\":")
+                    .append(ownerIds[i]).append(",\"repos\":[\"repo").append(i + 1).append("\"]}");
+        }
+        return "<!-- autowonder-jira-status:start\n{\"schema\":1,\"tasks\":[" + tasks
+                + "]}\nautowonder-jira-status:end -->";
+    }
+
+    private void activeMember(long userId) {
+        UserDO user = new UserDO();
+        user.setId(userId);
+        user.setStatus(0);
+        when(userDao.findById(userId)).thenReturn(user);
+        WorkspaceMemberDO member = new WorkspaceMemberDO();
+        member.setTenantId(100L);
+        member.setUserId(userId);
+        member.setStatus(0);
+        when(workspaceMemberDao.findByWorkspaceAndUser(100L, userId)).thenReturn(member);
+    }
+
     @Test
     void concreteNumericHumanTargetIsAssignedAndStops() {
         WorkitemDao workitemDao = mock(WorkitemDao.class);
@@ -279,6 +304,93 @@ class HandoffServiceTest {
         assertEquals("UNKNOWN_AGENT_FALLBACK_HUMAN", result.reasonCode());
         verify(workitemDao).updateAssignee(500L, 100L, "HUMAN", 42L, 3, 0L);
         verify(dispatchService, never()).enqueueHandoff(anyLong(), anyLong(), anyLong(), anyLong(), anyLong(), anyLong());
+    }
+
+    @Test
+    void automaticHumanFallbackPrefersTaskOwnerOverWorkitemOperator() {
+        WorkitemDao workitemDao = mock(WorkitemDao.class);
+        DispatchService dispatchService = mock(DispatchService.class);
+        AgentRoleResolver roleResolver = mock(AgentRoleResolver.class);
+        WorkitemEventDao eventDao = mock(WorkitemEventDao.class);
+
+        WorkitemDO w = workitem(500L, 100L, 3);
+        w.setContentMd(jiraStatusTasks(10032L));
+        w.setAssignOperatorId(42L);
+        when(workitemDao.findByIdForUpdate(500L, 100L)).thenReturn(w);
+        when(roleResolver.resolveOnlineAgentId(100L, "AW_CR")).thenReturn(null);
+        activeMember(10032L);
+        when(workitemDao.updateAssignee(500L, 100L, "HUMAN", 10032L, 3, 0L)).thenReturn(1);
+
+        HandoffService svc = new HandoffService(workitemDao, dispatchService, roleResolver,
+                mock(AgentSdlcResolver.class), workspaceDao, workspaceMemberDao, userDao, eventDao);
+        HandoffResult result = svc.handle(100L, 500L, 300L, "AW_CR", "AGENT");
+
+        assertEquals(HandoffResult.Status.HUMAN_ASSIGNED, result.status());
+        assertEquals(10032L, result.targetRef());
+        assertEquals("UNKNOWN_AGENT_FALLBACK_HUMAN", result.reasonCode());
+        verify(workitemDao).updateAssignee(500L, 100L, "HUMAN", 10032L, 3, 0L);
+    }
+
+    @Test
+    void explicitHumanInsideTaskOwnersIsHonored() {
+        WorkitemDao workitemDao = mock(WorkitemDao.class);
+        WorkitemEventDao eventDao = mock(WorkitemEventDao.class);
+
+        WorkitemDO w = workitem(500L, 100L, 3);
+        w.setContentMd(jiraStatusTasks(42L, 77L));
+        when(workitemDao.findByIdForUpdate(500L, 100L)).thenReturn(w);
+        when(workitemDao.updateAssignee(500L, 100L, "HUMAN", 77L, 3, 0L)).thenReturn(1);
+
+        HandoffService svc = new HandoffService(workitemDao, mock(DispatchService.class),
+                mock(AgentRoleResolver.class), mock(AgentSdlcResolver.class), workspaceDao, workspaceMemberDao, userDao, eventDao);
+        HandoffResult result = svc.handle(100L, 500L, 300L, "77", "HUMAN");
+
+        assertEquals(HandoffResult.Status.HUMAN_ASSIGNED, result.status());
+        assertEquals(77L, result.targetRef());
+        verify(workitemDao).updateAssignee(500L, 100L, "HUMAN", 77L, 3, 0L);
+    }
+
+    @Test
+    void explicitHumanOutsideTaskOwnersIsCorrectedToFirstOwner() {
+        WorkitemDao workitemDao = mock(WorkitemDao.class);
+        WorkitemEventDao eventDao = mock(WorkitemEventDao.class);
+
+        WorkitemDO w = workitem(500L, 100L, 3);
+        w.setContentMd(jiraStatusTasks(10032L, 10033L));
+        when(workitemDao.findByIdForUpdate(500L, 100L)).thenReturn(w);
+        activeMember(10032L);
+        when(workitemDao.updateAssignee(500L, 100L, "HUMAN", 10032L, 3, 0L)).thenReturn(1);
+
+        HandoffService svc = new HandoffService(workitemDao, mock(DispatchService.class),
+                mock(AgentRoleResolver.class), mock(AgentSdlcResolver.class), workspaceDao, workspaceMemberDao, userDao, eventDao);
+        HandoffResult result = svc.handle(100L, 500L, 300L, "77", "HUMAN");
+
+        assertEquals(HandoffResult.Status.HUMAN_ASSIGNED, result.status());
+        assertEquals(10032L, result.targetRef());
+        verify(workitemDao).updateAssignee(500L, 100L, "HUMAN", 10032L, 3, 0L);
+    }
+
+    @Test
+    void taskOwnerWhoIsNotAMemberFallsBackToWorkitemOperator() {
+        WorkitemDao workitemDao = mock(WorkitemDao.class);
+        DispatchService dispatchService = mock(DispatchService.class);
+        AgentRoleResolver roleResolver = mock(AgentRoleResolver.class);
+        WorkitemEventDao eventDao = mock(WorkitemEventDao.class);
+
+        WorkitemDO w = workitem(500L, 100L, 3);
+        w.setContentMd(jiraStatusTasks(10032L));
+        w.setAssignOperatorId(42L);
+        when(workitemDao.findByIdForUpdate(500L, 100L)).thenReturn(w);
+        when(roleResolver.resolveOnlineAgentId(100L, "AW_CR")).thenReturn(null);
+        when(workitemDao.updateAssignee(500L, 100L, "HUMAN", 42L, 3, 0L)).thenReturn(1);
+
+        HandoffService svc = new HandoffService(workitemDao, dispatchService, roleResolver,
+                mock(AgentSdlcResolver.class), workspaceDao, workspaceMemberDao, userDao, eventDao);
+        HandoffResult result = svc.handle(100L, 500L, 300L, "AW_CR", "AGENT");
+
+        assertEquals(HandoffResult.Status.HUMAN_ASSIGNED, result.status());
+        assertEquals(42L, result.targetRef());
+        verify(workitemDao).updateAssignee(500L, 100L, "HUMAN", 42L, 3, 0L);
     }
 
     @Test

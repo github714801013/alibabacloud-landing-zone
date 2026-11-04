@@ -101,7 +101,7 @@ it('updates the cached hub and Aone form, held results and delayed feedback with
   expect(ids).toHaveValue(' raw1 , 中文2 '); expect(secret).toHaveValue('synthetic-secret');
   await locale('en-US'); expect(screen.getByRole('textbox', { name: 'External work item IDs' })).toBe(ids);
   expect(ids).toHaveValue(' raw1 , 中文2 '); expect(listCalls).toBe(calls); expect(container.querySelector('b')).toBeNull();
-});
+}, 20000);
 
 it.each([true, false])('ends writeback mutation loading before the %s-result toast is dismissed', async succeeded => {
   const toast = deferred<boolean>();

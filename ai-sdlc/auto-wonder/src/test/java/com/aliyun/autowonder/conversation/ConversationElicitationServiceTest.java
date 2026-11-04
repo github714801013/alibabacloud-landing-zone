@@ -119,6 +119,39 @@ class ConversationElicitationServiceTest {
         assertEquals(70L, active.getSubmittedUserId());
     }
 
+    @Test
+    void assignedOwnerMayAnswerThroughPolicy() {
+        var record = new AgentConversationElicitationDO();
+        record.setTurnId(100L); record.setStatus("PENDING"); record.setRequestId("owner-card");
+        when(dao.findByRequestId(1L, 10L, "owner-card")).thenReturn(record);
+        when(dao.settleIfPending(1L, 10L, "owner-card", "ANSWERED", "{}")).thenReturn(1);
+        var active = turn("IN", "PROCESSING"); active.setSubmittedUserId(70L);
+        when(turnDao.findByConversationTurn(1L, 10L, 100L)).thenReturn(active);
+        var policy = mock(ClarificationAnswerActorPolicy.class);
+        when(policy.mayAnswer(1L, 10L, 71L)).thenReturn(true);
+        service.setAnswerActorPolicy(policy);
+
+        service.reply(1L, 10L, "owner-card", "accept", "{}", 71L);
+
+        verify(dao).settleIfPending(1L, 10L, "owner-card", "ANSWERED", "{}");
+        verify(transport).sendElicitationReply(any(), eq(100L), eq("owner-card"), eq("accept"), eq("{}"));
+    }
+
+    @Test
+    void policyDenialKeepsOriginalActorRequirement() {
+        var record = new AgentConversationElicitationDO();
+        record.setTurnId(100L); record.setStatus("PENDING"); record.setRequestId("denied-card");
+        when(dao.findByRequestId(1L, 10L, "denied-card")).thenReturn(record);
+        var active = turn("IN", "PROCESSING"); active.setSubmittedUserId(70L);
+        when(turnDao.findByConversationTurn(1L, 10L, 100L)).thenReturn(active);
+        var policy = mock(ClarificationAnswerActorPolicy.class);
+        when(policy.mayAnswer(1L, 10L, 71L)).thenReturn(false);
+        service.setAnswerActorPolicy(policy);
+
+        assertThrows(BizException.class, () -> service.reply(1L, 10L, "denied-card", "accept", "{}", 71L));
+        verify(dao, never()).settleIfPending(anyLong(), anyLong(), anyString(), anyString(), any());
+    }
+
     @BeforeEach
     void setUp() {
         dao = mock(AgentConversationElicitationDao.class);

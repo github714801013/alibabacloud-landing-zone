@@ -129,6 +129,8 @@ class WorkspaceAccessAnnotationCoverageTest {
                     + "com.aliyun.autowonder.im.dto.UpdateDingTalkChannelRequest)",
             "com.aliyun.autowonder.im.PlatformImChannelConfigController#updateDingTalk("
                     + "com.aliyun.autowonder.im.dto.UpdateDingTalkChannelRequest)",
+            "com.aliyun.autowonder.im.PlatformImChannelConfigController#updateWecom("
+                    + "com.aliyun.autowonder.im.dto.UpdateDingTalkChannelRequest)",
             "com.aliyun.autowonder.integration.IntegrationCapabilityController#capabilities()",
             // Platform shared group-chat selection and configuration are global (one row for the
             // whole platform) and every endpoint authorizes through
@@ -174,6 +176,10 @@ class WorkspaceAccessAnnotationCoverageTest {
             "com.aliyun.autowonder.im.UserImIdentityController#updateDingTalk("
                     + "com.aliyun.autowonder.im.dto.UpdateUserImIdentityRequest)",
             "com.aliyun.autowonder.im.UserImIdentityController#testDingTalk()",
+            "com.aliyun.autowonder.im.UserImIdentityController#updateWecom("
+                    + "com.aliyun.autowonder.im.dto.UpdateUserImIdentityRequest)",
+            "com.aliyun.autowonder.im.UserImIdentityController#testWecom()",
+            "com.aliyun.autowonder.im.UserImIdentityController#testWecomStatus()",
             // Personal preferences are scoped to the authenticated user, not a workspace.
             // UserSettingController obtains userId only from the login context; DAO reads and
             // writes filter by that userId. Keep exemptions method-specific so new endpoints

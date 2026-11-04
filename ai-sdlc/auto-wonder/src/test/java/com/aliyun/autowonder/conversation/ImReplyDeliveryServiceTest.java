@@ -1,5 +1,6 @@
 package com.aliyun.autowonder.conversation;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -21,6 +22,11 @@ class ImReplyDeliveryServiceTest {
     private final ConversationChannelSink sink = mock(ConversationChannelSink.class);
     private final ImReplyDeliveryService service =
             new ImReplyDeliveryService(turnDao, convDao, sinkRegistry);
+
+    @BeforeEach
+    void defaultSinkCanDeliver() {
+        lenient().when(sink.canDeliverNow()).thenReturn(true);
+    }
 
     @Test
     void claimCommitsBeforeTheSendAndFinishCommitsAfterIt() {
@@ -97,6 +103,18 @@ class ImReplyDeliveryServiceTest {
     }
 
     @Test
+    void leavesReplyForTheOwningInstanceWhenSinkCannotDeliverNow() {
+        pendingTurn();
+        when(sinkRegistry.find("DINGTALK")).thenReturn(sink);
+        when(sink.canDeliverNow()).thenReturn(false);
+
+        service.deliver(11L);
+
+        verify(turnDao, never()).claimPendingDelivery(anyLong(), any());
+        verify(turnDao, never()).finishDelivery(anyLong(), anyInt(), anyString(), any(), any());
+    }
+
+    @Test
     void cancelsWhenChannelHasNoSink() {
         pendingTurn();
         when(sinkRegistry.find("DINGTALK")).thenReturn(null);
@@ -119,7 +137,7 @@ class ImReplyDeliveryServiceTest {
 
         verify(turnDao).finishDelivery(11L, 1, "CANCELED",
                 ImReplyDeliveryService.ERROR_MISSING_SOURCE, null);
-        verifyNoInteractions(sink);
+        verify(sink, never()).deliverReply(any(), anyString(), anyString());
     }
 
     @Test
@@ -135,7 +153,7 @@ class ImReplyDeliveryServiceTest {
 
         verify(turnDao).finishDelivery(11L, 1, "CANCELED",
                 ImReplyDeliveryService.ERROR_EMPTY_REPLY, null);
-        verifyNoInteractions(sink);
+        verify(sink, never()).deliverReply(any(), anyString(), anyString());
     }
 
     @Test
@@ -146,7 +164,7 @@ class ImReplyDeliveryServiceTest {
 
         service.deliver(11L);
 
-        verifyNoInteractions(sink);
+        verify(sink, never()).deliverReply(any(), anyString(), anyString());
         verify(turnDao, never()).finishDelivery(anyLong(), anyInt(), anyString(), any(), any());
     }
 
@@ -176,7 +194,25 @@ class ImReplyDeliveryServiceTest {
         verify(turnDao).expireUnconfirmedDelivery(11L,
                 ImReplyDeliveryService.ERROR_DINGTALK_LEASE_EXPIRED);
         verify(turnDao, never()).claimExpiredDelivery(anyLong(), any(), anyInt(), any());
-        verifyNoInteractions(sink);
+        verify(sink, never()).deliverReply(any(), anyString(), anyString());
+    }
+
+    @Test
+    void expiredWecomLeaseIsMarkedUnknownInsteadOfResent() {
+        AgentConversationTurnDO turn = turn("SENDING");
+        turn.setDeliveryAvailableAt(new Date(System.currentTimeMillis() - 1000));
+        when(turnDao.findDeliveryTurn(11L)).thenReturn(turn);
+        when(convDao.findById(1L, 2L)).thenReturn(conversation("WECOM"));
+        when(sinkRegistry.find("WECOM")).thenReturn(sink);
+        when(turnDao.expireUnconfirmedDelivery(11L,
+                ImReplyDeliveryService.ERROR_WECOM_LEASE_EXPIRED)).thenReturn(1);
+
+        service.deliver(11L);
+
+        verify(turnDao).expireUnconfirmedDelivery(11L,
+                ImReplyDeliveryService.ERROR_WECOM_LEASE_EXPIRED);
+        verify(turnDao, never()).claimExpiredDelivery(anyLong(), any(), anyInt(), any());
+        verify(sink, never()).deliverReply(any(), anyString(), anyString());
     }
 
     @Test

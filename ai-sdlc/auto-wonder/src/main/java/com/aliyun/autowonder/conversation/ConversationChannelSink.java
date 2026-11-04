@@ -7,6 +7,14 @@ public interface ConversationChannelSink {
     void deliverReply(AgentConversationDO conv, String replyMarkdown, String sourceExternalMsgId);
 
     /**
+     * Whether this instance can deliver the channel right now. Single-connection channels override
+     * this so only the connection owner claims outbound work; others leave it to the owner.
+     */
+    default boolean canDeliverNow() {
+        return true;
+    }
+
+    /**
      * Notification that the turn reached a terminal status. Only channels that need to converge an
      * external task override this; message channels keep their existing behaviour untouched.
      */

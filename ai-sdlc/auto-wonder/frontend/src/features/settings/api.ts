@@ -99,6 +99,7 @@ export interface NotifyPrefVO {
   inApp: boolean;
   dingtalk: boolean;
   feishu?: boolean;
+  wecom?: boolean;
 }
 
 export interface NotifyPrefItem {
@@ -106,6 +107,7 @@ export interface NotifyPrefItem {
   inApp: boolean;
   dingtalk: boolean;
   feishu?: boolean;
+  wecom?: boolean;
 }
 
 export async function listNotifyPrefs(): Promise<NotifyPrefVO[]> {

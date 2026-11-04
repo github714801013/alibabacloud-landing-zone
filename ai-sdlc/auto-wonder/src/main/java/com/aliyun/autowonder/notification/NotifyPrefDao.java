@@ -16,5 +16,6 @@ public interface NotifyPrefDao {
                                     @Param("type") String type);
 
     int update(@Param("id") Long id, @Param("inApp") Integer inApp,
-               @Param("dingtalk") Integer dingtalk, @Param("feishu") Integer feishu);
+               @Param("dingtalk") Integer dingtalk, @Param("feishu") Integer feishu,
+               @Param("wecom") Integer wecom);
 }
