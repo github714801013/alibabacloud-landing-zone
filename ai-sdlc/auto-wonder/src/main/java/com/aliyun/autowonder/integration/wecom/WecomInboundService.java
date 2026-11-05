@@ -162,7 +162,7 @@ public class WecomInboundService implements WecomInboundListener {
         }
         String senderUserId = body.path("from").path("userid").asText("");
         admit(binding, config, groupId, msgId, botId, reqId, senderUserId,
-                withQuote(body, text), null);
+                withQuote(body, text), text, null);
     }
 
     private void replyUnsupported(PlatformImChannelConfigDO config, String groupId, String botId,
@@ -225,9 +225,11 @@ public class WecomInboundService implements WecomInboundListener {
             return;
         }
         String content = text.isBlank() ? text("im.wecom_image_prompt") : commandText(text);
+        String answerText = commandText(text);
         content = withQuote(body, content);
         String senderUserId = body.path("from").path("userid").asText("");
-        admit(binding, config, groupId, msgId, botId, reqId, senderUserId, content, imageIds);
+        admit(binding, config, groupId, msgId, botId, reqId, senderUserId, content, answerText,
+                imageIds);
     }
 
     private static List<ImageRef> imageRefs(JsonNode body, String msgType) {
@@ -297,7 +299,8 @@ public class WecomInboundService implements WecomInboundListener {
 
     private void admit(WecomRobotBindingDO binding, PlatformImChannelConfigDO config,
                        String groupId, String msgId, String botId, String reqId,
-                       String senderUserId, String text, List<String> imageIds) {
+                       String senderUserId, String text, String answerText,
+                       List<String> imageIds) {
         String externalId = WecomSourceContext.externalId(botId, msgId);
         long receivedAt = System.currentTimeMillis();
         ImChannelAdmissionService.Result result = admission.admit(PROVIDER,
@@ -327,7 +330,7 @@ public class WecomInboundService implements WecomInboundListener {
                         WecomSourceContext source = new WecomSourceContext(current.getId(), botId,
                                 groupId, msgId, senderUserId, reqId, receivedAt,
                                 current.getCreatorId(), currentSnapshot);
-                        deliver(current, source, currentSnapshot, text, imageIds);
+                        deliver(current, source, currentSnapshot, text, answerText, imageIds);
                         return currentSnapshot;
                     }
                 });
@@ -338,20 +341,64 @@ public class WecomInboundService implements WecomInboundListener {
     }
 
     private void deliver(WecomRobotBindingDO binding, WecomSourceContext source,
-                         ImRouteSnapshot snapshot, String text, List<String> imageIds) {
+                         ImRouteSnapshot snapshot, String text, String answerText,
+                         List<String> imageIds) {
         WecomSourceContext stored = new WecomSourceContext(source.bindingId(), source.botId(),
                 source.chatId(), source.msgId(), source.senderUserId(), source.reqId(),
                 source.receivedAt(), source.creatorId(), snapshot);
         String context = toJson(stored);
-        if (imageIds != null && !imageIds.isEmpty()) {
+        boolean hasImages = imageIds != null && !imageIds.isEmpty();
+        if (hasImages) {
             context = imageStore.attach(context, binding.getTenantId(),
                     imageScope(binding.getId(), stored.chatId()), imageIds);
+        }
+        AgentConversationService.PendingQuestionReply pending = pendingQuestion(binding, stored,
+                answerText, context, hasImages);
+        if (pending != null
+                && pending.outcome() == AgentConversationService.PendingQuestionOutcome.ANSWERED) {
+            bindings.health(binding, null);
+            return;
+        }
+        if (pending != null
+                && pending.outcome() == AgentConversationService.PendingQuestionOutcome.INTERRUPT) {
+            interruptPendingQuestion(binding, pending);
         }
         conversations.submitTurn(binding.getTenantId(), binding.getAgentId(), PROVIDER,
                 stored.conversationId(), text, stored.externalId(), context);
         bindings.health(binding, null);
         feedback.received(binding.getTenantId(), binding.getAgentId(),
                 stored.conversationId(), stored.externalId());
+    }
+
+    /**
+     * 群里有挂起提问时先尝试把这条消息当答案消费；查不到或失败都按普通消息继续，
+     * 不能因为这一步失败丢掉用户消息。
+     */
+    private AgentConversationService.PendingQuestionReply pendingQuestion(
+            WecomRobotBindingDO binding, WecomSourceContext stored, String text, String context,
+            boolean hasImages) {
+        try {
+            return conversations.tryAnswerPendingQuestion(binding.getTenantId(),
+                    binding.getAgentId(), PROVIDER, stored.conversationId(), text,
+                    stored.externalId(), context, hasImages);
+        } catch (RuntimeException e) {
+            log.warn("wecom pending question check failed bindingId={} msgId={} errorType={}",
+                    binding.getId(), stored.msgId(), e.getClass().getSimpleName());
+            return null;
+        }
+    }
+
+    private void interruptPendingQuestion(WecomRobotBindingDO binding,
+            AgentConversationService.PendingQuestionReply pending) {
+        try {
+            conversations.interruptPendingQuestion(binding.getTenantId(),
+                    pending.conversationId(), pending.turnId(), pending.requestId());
+        } catch (RuntimeException e) {
+            // 中断失败仍继续受理消息：最坏情况只是本轮排在等待轮次之后。
+            log.warn("wecom pending question interrupt failed bindingId={} conversationId={} "
+                            + "turnId={} errorType={}", binding.getId(),
+                    pending.conversationId(), pending.turnId(), e.getClass().getSimpleName());
+        }
     }
 
     private void handleGroupInfo(PlatformImChannelConfigDO config, String groupId, String botId,

@@ -37,6 +37,8 @@ public class WecomBotConnectionManager {
     private static final Logger log = LoggerFactory.getLogger(WecomBotConnectionManager.class);
     private static final long STALE_AFTER_MS = 90_000L;
     private static final long CONNECT_GRACE_MS = 30_000L;
+    /** 订阅确认等待上限；服务端正常在数百毫秒内回帧，超时即判定鉴权失败并重连。 */
+    static final long AUTH_TIMEOUT_MS = 10_000L;
     private static final long RETRY_BASE_MS = 60_000L;
     private static final long RETRY_MAX_MS = 300_000L;
     /** 连接稳定保持该时长后才把退避重置为基础值，避免反复被踢时固定间隔重连。 */
@@ -236,6 +238,14 @@ public class WecomBotConnectionManager {
     private void maintain(Slot slot, long now) {
         if (!slot.socket.isOpen() && now - slot.connectStartedAt > CONNECT_GRACE_MS) {
             stop(slot, WecomConnectionStatus.DISCONNECTED, true);
+            scheduleRetry(slot, now);
+            return;
+        }
+        if (slot.socket.isOpen() && !slot.authAcked
+                && now - slot.connectStartedAt > AUTH_TIMEOUT_MS) {
+            // 订阅确认迟迟不到时不能一直停在“连接中”并占用租约：到期关闭连接并重连。
+            log.warn("企业微信机器人订阅确认超时 purpose={}", slot.purpose);
+            stop(slot, WecomConnectionStatus.ERROR, true);
             scheduleRetry(slot, now);
             return;
         }

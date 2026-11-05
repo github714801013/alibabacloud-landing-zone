@@ -12,6 +12,7 @@ import com.aliyun.autowonder.squad.SquadMemberDao;
 import com.aliyun.autowonder.squad.SquadMemberDO;
 import com.aliyun.autowonder.workspace.WorkspaceDO;
 import com.aliyun.autowonder.workspace.WorkspaceDao;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -43,7 +44,8 @@ class AiCollaborationDefaultsServiceTest {
         squadDao = mock(SquadDao.class);
         memberDao = mock(SquadMemberDao.class);
         agentDao = mock(AgentDao.class);
-        service = new AiCollaborationDefaultsService(settingDao, workspaceDao, squadDao, memberDao, agentDao);
+        service = new AiCollaborationDefaultsService(settingDao, workspaceDao, squadDao, memberDao, agentDao,
+                new ClarificationPromptTemplateCatalog(new ObjectMapper()));
 
         workspace = new WorkspaceDO();
         workspace.setId(TENANT);
@@ -203,6 +205,50 @@ class AiCollaborationDefaultsServiceTest {
 
         verify(settingDao).update(1L, TENANT, null, 0, null, OWNER);
         verify(settingDao).update(2L, TENANT, null, 0, null, OWNER);
+    }
+
+    @Test
+    void getReturnsPromptTemplateCatalog() {
+        stubRows("clarify.promptTemplates",
+                "{\"version\":1,\"custom\":[{\"id\":\"custom-1\",\"name\":\"清单\",\"content\":\"正文\"}]}");
+
+        AiCollaborationDefaultsVO vo = service.get(TENANT, OWNER);
+
+        assertNotNull(vo.getClarify().getPromptTemplates());
+        assertEquals("清单", vo.getClarify().getPromptTemplates().custom().get(0).name());
+    }
+
+    @Test
+    void getFallsBackToNullWhenPromptTemplateCatalogIsInvalid() {
+        stubRows("clarify.promptTemplates", "{\"version\":9}");
+
+        AiCollaborationDefaultsVO vo = service.get(TENANT, OWNER);
+
+        assertNull(vo.getClarify().getPromptTemplates());
+    }
+
+    @Test
+    void updateStoresCanonicalPromptTemplateCatalog() {
+        service.update(request(item("clarify.promptTemplates", """
+                {"version":1,"custom":[{"id":"custom-1","name":"  清单  ","content":""}],
+                 "defaults":{"first":"custom-1"}}
+                """)), TENANT, OWNER);
+
+        ArgumentCaptor<SystemSettingDO> captor = ArgumentCaptor.forClass(SystemSettingDO.class);
+        verify(settingDao).insert(captor.capture());
+        assertEquals("clarify.promptTemplates", captor.getValue().getSettingKey());
+        assertEquals("{\"version\":1,\"builtin\":{},\"custom\":[{\"id\":\"custom-1\",\"name\":\"清单\","
+                + "\"content\":\"\"}],\"defaults\":{\"first\":\"custom-1\"}}",
+                captor.getValue().getValueJson());
+    }
+
+    @Test
+    void updateRejectsInvalidPromptTemplateCatalog() {
+        BizException error = assertThrows(BizException.class,
+                () -> service.update(request(item("clarify.promptTemplates", "{\"version\":9}")), TENANT, OWNER));
+
+        assertEquals(ErrorCode.PARAM_INVALID.getCode(), error.getCode());
+        verifyNoWrites();
     }
 
     private void stubRows(String... keyValues) {

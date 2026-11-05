@@ -439,6 +439,47 @@ class AgentConversationServiceTest {
     }
 
     @Test
+    void wecomTurnWithoutUsableCreatorIdKeepsPlainRuntimeContent() {
+        var conversation=existingConversationWithSession();
+        conversation.setChannel("WECOM");
+        conversation.setChannelConversationId("5:chat-1");
+        when(convDao.findByKey(1L,"WECOM","5:chat-1",3L)).thenReturn(conversation);
+        when(executorSelector.select(3L,9L)).thenReturn(9L);
+        when(turnDao.insert(any())).thenAnswer(invocation->{AgentConversationTurnDO row=invocation.getArgument(0);row.setId(56L);return 1;});
+        String[] contexts={"not-json","{\"creatorId\":0}"," "};
+        for(int i=0;i<contexts.length;i++){
+            svc.submitTurn(1L,3L,"WECOM","5:chat-1","你好","WECOM:bot:msg-"+i,contexts[i]);
+        }
+        commitTransactionSynchronizations();
+        var runtime=ArgumentCaptor.forClass(String.class);
+        verify(transport,times(3)).send(any(),eq(56L),runtime.capture(),any(),any());
+        for(String value:runtime.getAllValues()){
+            assertFalse(value.contains("Authenticated AutoWonder context"),
+                    "无可用 creatorId 时不得输出委托身份行");
+            assertTrue(value.contains("你好"));
+        }
+    }
+
+    @Test
+    void wecomTurnCarriesDelegatedPrincipalForUserEnvironmentLoading() {
+        var conversation=existingConversationWithSession();
+        conversation.setChannel("WECOM");
+        conversation.setChannelConversationId("5:chat-1");
+        when(convDao.findByKey(1L,"WECOM","5:chat-1",3L)).thenReturn(conversation);
+        when(executorSelector.select(3L,9L)).thenReturn(9L);
+        when(turnDao.insert(any())).thenAnswer(invocation->{AgentConversationTurnDO row=invocation.getArgument(0);row.setId(55L);return 1;});
+        String context="{\"bindingId\":5,\"botId\":\"bot\",\"chatId\":\"chat-1\",\"msgId\":\"msg-1\","
+                + "\"senderUserId\":\"wx-ext-1\",\"reqId\":\"req-1\",\"receivedAt\":1,\"creatorId\":42}";
+        svc.submitTurn(1L,3L,"WECOM","5:chat-1","请帮我查一下这个工单","WECOM:bot:msg-1",context);
+        commitTransactionSynchronizations();
+        var runtime=ArgumentCaptor.forClass(String.class);
+        verify(transport).send(any(),eq(55L),runtime.capture(),any(),any());
+        assertTrue(runtime.getValue().contains("userId=42"),
+                "WeCom 委托身份必须进入运行时上下文，适配器才能加载用户环境");
+        assertTrue(runtime.getValue().contains("请帮我查一下这个工单"));
+    }
+
+    @Test
     void chiefWithEmptyLegacyIdentityReachesOfficialCapabilityPreparation() {
         var chief = new AgentDO();
         chief.setId(3L);
@@ -2000,6 +2041,71 @@ class AgentConversationServiceTest {
     }
 
     @Test
+    void groupReplyAnswersThePendingSingleQuestionWithoutStartingANewTurn() {
+        ConversationElicitationService elicitationService = mock(ConversationElicitationService.class);
+        svc.setConversationElicitationService(elicitationService);
+        AgentConversationElicitationDO question = pendingQuestion(
+                "{\"type\":\"object\",\"properties\":{\"q0\":{\"type\":\"string\"}}}");
+        when(convDao.findByKey(1L, "WECOM", "conv-x", 3L))
+                .thenReturn(existingConversationWithSession());
+        when(turnDao.findProcessingInbound(1L, 77L)).thenReturn(processingInboundTurn(77L));
+        when(elicitationService.listPending(1L, 77L)).thenReturn(java.util.List.of(question));
+
+        AgentConversationService.PendingQuestionReply reply = svc.tryAnswerPendingQuestion(
+                1L, 3L, "WECOM", "conv-x", "明天上线", "ext-1", "{}", false);
+
+        assertEquals(AgentConversationService.PendingQuestionOutcome.ANSWERED, reply.outcome());
+        verify(turnDao).insert(argThat(t -> "SUCCESS".equals(t.getStatus())
+                && "明天上线".equals(t.getContent()) && "ext-1".equals(t.getExternalMsgId())));
+        // 答案在事务提交后才投递。
+        verify(elicitationService, never()).reply(anyLong(), anyLong(), anyString(), anyString(),
+                anyString(), any());
+        commitTransactionSynchronizations();
+        verify(elicitationService).reply(1L, 77L, "q-1", "accept", "{\"q0\":\"明天上线\"}", null);
+    }
+
+    @Test
+    void ambiguousGroupReplyInterruptsThePendingQuestion() {
+        ConversationElicitationService elicitationService = mock(ConversationElicitationService.class);
+        svc.setConversationElicitationService(elicitationService);
+        AgentConversationElicitationDO question = pendingQuestion(
+                "{\"type\":\"object\",\"properties\":{\"q0\":{\"type\":\"string\"},"
+                        + "\"q1\":{\"type\":\"string\"}}}");
+        when(convDao.findByKey(1L, "WECOM", "conv-x", 3L))
+                .thenReturn(existingConversationWithSession());
+        when(turnDao.findProcessingInbound(1L, 77L)).thenReturn(processingInboundTurn(77L));
+        when(elicitationService.listPending(1L, 77L)).thenReturn(java.util.List.of(question));
+
+        AgentConversationService.PendingQuestionReply reply = svc.tryAnswerPendingQuestion(
+                1L, 3L, "WECOM", "conv-x", "先做别的", "ext-1", "{}", false);
+
+        assertEquals(AgentConversationService.PendingQuestionOutcome.INTERRUPT, reply.outcome());
+        assertEquals(Long.valueOf(55L), reply.turnId());
+        assertEquals("q-1", reply.requestId());
+        verify(turnDao, never()).insert(any());
+        verify(elicitationService, never()).reply(anyLong(), anyLong(), anyString(), anyString(),
+                anyString(), any());
+    }
+
+    @Test
+    void attachmentMessageNeverConsumesThePendingQuestion() {
+        ConversationElicitationService elicitationService = mock(ConversationElicitationService.class);
+        svc.setConversationElicitationService(elicitationService);
+        AgentConversationElicitationDO question = pendingQuestion(
+                "{\"type\":\"object\",\"properties\":{\"q0\":{\"type\":\"string\"}}}");
+        when(convDao.findByKey(1L, "WECOM", "conv-x", 3L))
+                .thenReturn(existingConversationWithSession());
+        when(turnDao.findProcessingInbound(1L, 77L)).thenReturn(processingInboundTurn(77L));
+        when(elicitationService.listPending(1L, 77L)).thenReturn(java.util.List.of(question));
+
+        AgentConversationService.PendingQuestionReply reply = svc.tryAnswerPendingQuestion(
+                1L, 3L, "WECOM", "conv-x", "明天上线", "ext-1", "{}", true);
+
+        assertEquals(AgentConversationService.PendingQuestionOutcome.INTERRUPT, reply.outcome());
+        verify(turnDao, never()).insert(any());
+    }
+
+    @Test
     void recoverStaleTurnCancelsPendingCardsWhenDeliveryAttemptsAreExhausted() {
         ConversationElicitationService elicitationService = mock(ConversationElicitationService.class);
         svc.setConversationElicitationService(elicitationService);
@@ -2735,6 +2841,17 @@ class AgentConversationServiceTest {
         turn.setDirection("IN");
         turn.setStatus("PROCESSING");
         return turn;
+    }
+
+    private AgentConversationElicitationDO pendingQuestion(String schemaJson) {
+        AgentConversationElicitationDO question = new AgentConversationElicitationDO();
+        question.setTenantId(1L);
+        question.setConversationId(77L);
+        question.setTurnId(55L);
+        question.setRequestId("q-1");
+        question.setStatus("PENDING");
+        question.setSchemaJson(schemaJson);
+        return question;
     }
 
     private boolean isLogicalConversationLock(String lockName) {

@@ -46,9 +46,6 @@ export interface NavGroup {
   items: NavItem[];
 }
 
-// 「系统设置」入口暂时隐藏，置回 true 即可恢复；路由与页面均保留。
-const SETTINGS_MENU_ENABLED = false;
-
 export const NAV_GROUPS: NavGroup[] = [
   {
     key: 'delivery',
@@ -93,8 +90,7 @@ export const NAV_GROUPS: NavGroup[] = [
       },
       { key: '/settings/backups', get label() { return i18n.t('shell:nav.backups'); }, icon: <HistoryOutlined aria-hidden="true" /> },
       { key: '/settings/environment-variables', get label() { return i18n.t('shell:nav.environment'); }, icon: <KeyOutlined aria-hidden="true" /> },
-      { key: '/settings/ai-defaults', get label() { return i18n.t('shell:nav.aiDefaults'); }, icon: <SettingOutlined aria-hidden="true" /> },
-      { key: '/settings', get label() { return i18n.t('shell:nav.settings'); }, icon: <SettingOutlined aria-hidden="true" />, hidden: !SETTINGS_MENU_ENABLED },
+      { key: '/settings', get label() { return i18n.t('shell:nav.settings'); }, icon: <SettingOutlined aria-hidden="true" /> },
     ],
   },
   {

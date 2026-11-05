@@ -800,6 +800,7 @@ export const handlers = [
           defaultSquadId: null,
           defaultAgentId: null,
           autoSendFirstPrompt: false,
+          promptTemplates: null,
           valid: true,
         },
         delivery: { defaultSquadId: null, defaultAgentId: null, valid: true },

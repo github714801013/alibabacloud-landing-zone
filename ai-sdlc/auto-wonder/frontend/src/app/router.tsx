@@ -31,7 +31,6 @@ import { SkillListPage } from '@/features/skill/SkillListPage';
 import { AuditLogPage } from '@/features/audit/AuditLogPage';
 import { ProjectBackupsPage } from '@/features/settings/ProjectBackupsPage';
 import { SettingsPage } from '@/features/settings/SettingsPage';
-import { AiCollaborationDefaultsPage } from '@/features/settings/AiCollaborationDefaultsPage';
 import { MemberRoleSettingsPage } from '@/features/settings/MemberRoleSettingsPage';
 import { StatusTemplatePage } from '@/features/statemachine/StatusTemplatePage';
 import { InsightsPage } from '@/features/insights/InsightsPage';
@@ -147,7 +146,6 @@ export function createAppRoutes(): RouteObject[] {
         { path: '/settings', element: <SettingsPage /> },
         { path: '/settings/backups', element: <ProjectBackupsPage /> },
         { path: '/settings/environment-variables', element: <EnvironmentVariablesPage /> },
-        { path: '/settings/ai-defaults', element: <AiCollaborationDefaultsPage /> },
         { path: '/insights', element: <InsightsPage /> },
         { path: '/about', element: <AboutAutoWonderPage /> },
       ],

@@ -1,5 +1,6 @@
 import { apiClient } from '@/shared/api/client';
 import type { WorkspaceAccessLevel, WorkspaceDomain } from '@/shared/types/common';
+import type { PromptTemplateCatalog } from './clarificationPromptTemplates';
 
 // --- System Settings ---
 
@@ -32,6 +33,7 @@ export interface AiCollaborationDefaultsVO {
     defaultSquadId: number | null;
     defaultAgentId: number | null;
     autoSendFirstPrompt: boolean;
+    promptTemplates?: PromptTemplateCatalog | null;
     valid: boolean;
   };
   delivery: {

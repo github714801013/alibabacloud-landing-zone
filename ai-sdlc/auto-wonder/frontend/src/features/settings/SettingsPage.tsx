@@ -20,6 +20,7 @@ import {
   updateSettings,
 } from './api';
 import type { AiUsageVO, SettingItem, SettingVO, UpdateQuotaRequest } from './api';
+import { AiCollaborationDefaultsPage } from './AiCollaborationDefaultsPage';
 import { getPlatformImChannels, PLATFORM_IM_CHANNELS_QUERY_KEY, selectedImProvider } from '@/features/platform/brandingApi';
 import { Alert } from 'antd';
 import { useAccessCommand } from '@/shared/auth/useAccessCommand';
@@ -360,6 +361,7 @@ export function SettingsPage() {
           { key: 'AI', label: t('aiTab'), children: <AiSettingsTab /> },
           { key: 'NOTIFY', label: t('notifyTab'), children: <NotifySettingsTab /> },
           { key: 'SYSTEM', label: t('systemTab'), children: <SystemSettingsTab /> },
+          { key: 'AI_DEFAULTS', label: t('aiDefaultsTab'), children: <AiCollaborationDefaultsPage /> },
         ]}
       />
     </Card>

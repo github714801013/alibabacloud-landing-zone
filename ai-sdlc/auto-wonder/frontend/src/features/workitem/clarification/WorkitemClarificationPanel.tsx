@@ -75,6 +75,10 @@ import {
   readLocalClarifyDefaults,
   resolveClarificationSelection,
 } from '@/features/settings/aiDefaults';
+import {
+  renderPromptTemplate,
+  resolvePromptTemplates,
+} from '@/features/settings/clarificationPromptTemplates';
 import { getSquadMembers } from '@/features/squad/api';
 import { useClarification } from '../hooks';
 import {
@@ -130,9 +134,6 @@ export function isNearScrollBottom(
 ): boolean {
   return el.scrollTop + el.clientHeight >= el.scrollHeight - threshold;
 }
-
-const clarificationBootstrapPrompt = (workitemId: string) =>
-  i18n.t('workitem:clarification.bootstrapPrompt', { workitemId });
 
 /** 加载中/加载失败提示的居中样式：与 Empty 同视觉重量，不抢占消息流。 */
 const CLARIFICATION_LOAD_HINT_STYLE: CSSProperties = {
@@ -216,6 +217,10 @@ export function WorkitemClarificationPanel({
   // 每次进入会话只初始化一次，避免用户清空输入后被重新填入。
   const initializedInputRef = useRef<number | null>(null);
   const [inputValue, setInputValue] = useState('');
+  // 选择器只表示「最近一次填入的模板」，不持久化；切换会话时重置为当前状态默认模板。
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
+  // 自动发送要求默认模板确实预填过；空正文或用户已有输入时保持关闭。
+  const autoSendPrefilledRef = useRef(false);
   // inputValue 只是「当前是否为空」的读取条件，不该成为 effect 的触发源：
   // 否则用户清空输入就会被再塞一遍提示语。
   const inputValueRef = useRef(inputValue);
@@ -436,6 +441,28 @@ export function WorkitemClarificationPanel({
     () => mergeClarifyDefaults(aiDefaults.data?.clarify, localClarifyDefaults),
     [aiDefaults.data, localClarifyDefaults],
   );
+  const builtinTemplateTexts = useMemo(() => ({
+    firstName: t('clarification.builtinFirstTemplateName'),
+    firstContent: t('clarification.bootstrapPrompt', { workitemId: '{{workitemId}}' }),
+    reclarifyName: t('clarification.builtinReclarifyTemplateName'),
+    reclarifyContent: t('clarification.reclarifyPrompt', { workitemId: '{{workitemId}}' }),
+  }), [t]);
+  const spacePromptTemplates = aiDefaults.data?.clarify?.promptTemplates;
+  // 查询失败或旧服务端缺少该字段时无法确认本地覆盖仍属于有效空间目录，按出厂模板解析；
+  // null 表示新服务端明确「未配置」，本地覆盖仍生效。
+  const useLocalTemplateOverrides = aiDefaults.isSuccess && spacePromptTemplates !== undefined;
+  const resolvedTemplates = useMemo(
+    () => resolvePromptTemplates(
+      builtinTemplateTexts,
+      spacePromptTemplates,
+      useLocalTemplateOverrides ? localClarifyDefaults : {},
+    ),
+    [builtinTemplateTexts, spacePromptTemplates, useLocalTemplateOverrides, localClarifyDefaults],
+  );
+  const hasStructuredClarification = !!clarification.data?.contentMd?.trim();
+  const stateDefaultTemplate = hasStructuredClarification
+    ? resolvedTemplates.reclarifyDefault
+    : resolvedTemplates.firstDefault;
   const localPairOverridden = localClarifyDefaults.defaultSquadId !== undefined
     || localClarifyDefaults.defaultAgentId !== undefined;
   // 本地默认组合必须仍是该小队的当前成员才生效；失效时回退空间默认。
@@ -904,6 +931,16 @@ export function WorkitemClarificationPanel({
     setInputValue(next);
   }, [cancelAutoSend]);
 
+  // 选模板只替换输入：不发送、不写工单记忆/本地存储/空间配置；也不重新开始自动发送。
+  const handleTemplateSelect = useCallback((templateId: string) => {
+    cancelAutoSend();
+    setSelectedTemplateId(templateId);
+    const template = resolvedTemplates.templates.find((item) => item.id === templateId);
+    if (!template) return;
+    setInputValue(renderPromptTemplate(template.content, workitemId));
+    composerRef.current?.focus();
+  }, [cancelAutoSend, resolvedTemplates, workitemId]);
+
   const handleSelectionChange = useCallback(
     (next: SquadAgentSelection | null) => {
       cancelAutoSend();
@@ -1037,23 +1074,29 @@ export function WorkitemClarificationPanel({
 
   useEffect(() => {
     initializedInputRef.current = null;
+    setSelectedTemplateId(null);
+    autoSendPrefilledRef.current = false;
   }, [workitemId, conversationId]);
 
   useEffect(() => {
     if (!conversationId || initializedInputRef.current === conversationId
         || isConversationLoading || agentRestorePending || clarification.isLoading
+        || aiDefaults.isPending
         || !conversation.isSuccess || convData?.id !== conversationId) return;
     initializedInputRef.current = conversationId;
+    // 查询未落定期间用户可能已手动选了模板，延迟初始化不能覆盖用户选择。
+    setSelectedTemplateId((current) => current ?? stateDefaultTemplate.id);
     if (inputValueRef.current.trim() || isReplying) return;
-    // 已有结构化澄清结果时填入「再次澄清」模板；否则维持首次澄清的引导提示。
-    if (clarification.data?.contentMd?.trim()) {
-      setInputValue(i18n.t('workitem:clarification.reclarifyPrompt'));
-    } else if (turns.length === 0) {
-      setInputValue(clarificationBootstrapPrompt(workitemId));
-    }
+    // 已有结构化澄清结果时用再次澄清默认模板；否则仅在首次会话预填首次澄清默认模板。
+    if (!hasStructuredClarification && turns.length > 0) return;
+    const content = renderPromptTemplate(stateDefaultTemplate.content, workitemId);
+    if (!content) return;
+    setInputValue(content);
+    autoSendPrefilledRef.current = true;
   }, [conversationId, turns.length, isConversationLoading, isReplying, workitemId,
     conversation.isSuccess, convData, agentRestorePending, clarification.isLoading,
-    clarification.data]);
+    clarification.data, aiDefaults.isPending, hasStructuredClarification,
+    stateDefaultTemplate]);
 
   const handleSend = useCallback(() => {
     cancelAutoSend();
@@ -1124,6 +1167,9 @@ export function WorkitemClarificationPanel({
     && clarification.isSuccess
     && !clarification.data?.contentMd?.trim()
     && clarifyDefaults.autoSendFirstPrompt
+    && !aiDefaults.isPending
+    // 默认模板为空或用户已有输入时没有预填，不得自动发送。
+    && autoSendPrefilledRef.current
     && !agentRestorePending
     && !isConversationLoading
     && !conversationHistoryFailed
@@ -1736,6 +1782,19 @@ export function WorkitemClarificationPanel({
                   data-testid="clarification-attach"
                   disabled={composerDisabled}
                   onClick={() => fileInputRef.current?.click()}
+                />
+                <Select
+                  size="small"
+                  aria-label={i18n.t('settings:aiDefaults.templateList')}
+                  data-testid="clarification-template-select"
+                  value={selectedTemplateId ?? stateDefaultTemplate.id}
+                  onChange={handleTemplateSelect}
+                  options={resolvedTemplates.templates.map((template) => ({
+                    value: template.id,
+                    label: template.name,
+                  }))}
+                  disabled={composerDisabled || aiDefaults.isPending}
+                  style={{ width: 160, maxWidth: '100%' }}
                 />
                 <Select<SendMode>
                   size="small"

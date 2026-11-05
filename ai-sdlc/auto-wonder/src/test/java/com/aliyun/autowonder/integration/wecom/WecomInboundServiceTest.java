@@ -172,6 +172,9 @@ class WecomInboundServiceTest {
 
         verify(conversations).submitTurn(eq(1L), eq(7L), eq("WECOM"), eq("5:chat-1"),
                 eq("请查看并处理这张图片。"), eq("WECOM:bot:msg-1"), anyString());
+        // 带图片的消息不能当作文字答案消费，即使群里有挂起提问。
+        verify(conversations).tryAnswerPendingQuestion(eq(1L), eq(7L), eq("WECOM"),
+                eq("5:chat-1"), eq(""), eq("WECOM:bot:msg-1"), anyString(), eq(true));
     }
 
     @Test
@@ -503,6 +506,104 @@ class WecomInboundServiceTest {
 
         verify(conversations, never()).submitTurn(any(), any(), any(), any(), any(), any(),
                 any());
+    }
+
+    @Test
+    void answeredPendingQuestionIsNotSubmittedAsANewTurn() {
+        arrangeConfig();
+        WecomRobotBindingDO binding = arrangeBinding("ENABLED");
+        when(bindings.findSharedByConfigAndGroup(9L, "chat-1")).thenReturn(binding);
+        when(bindings.findGlobal(5L)).thenReturn(binding);
+        when(conversations.tryAnswerPendingQuestion(eq(1L), eq(7L), eq("WECOM"),
+                eq("5:chat-1"), eq("2"), eq("WECOM:bot:msg-1"), anyString(), eq(false)))
+                .thenReturn(new AgentConversationService.PendingQuestionReply(
+                        AgentConversationService.PendingQuestionOutcome.ANSWERED, 88L, null, null));
+
+        service.handle(message("group", "text", "2", "alice", "msg-1", "bot"));
+
+        verify(conversations, never()).submitTurn(anyLong(), anyLong(), anyString(),
+                anyString(), anyString(), anyString(), anyString());
+        verify(conversations, never()).interruptPendingQuestion(any(), any(), any(), any());
+        verifyNoInteractions(feedback);
+        verify(bindings).health(binding, null);
+    }
+
+    @Test
+    void unanswerablePendingQuestionInterruptsTheWaitingTurnBeforeSubmitting() {
+        arrangeConfig();
+        WecomRobotBindingDO binding = arrangeBinding("ENABLED");
+        when(bindings.findSharedByConfigAndGroup(9L, "chat-1")).thenReturn(binding);
+        when(bindings.findGlobal(5L)).thenReturn(binding);
+        when(conversations.tryAnswerPendingQuestion(eq(1L), eq(7L), eq("WECOM"),
+                eq("5:chat-1"), eq("先做别的"), eq("WECOM:bot:msg-1"), anyString(), eq(false)))
+                .thenReturn(new AgentConversationService.PendingQuestionReply(
+                        AgentConversationService.PendingQuestionOutcome.INTERRUPT, 88L, 42L, "q-1"));
+
+        service.handle(message("group", "text", "先做别的", "alice", "msg-1", "bot"));
+
+        var order = inOrder(conversations);
+        order.verify(conversations).interruptPendingQuestion(1L, 88L, 42L, "q-1");
+        order.verify(conversations).submitTurn(eq(1L), eq(7L), eq("WECOM"), eq("5:chat-1"),
+                eq("先做别的"), eq("WECOM:bot:msg-1"), anyString());
+    }
+
+    @Test
+    void quotedReplyUsesOnlyTheTypedTextAsThePendingAnswer() {
+        arrangeConfig();
+        WecomRobotBindingDO binding = arrangeBinding("ENABLED");
+        when(bindings.findSharedByConfigAndGroup(9L, "chat-1")).thenReturn(binding);
+        when(bindings.findGlobal(5L)).thenReturn(binding);
+        when(conversations.tryAnswerPendingQuestion(eq(1L), eq(7L), eq("WECOM"),
+                eq("5:chat-1"), eq("2"), eq("WECOM:bot:msg-1"), anyString(), eq(false)))
+                .thenReturn(new AgentConversationService.PendingQuestionReply(
+                        AgentConversationService.PendingQuestionOutcome.ANSWERED, 88L, null, null));
+        JsonNode frame = message("group", "text", "2", "alice", "msg-1", "bot");
+        ObjectNode quote = ((ObjectNode) frame.path("body")).putObject("quote");
+        quote.put("msgtype", "text");
+        quote.putObject("text").put("content", "数字人正在等待补充信息");
+
+        service.handle(frame);
+
+        // 引用前缀属于回复语境，不属于答案；否则选择题序号会被前缀破坏。
+        verify(conversations).tryAnswerPendingQuestion(eq(1L), eq(7L), eq("WECOM"),
+                eq("5:chat-1"), eq("2"), eq("WECOM:bot:msg-1"), anyString(), eq(false));
+        verify(conversations, never()).submitTurn(anyLong(), anyLong(), anyString(),
+                anyString(), anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void pendingQuestionCheckFailureFallsBackToNormalSubmission() {
+        arrangeConfig();
+        WecomRobotBindingDO binding = arrangeBinding("ENABLED");
+        when(bindings.findSharedByConfigAndGroup(9L, "chat-1")).thenReturn(binding);
+        when(bindings.findGlobal(5L)).thenReturn(binding);
+        when(conversations.tryAnswerPendingQuestion(anyLong(), anyLong(), anyString(),
+                anyString(), anyString(), anyString(), anyString(), anyBoolean()))
+                .thenThrow(new IllegalStateException("会话锁超时"));
+
+        service.handle(message("group", "text", "请处理", "alice", "msg-1", "bot"));
+
+        verify(conversations).submitTurn(eq(1L), eq(7L), eq("WECOM"), eq("5:chat-1"),
+                eq("请处理"), eq("WECOM:bot:msg-1"), anyString());
+    }
+
+    @Test
+    void interruptFailureStillSubmitsTheMessage() {
+        arrangeConfig();
+        WecomRobotBindingDO binding = arrangeBinding("ENABLED");
+        when(bindings.findSharedByConfigAndGroup(9L, "chat-1")).thenReturn(binding);
+        when(bindings.findGlobal(5L)).thenReturn(binding);
+        when(conversations.tryAnswerPendingQuestion(anyLong(), anyLong(), anyString(),
+                anyString(), anyString(), anyString(), anyString(), anyBoolean()))
+                .thenReturn(new AgentConversationService.PendingQuestionReply(
+                        AgentConversationService.PendingQuestionOutcome.INTERRUPT, 88L, 42L, null));
+        doThrow(new IllegalStateException("取消失败")).when(conversations)
+                .interruptPendingQuestion(1L, 88L, 42L, null);
+
+        service.handle(message("group", "text", "先做别的", "alice", "msg-1", "bot"));
+
+        verify(conversations).submitTurn(eq(1L), eq(7L), eq("WECOM"), eq("5:chat-1"),
+                eq("先做别的"), eq("WECOM:bot:msg-1"), anyString());
     }
 
     private void arrangeConfig() {

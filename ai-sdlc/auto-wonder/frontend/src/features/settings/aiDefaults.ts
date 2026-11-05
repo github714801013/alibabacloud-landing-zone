@@ -5,10 +5,17 @@
  * 字段有值 = 本地覆盖。空间默认来自 /api/workspaces/current/ai-defaults。
  */
 
+import type {
+  LocalPromptTemplateOverrides,
+  PromptTemplateCatalog,
+} from './clarificationPromptTemplates';
+
 export interface ClarifySpaceDefaults {
   defaultSquadId: number | null;
   defaultAgentId: number | null;
   autoSendFirstPrompt: boolean;
+  /** 空间提示词模板目录；旧服务端或未配置时为 null/缺失。 */
+  promptTemplates?: PromptTemplateCatalog | null;
   valid: boolean;
 }
 
@@ -18,7 +25,7 @@ export interface DeliverySpaceDefaults {
   valid: boolean;
 }
 
-export interface LocalClarifyDefaults {
+export interface LocalClarifyDefaults extends LocalPromptTemplateOverrides {
   defaultSquadId?: number | null;
   defaultAgentId?: number | null;
   autoSendFirstPrompt?: boolean;
@@ -88,15 +95,34 @@ function normalizeFlag(value: unknown): boolean | undefined {
   return typeof value === 'boolean' ? value : undefined;
 }
 
+function normalizeTemplateId(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() !== '' ? value : undefined;
+}
+
+function normalizeTemplateContents(value: unknown): Record<string, string> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const contents: Record<string, string> = {};
+  for (const [key, content] of Object.entries(value)) {
+    if (typeof content === 'string') contents[key] = content;
+  }
+  return Object.keys(contents).length > 0 ? contents : undefined;
+}
+
 export function readLocalClarifyDefaults(): LocalClarifyDefaults {
   const raw = readObject<LocalClarifyDefaults>(CLARIFY_LOCAL_KEY);
   const result: LocalClarifyDefaults = {};
   const squadId = normalizeId(raw.defaultSquadId);
   const agentId = normalizeId(raw.defaultAgentId);
   const autoSend = normalizeFlag(raw.autoSendFirstPrompt);
+  const firstTemplateId = normalizeTemplateId(raw.firstTemplateId);
+  const reclarifyTemplateId = normalizeTemplateId(raw.reclarifyTemplateId);
+  const templateContents = normalizeTemplateContents(raw.templateContents);
   if (squadId !== undefined) result.defaultSquadId = squadId;
   if (agentId !== undefined) result.defaultAgentId = agentId;
   if (autoSend !== undefined) result.autoSendFirstPrompt = autoSend;
+  if (firstTemplateId !== undefined) result.firstTemplateId = firstTemplateId;
+  if (reclarifyTemplateId !== undefined) result.reclarifyTemplateId = reclarifyTemplateId;
+  if (templateContents !== undefined) result.templateContents = templateContents;
   return result;
 }
 

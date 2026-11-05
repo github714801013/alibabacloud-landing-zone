@@ -11,6 +11,8 @@ import com.aliyun.autowonder.squad.SquadDao;
 import com.aliyun.autowonder.squad.SquadMemberDao;
 import com.aliyun.autowonder.workspace.WorkspaceDO;
 import com.aliyun.autowonder.workspace.WorkspaceDao;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -28,30 +30,36 @@ import java.util.Set;
 @Service
 public class AiCollaborationDefaultsService {
 
+    private static final Logger log = LoggerFactory.getLogger(AiCollaborationDefaultsService.class);
+
     static final String GROUP = "CUSTOM_AI_DEFAULTS";
     static final String CLARIFY_SQUAD_KEY = "clarify.defaultSquadId";
     static final String CLARIFY_AGENT_KEY = "clarify.defaultAgentId";
     static final String CLARIFY_AUTO_SEND_KEY = "clarify.autoSendFirstPrompt";
+    static final String CLARIFY_PROMPT_TEMPLATES_KEY = "clarify.promptTemplates";
     static final String DELIVERY_SQUAD_KEY = "delivery.defaultSquadId";
     static final String DELIVERY_AGENT_KEY = "delivery.defaultAgentId";
 
     private static final Set<String> ALLOWED_KEYS = Set.of(
             CLARIFY_SQUAD_KEY, CLARIFY_AGENT_KEY, CLARIFY_AUTO_SEND_KEY,
-            DELIVERY_SQUAD_KEY, DELIVERY_AGENT_KEY);
+            CLARIFY_PROMPT_TEMPLATES_KEY, DELIVERY_SQUAD_KEY, DELIVERY_AGENT_KEY);
 
     private final SystemSettingDao settingDao;
     private final WorkspaceDao workspaceDao;
     private final SquadDao squadDao;
     private final SquadMemberDao memberDao;
     private final AgentDao agentDao;
+    private final ClarificationPromptTemplateCatalog promptTemplateCatalog;
 
     public AiCollaborationDefaultsService(SystemSettingDao settingDao, WorkspaceDao workspaceDao,
-            SquadDao squadDao, SquadMemberDao memberDao, AgentDao agentDao) {
+            SquadDao squadDao, SquadMemberDao memberDao, AgentDao agentDao,
+            ClarificationPromptTemplateCatalog promptTemplateCatalog) {
         this.settingDao = settingDao;
         this.workspaceDao = workspaceDao;
         this.squadDao = squadDao;
         this.memberDao = memberDao;
         this.agentDao = agentDao;
+        this.promptTemplateCatalog = promptTemplateCatalog;
     }
 
     public AiCollaborationDefaultsVO get(long tenantId, long userId) {
@@ -65,6 +73,7 @@ public class AiCollaborationDefaultsService {
         clarify.setDefaultSquadId(parseLong(values.get(CLARIFY_SQUAD_KEY)));
         clarify.setDefaultAgentId(parseLong(values.get(CLARIFY_AGENT_KEY)));
         clarify.setAutoSendFirstPrompt("true".equalsIgnoreCase(values.get(CLARIFY_AUTO_SEND_KEY)));
+        clarify.setPromptTemplates(readPromptTemplates(tenantId, values.get(CLARIFY_PROMPT_TEMPLATES_KEY)));
         clarify.setValid(isCombinationValid(tenantId, clarify.getDefaultSquadId(), clarify.getDefaultAgentId(), false));
         vo.setClarify(clarify);
 
@@ -148,11 +157,29 @@ public class AiCollaborationDefaultsService {
         return values;
     }
 
+    /** 读取侧容错：目录损坏或版本不支持时按未配置处理，不让接口 500。 */
+    private ClarificationPromptTemplateCatalog.Catalog readPromptTemplates(long tenantId, String value) {
+        try {
+            return promptTemplateCatalog.parseForRead(value);
+        } catch (RuntimeException ex) {
+            log.warn("提示词模板目录无法读取，按未配置处理 tenantId={} reason={}", tenantId, ex.getMessage());
+            return null;
+        }
+    }
+
     private String normalizeValue(String key, String value) {
         if (value == null || value.isBlank()) {
             return null;
         }
         String trimmed = value.trim();
+        if (CLARIFY_PROMPT_TEMPLATES_KEY.equals(key)) {
+            try {
+                return promptTemplateCatalog.serialize(promptTemplateCatalog.parse(trimmed));
+            } catch (RuntimeException ex) {
+                log.warn("提示词模板目录校验失败 key={} reason={}", key, ex.getMessage());
+                throw valueInvalid(key);
+            }
+        }
         if (CLARIFY_AUTO_SEND_KEY.equals(key)) {
             if (!"true".equalsIgnoreCase(trimmed) && !"false".equalsIgnoreCase(trimmed)) {
                 throw valueInvalid(key);

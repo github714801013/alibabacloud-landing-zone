@@ -292,6 +292,54 @@ class WecomBotConnectionManagerTest {
     }
 
     @Test
+    void connectionWithoutSubscribeAcknowledgementDoesNotStayConnectingForever() {
+        selectedNotify(notifyConfig(1));
+        WecomBotConnectionManager manager = manager(List.of());
+        manager.tick(0);
+        FakeSocket socket = sockets.created.get(0);
+
+        manager.tick(WecomBotConnectionManager.AUTH_TIMEOUT_MS + 1_000);
+
+        assertTrue(socket.closed);
+        assertTrue(lease.values.isEmpty());
+        assertEquals(WecomConnectionStatus.ERROR,
+                manager.localStatus(ImChannelPurpose.NOTIFY));
+        manager.tick(WecomBotConnectionManager.AUTH_TIMEOUT_MS + 2_000);
+        assertEquals(1, sockets.created.size());
+    }
+
+    @Test
+    void unfinishedHandshakeIsNotKilledByTheAuthorizationTimeout() {
+        selectedNotify(notifyConfig(1));
+        WecomBotConnectionManager manager = manager(List.of());
+        manager.tick(0);
+        FakeSocket socket = sockets.created.get(0);
+        socket.hang();
+
+        manager.tick(WecomBotConnectionManager.AUTH_TIMEOUT_MS + 1_000);
+
+        assertFalse(socket.closed);
+        assertEquals(WecomConnectionStatus.CONNECTING,
+                manager.localStatus(ImChannelPurpose.NOTIFY));
+    }
+
+    @Test
+    void subscribeAcknowledgementWithinTheAuthorizationWindowKeepsTheConnection() {
+        selectedNotify(notifyConfig(1));
+        WecomBotConnectionManager manager = manager(List.of());
+        manager.tick(0);
+        FakeSocket socket = sockets.created.get(0);
+
+        manager.tick(WecomBotConnectionManager.AUTH_TIMEOUT_MS);
+        socket.deliver(ack(socket));
+        manager.tick(WecomBotConnectionManager.AUTH_TIMEOUT_MS + 1_000);
+
+        assertFalse(socket.closed);
+        assertEquals(WecomConnectionStatus.CONNECTED,
+                manager.localStatus(ImChannelPurpose.NOTIFY));
+    }
+
+    @Test
     void routeVersionChangeReplacesTheConnection() throws Exception {
         PlatformImChannelConfigDO config = notifyConfig(1);
         selectedNotify(config);

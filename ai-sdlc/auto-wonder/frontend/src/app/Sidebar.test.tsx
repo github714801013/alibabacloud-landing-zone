@@ -164,12 +164,13 @@ describe('Sidebar helpers', () => {
     expect(groupKeys.indexOf('about-group')).toBe(groupKeys.indexOf('insight-group') + 1);
   });
 
-  it('hides the system settings entry from the menu while keeping its route metadata', () => {
+  it('exposes the system settings entry and drops the standalone AI defaults entry', () => {
     const items = buildMenuItems();
     const configGroup = items.find((item) => item?.key === 'config-group');
 
-    expect(childKeys(configGroup)).not.toContain('/settings');
-    expect(NAV_GROUPS.flatMap((group) => group.items).map((item) => item.key)).toContain('/settings');
+    expect(childKeys(configGroup)).toContain('/settings');
+    expect(childKeys(configGroup)).not.toContain('/settings/ai-defaults');
+    expect(NAV_GROUPS.flatMap((group) => group.items).map((item) => item.key)).not.toContain('/settings/ai-defaults');
     expect(resolveSelectedNavKey('/settings')).toBe('/settings');
   });
 

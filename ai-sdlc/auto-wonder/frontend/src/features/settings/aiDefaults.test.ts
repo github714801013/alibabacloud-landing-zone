@@ -197,6 +197,31 @@ describe('aiDefaults local storage', () => {
     expect(hasClarifyLocalOverride(readLocalClarifyDefaults())).toBe(false);
   });
 
+  it('round-trips template selection and content overrides', () => {
+    writeLocalClarifyDefaults({
+      firstTemplateId: 'custom-1',
+      reclarifyTemplateId: 'reclarify',
+      templateContents: { 'custom-1': '', bootstrap: '本地首次' },
+    });
+
+    expect(readLocalClarifyDefaults()).toEqual({
+      firstTemplateId: 'custom-1',
+      reclarifyTemplateId: 'reclarify',
+      templateContents: { 'custom-1': '', bootstrap: '本地首次' },
+    });
+  });
+
+  it('drops malformed template override fields', () => {
+    localStorage.setItem('aw:clarify-defaults:local', JSON.stringify({
+      firstTemplateId: '   ',
+      templateContents: { 'custom-1': 1, 'custom-2': '正文' },
+    }));
+
+    expect(readLocalClarifyDefaults()).toEqual({
+      templateContents: { 'custom-2': '正文' },
+    });
+  });
+
   it('keeps delivery overrides separate', () => {
     writeLocalDeliveryDefaults({ defaultSquadId: null, defaultAgentId: null });
     expect(readLocalClarifyDefaults()).toEqual({});

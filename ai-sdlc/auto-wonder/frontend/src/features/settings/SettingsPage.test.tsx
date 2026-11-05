@@ -171,6 +171,17 @@ describe('SettingsPage', () => {
     });
   });
 
+  it('renders AI collaboration defaults in a dedicated settings tab', async () => {
+    useCommonSettingsHandlers([]);
+
+    renderPage();
+    await userEvent.click(await screen.findByRole('tab', { name: 'AI 默认值' }));
+
+    expect(await screen.findByText('需求澄清')).toBeInTheDocument();
+    expect(screen.getByText('开始交付')).toBeInTheDocument();
+    expect(await screen.findByText('保存后仅对当前浏览器生效')).toBeInTheDocument();
+  });
+
   it('keeps save commands visible but blocks read-only users before mutation', async () => {
     let quotaUpdates = 0;
     useAuthStore.getState().setCurrentWorkspace({ id: 1, name: 'O', description: '' }, 'READ_ONLY');
