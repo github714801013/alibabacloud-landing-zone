@@ -222,8 +222,36 @@ it('only saves Feishu settings and preferences when the platform selects Feishu'
   expect(saved.settings?.items).toEqual([{ key: 'feishu_enabled', valueJson: 'true', secret: false }]);
 });
 
+it('keeps personal notification preferences usable for non-admin members', async () => {
+  let prefsSaves = 0;
+  let settingsUpdates = 0;
+  useAuthStore.getState().setCurrentWorkspace({ id: 1, name: 'O', description: '' }, 'READ_WRITE');
+  useCommonSettingsHandlers([
+    http.get('/api/platform/im-channels', () => HttpResponse.json(apiOk([{ provider: 'WECOM', selected: true, enabled: false }]))),
+    http.get('/api/settings/NOTIFY', () => HttpResponse.json({
+      success: false, code: '10403', message: 'denied', traceId: null, data: null,
+    }, { status: 403 })),
+    http.get('/api/notifications/prefs', () => HttpResponse.json(apiOk([{ type: 'WORKITEM_ASSIGNED', inApp: true, wecom: false }]))),
+    http.put('/api/notifications/prefs', () => { prefsSaves += 1; return HttpResponse.json(apiOk(null)); }),
+    http.put('/api/settings/NOTIFY', () => { settingsUpdates += 1; return HttpResponse.json(apiOk(null)); }),
+  ]);
+
+  renderPage();
+  await userEvent.click(await screen.findByRole('tab', { name: '通知配置' }));
+
+  expect(await screen.findByText('通知偏好')).toBeInTheDocument();
+  expect(screen.queryByText('通知配置加载失败，请刷新重试')).not.toBeInTheDocument();
+  expect(await screen.findByRole('switch', { name: '工单指派：站内' })).toBeChecked();
+  expect(screen.queryByLabelText('启用企业微信通知')).not.toBeInTheDocument();
+
+  await userEvent.click(screen.getByRole('button', { name: /保存通知配置/ }));
+  await waitFor(() => expect(prefsSaves).toBe(1));
+  expect(settingsUpdates).toBe(0);
+});
+
 it('starts the WeCom preference off and saves only the WeCom switch', async () => {
   const saved: { prefs?: { items: NotifyPrefItem[] }; settings?: { items: SettingItem[] } } = {};
+  useAuthStore.getState().setCurrentWorkspace({ id: 1, name: 'O', description: '' }, 'ADMIN');
   useCommonSettingsHandlers([
     http.get('/api/platform/im-channels', () => HttpResponse.json(apiOk([{ provider: 'WECOM', selected: true, enabled: false }]))),
     http.get('/api/settings/NOTIFY', () => HttpResponse.json(apiOk([{ key: 'wecom_enabled', valueJson: 'true', secret: false }]))),

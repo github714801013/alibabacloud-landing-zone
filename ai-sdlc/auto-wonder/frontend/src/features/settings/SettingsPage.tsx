@@ -24,6 +24,7 @@ import { AiCollaborationDefaultsPage } from './AiCollaborationDefaultsPage';
 import { getPlatformImChannels, PLATFORM_IM_CHANNELS_QUERY_KEY, selectedImProvider } from '@/features/platform/brandingApi';
 import { Alert } from 'antd';
 import { useAccessCommand } from '@/shared/auth/useAccessCommand';
+import { useAuthStore } from '@/shared/auth/store';
 
 
 type SettingSchema = {
@@ -89,10 +90,11 @@ function SettingFields({ schema }: { schema: SettingSchema[] }) {
   );
 }
 
-function useSettingsGroup(group: string, form: FormInstance<Record<string, string>>, schema: SettingSchema[]) {
+function useSettingsGroup(group: string, form: FormInstance<Record<string, string>>, schema: SettingSchema[], enabled = true) {
   const query = useQuery({
     queryKey: ['settings', group],
     queryFn: () => listSettingsByGroup(group),
+    enabled,
   });
 
   useEffect(() => {
@@ -210,7 +212,7 @@ function AiSettingsTab() {
 function NotifySettingsTab() {
   const { t } = useTranslation('settings');
   const queryClient = useQueryClient();
-  const runAccessCommand = useAccessCommand();
+  const isAdmin = useAuthStore((s) => s.hasAccess('ADMIN'));
   const [prefForm] = Form.useForm<Record<string, boolean>>();
   const [settingsForm] = Form.useForm<Record<string, string>>();
 
@@ -225,7 +227,7 @@ function NotifySettingsTab() {
     ...item, key: `${providerKey}_enabled`, labelKey: enableLabelKey,
   })), [providerKey, enableLabelKey]);
   const prefsQuery = useQuery({ queryKey: ['notify-prefs'], queryFn: listNotifyPrefs });
-  const settingsQuery = useSettingsGroup('NOTIFY', settingsForm, notifySettings);
+  const settingsQuery = useSettingsGroup('NOTIFY', settingsForm, notifySettings, isAdmin);
 
   useEffect(() => {
     const prefs = prefsQuery.data ?? [];
@@ -243,22 +245,24 @@ function NotifySettingsTab() {
   const saveMut = useMutation({
     mutationFn: async () => {
       const prefValues = prefForm.getFieldsValue();
+      const savePrefs = updateNotifyPrefs(NOTIFY_TYPES.map(({ type }) => ({
+        type,
+        inApp: Boolean(prefValues[`${type}.inApp`]),
+        dingtalk: providerKey === 'dingtalk' && Boolean(prefValues[`${type}.dingtalk`]),
+        feishu: providerKey === 'feishu' && Boolean(prefValues[`${type}.feishu`]),
+        wecom: providerKey === 'wecom' && Boolean(prefValues[`${type}.wecom`]),
+      })));
+      if (!isAdmin) {
+        await savePrefs;
+        return;
+      }
       const settingValues = settingsForm.getFieldsValue();
-      await Promise.all([
-        updateNotifyPrefs(NOTIFY_TYPES.map(({ type }) => ({
-          type,
-          inApp: Boolean(prefValues[`${type}.inApp`]),
-          dingtalk: providerKey === 'dingtalk' && Boolean(prefValues[`${type}.dingtalk`]),
-          feishu: providerKey === 'feishu' && Boolean(prefValues[`${type}.feishu`]),
-          wecom: providerKey === 'wecom' && Boolean(prefValues[`${type}.wecom`]),
-        }))),
-        updateSettings('NOTIFY', buildSettingItems(notifySettings, settingValues)),
-      ]);
+      await Promise.all([savePrefs, updateSettings('NOTIFY', buildSettingItems(notifySettings, settingValues))]);
     },
     onSuccess: () => {
       message.success(i18n.t('settings:notifySaved'));
       queryClient.invalidateQueries({ queryKey: ['notify-prefs'] });
-      queryClient.invalidateQueries({ queryKey: ['settings', 'NOTIFY'] });
+      if (isAdmin) queryClient.invalidateQueries({ queryKey: ['settings', 'NOTIFY'] });
     },
   });
 
@@ -291,26 +295,26 @@ function NotifySettingsTab() {
   return (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
       <Row gutter={16}>
-        <Col xs={24} lg={14}>
+        <Col xs={24} lg={isAdmin ? 14 : 24}>
           <Card title={t('notifyPrefs')} size="small">
             <Form form={prefForm}>
               <Table rowKey="type" columns={prefColumns} dataSource={NOTIFY_TYPES.map(item => ({ ...item, label: t(item.labelKey) }))} pagination={false} size="small" />
             </Form>
           </Card>
         </Col>
-        <Col xs={24} lg={10}>
-          <Card title={t('notifyChannel')} size="small" data-testid="notify-settings-panel">
-            <Form form={settingsForm} layout="vertical">
-              <Alert type="info" message={t('providerHint', { provider: providerLabel })} style={{ marginBottom: 16 }} />
-              <SettingFields schema={notifySettings} />
-            </Form>
-          </Card>
-        </Col>
+        {isAdmin && (
+          <Col xs={24} lg={10}>
+            <Card title={t('notifyChannel')} size="small" data-testid="notify-settings-panel">
+              <Form form={settingsForm} layout="vertical">
+                <Alert type="info" message={t('providerHint', { provider: providerLabel })} style={{ marginBottom: 16 }} />
+                <SettingFields schema={notifySettings} />
+              </Form>
+            </Card>
+          </Col>
+        )}
       </Row>
 
-      <Button type="primary" icon={<SaveOutlined aria-hidden="true" />} aria-label={t('saveNotify')} loading={saveMut.isPending} onClick={() =>
-        runAccessCommand('ADMIN', t('saveNotify'), () => saveMut.mutate())
-      }>
+      <Button type="primary" icon={<SaveOutlined aria-hidden="true" />} aria-label={t('saveNotify')} loading={saveMut.isPending} onClick={() => saveMut.mutate()}>
         {t('saveNotify')}
       </Button>
     </Space>
