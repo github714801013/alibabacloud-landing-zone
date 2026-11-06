@@ -25,7 +25,8 @@ public record ImNotificationTask(
         String sourceType,
         @JsonInclude(JsonInclude.Include.NON_NULL) String recipientLocale,
         @JsonInclude(JsonInclude.Include.NON_NULL) String actorNameKind,
-        @JsonInclude(JsonInclude.Include.NON_NULL) String workitemTitleKind) {
+        @JsonInclude(JsonInclude.Include.NON_NULL) String workitemTitleKind,
+        @JsonInclude(JsonInclude.Include.NON_NULL) String link) {
 
     public static final String TYPE_WORKITEM_ASSIGNED = "WORKITEM_ASSIGNED";
     public static final String TYPE_COMMENT_MENTION = "COMMENT_MENTION";
@@ -75,10 +76,25 @@ public record ImNotificationTask(
                 null, null, null);
     }
 
+    public ImNotificationTask(String notificationKey, long workitemEventId, long tenantId, long workitemId,
+            long recipientUserId, String actorType, long actorRef, String actorDisplayName, String requestId,
+            String workitemTitle, String notificationType, String commentContentMd, String sourceType,
+            String recipientLocale, String actorNameKind, String workitemTitleKind) {
+        this(notificationKey, workitemEventId, tenantId, workitemId, recipientUserId, actorType, actorRef,
+                actorDisplayName, requestId, workitemTitle, notificationType, commentContentMd, sourceType,
+                recipientLocale, actorNameKind, workitemTitleKind, null);
+    }
+
     public ImNotificationTask withRecipientLocale(String locale) {
         return new ImNotificationTask(notificationKey, workitemEventId, tenantId, workitemId, recipientUserId,
                 actorType, actorRef, actorDisplayName, requestId, workitemTitle, notificationType, commentContentMd,
-                sourceType, locale, actorNameKind, workitemTitleKind);
+                sourceType, locale, actorNameKind, workitemTitleKind, link);
+    }
+
+    public ImNotificationTask withLink(String link) {
+        return new ImNotificationTask(notificationKey, workitemEventId, tenantId, workitemId, recipientUserId,
+                actorType, actorRef, actorDisplayName, requestId, workitemTitle, notificationType, commentContentMd,
+                sourceType, recipientLocale, actorNameKind, workitemTitleKind, link);
     }
 
     @JsonIgnore

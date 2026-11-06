@@ -27,7 +27,7 @@ public class ImNotificationFormatter {
         if (ImNotificationTask.TYPE_APPROVAL_REQUIRED.equals(task.notificationType())
                 || ImNotificationTask.TYPE_INPUT_REQUIRED.equals(task.notificationType())) {
             return render("human_input", locale, title, workspace, safeText(task.commentContentMd()),
-                    workitemUrl(normalizedBaseUrl, task.workitemId(), context.tenantId()));
+                    workitemLink(normalizedBaseUrl, task, context.tenantId()));
         }
         if (ImNotificationTask.TYPE_COMMENT_MENTION.equals(task.notificationType())) {
             boolean run = task.isScheduledTaskRun();
@@ -72,6 +72,12 @@ public class ImNotificationFormatter {
 
     private static String workitemUrl(String baseUrl, long workitemId, long tenantId) {
         return baseUrl + "/workitems/" + workitemId + "?workspaceId=" + tenantId;
+    }
+
+    /** 通知自带相对深链时优先使用，缺失时回退工单首页链接。 */
+    private static String workitemLink(String baseUrl, ImNotificationTask task, long tenantId) {
+        String link = task.link();
+        return link == null || link.isBlank() ? workitemUrl(baseUrl, task.workitemId(), tenantId) : baseUrl + link;
     }
 
     /**

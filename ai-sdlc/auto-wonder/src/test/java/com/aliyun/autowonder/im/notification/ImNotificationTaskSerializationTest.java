@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
@@ -188,5 +189,29 @@ class ImNotificationTaskSerializationTest {
             tree.putObject("futureField").put("nested", true);
             assertEquals(task, mapper.treeToValue(tree, ImNotificationTask.class));
         }
+    }
+
+    @Test
+    void roundTripsOptionalLinkAndKeepsLegacyPayloadExact() throws Exception {
+        ImNotificationTask original = new ImNotificationTask(
+                "dispatch-request:1:WECOM:9", 1L, 7L, 42L, 9L,
+                "SYSTEM", 0L, "数字员工", null, "验收工单",
+                ImNotificationTask.TYPE_INPUT_REQUIRED, "请确认以下范围")
+                .withLink("/workitems/42?workspaceId=7&panel=clarify&fullscreen=1&agent=10035&conversation=99");
+
+        ImNotificationTask deserialized = objectMapper.readValue(
+                objectMapper.writeValueAsString(original), ImNotificationTask.class);
+
+        assertEquals(original.link(), deserialized.link());
+        assertEquals(original.link(), original.withRecipientLocale("en-US").link());
+        ImNotificationTask legacy = objectMapper.readValue("""
+                {"notificationKey":"92860:DINGTALK:10002","workitemEventId":92860,\
+                "tenantId":10002,"workitemId":50460,"recipientUserId":10002,\
+                "actorType":"HUMAN","actorRef":10001,"actorDisplayName":"张三",\
+                "requestId":"rid-1","workitemTitle":"生产环境发布审批",\
+                "notificationType":"WORKITEM_ASSIGNED","commentContentMd":null}""",
+                ImNotificationTask.class);
+        assertNull(legacy.link());
+        assertFalse(objectMapper.writeValueAsString(legacy).contains("\"link\""));
     }
 }

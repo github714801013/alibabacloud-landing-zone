@@ -5,6 +5,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 
@@ -265,6 +266,61 @@ class ConversationElicitationServiceTest {
         assertEquals(10L, saved.getConversationId());
         assertEquals(100L, saved.getTurnId());
         assertTrue(saved.getSchemaJson().contains("\"type\":\"object\""));
+    }
+
+    /** 工单澄清对话新出现的待回答卡片要通知监听器，由后者推送企业微信。 */
+    @Test
+    void publishesWorkitemClarificationQuestionWhenNewlyPending() {
+        AgentConversationDO conv = conversation();
+        conv.setChannel(WorkitemClarificationConversationService.CHANNEL);
+        conv.setBizRefType(WorkitemClarificationConversationService.BIZ_REF_TYPE);
+        conv.setBizRefId(77L);
+        conv.setAgentId(10035L);
+        when(convDao.findById(1L, 10L)).thenReturn(conv);
+        when(dao.insertIfAbsent(any())).thenReturn(1);
+        List<Object> events = new ArrayList<>();
+        service.setApplicationEventPublisher(events::add);
+
+        service.onEvent(1L, 10L, 100L, "acp_elicitation", openedPayload("req-1"));
+
+        assertEquals(1, events.size());
+        var event = (ConversationElicitationService.WorkitemClarificationQuestionOpened) events.get(0);
+        assertEquals(1L, event.tenantId());
+        assertEquals(77L, event.workitemId());
+        assertEquals(10L, event.conversationId());
+        assertEquals(10035L, event.agentId());
+        assertEquals(100L, event.turnId());
+        assertEquals("req-1", event.requestId());
+        assertEquals("pick", event.message());
+    }
+
+    /** 同一条提问的重复上行不能重复推送。 */
+    @Test
+    void doesNotPublishQuestionWhenInsertIsDuplicate() {
+        AgentConversationDO conv = conversation();
+        conv.setChannel(WorkitemClarificationConversationService.CHANNEL);
+        conv.setBizRefType(WorkitemClarificationConversationService.BIZ_REF_TYPE);
+        conv.setBizRefId(77L);
+        when(convDao.findById(1L, 10L)).thenReturn(conv);
+        when(dao.insertIfAbsent(any())).thenReturn(0);
+        List<Object> events = new ArrayList<>();
+        service.setApplicationEventPublisher(events::add);
+
+        service.onEvent(1L, 10L, 100L, "acp_elicitation", openedPayload("req-1"));
+
+        assertTrue(events.isEmpty());
+    }
+
+    /** 非工单澄清会话（如 Chief of Staff）不触发工单待回答推送。 */
+    @Test
+    void doesNotPublishQuestionOutsideWorkitemClarification() {
+        when(dao.insertIfAbsent(any())).thenReturn(1);
+        List<Object> events = new ArrayList<>();
+        service.setApplicationEventPublisher(events::add);
+
+        service.onEvent(1L, 10L, 100L, "acp_elicitation", openedPayload("req-1"));
+
+        assertTrue(events.isEmpty());
     }
 
     /**

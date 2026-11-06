@@ -27,6 +27,33 @@ class ImNotificationFormatterTest {
     }
 
     @Test
+    void usesClarifyDeepLinkWhenTaskCarriesLink() {
+        ImNotificationTask task = new ImNotificationTask("request:42", 1L, 7L, 42L, 9L,
+                "AGENT", 10L, "Agent", "request-1", "验收工单",
+                ImNotificationTask.TYPE_INPUT_REQUIRED, "请确认以下范围")
+                .withLink("/workitems/42?workspaceId=7&panel=clarify&fullscreen=1&agent=10035&conversation=99");
+        var context = new ImNotificationMessageContext("测试空间", null, "https://auto.example.com/", 7L);
+
+        String chinese = new ImNotificationFormatter().format(context, task);
+
+        assertTrue(chinese.contains("[打开工单处理](https://auto.example.com/workitems/42?workspaceId=7"
+                + "&panel=clarify&fullscreen=1&agent=10035&conversation=99)"));
+    }
+
+    @Test
+    void fallsBackToWorkitemUrlWhenTaskLinkIsBlank() {
+        ImNotificationTask task = new ImNotificationTask("request:42", 1L, 7L, 42L, 9L,
+                "AGENT", 10L, "Agent", "request-1", "验收工单",
+                ImNotificationTask.TYPE_INPUT_REQUIRED, "请确认以下范围")
+                .withLink("  ");
+        var context = new ImNotificationMessageContext("测试空间", null, "https://auto.example.com", 7L);
+
+        String chinese = new ImNotificationFormatter().format(context, task);
+
+        assertTrue(chinese.contains("[打开工单处理](https://auto.example.com/workitems/42?workspaceId=7)"));
+    }
+
+    @Test
     void formatsWorkitemAssignmentAsMarkdown() {
         ImNotificationTask task = new ImNotificationTask(
                 "tenant-7:workitem-42:recipient-9:event-100",

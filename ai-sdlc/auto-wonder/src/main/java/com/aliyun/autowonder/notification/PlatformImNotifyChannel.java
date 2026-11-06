@@ -44,6 +44,7 @@ public class PlatformImNotifyChannel implements NotifyChannel {
             queue.enqueue(new ImNotificationTask("dispatch-request:" + notification.getId() + ":" + provider + ":" + notification.getRecipientId(),
                     notification.getId(), notification.getTenantId(), notification.getRefId(), notification.getRecipientId(),
                     "SYSTEM", 0, "数字员工", null, notification.getTitle(), notification.getType(), notification.getContent())
+                    .withLink(notification.getLink())
                     .withRecipientLocale(notification.getRecipientLocale()));
             return true;
         }
