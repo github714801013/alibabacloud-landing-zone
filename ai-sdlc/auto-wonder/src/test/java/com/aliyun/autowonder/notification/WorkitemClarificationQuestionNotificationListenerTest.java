@@ -75,6 +75,38 @@ class WorkitemClarificationQuestionNotificationListenerTest {
     }
 
     @Test
+    void notifiesWhileWorkitemIsBeingDelivered() {
+        var notificationDao = mock(NotificationDao.class);
+        doAnswer(i -> { ((NotificationDO) i.getArgument(0)).setId(42L); return null; })
+                .when(notificationDao).insert(any());
+        var workitem = new WorkitemDO();
+        workitem.setId(10L);
+        workitem.setTenantId(1L);
+        workitem.setTitle("交付中工单");
+        workitem.setSdlcId(30004L);
+        workitem.setCurrentStepId(300041L);
+        workitem.setAssigneeType("AGENT");
+        workitem.setAssigneeRef(10035L);
+        var workitemDao = mock(WorkitemDao.class);
+        when(workitemDao.findById(10L)).thenReturn(workitem);
+        var workitemService = mock(WorkitemService.class);
+        when(workitemService.getHumanParticipantIds(10L, 1L)).thenReturn(List.of(9L));
+        @SuppressWarnings("unchecked")
+        ObjectProvider<WorkitemService> provider = mock(ObjectProvider.class);
+        when(provider.getIfAvailable()).thenReturn(workitemService);
+
+        new WorkitemClarificationQuestionNotificationListener(
+                new NotifyService(notificationDao, mock(NotifyPrefDao.class), List.of()), workitemDao, provider)
+                .onOpened(new WorkitemClarificationQuestionOpened(1L, 10L, 20L, 10035L, 100L,
+                        "req-2", "交付过程中确认下一项"));
+
+        var row = ArgumentCaptor.forClass(NotificationDO.class);
+        verify(notificationDao).insert(row.capture());
+        assertEquals("WORKITEM_INPUT_REQUIRED", row.getValue().getType());
+        assertEquals("工单「交付中工单」\n交付过程中确认下一项", row.getValue().getContent());
+    }
+
+    @Test
     void skipsBlankQuestionWithoutLoadingWorkitem() {
         var notificationDao = mock(NotificationDao.class);
         var workitemDao = mock(WorkitemDao.class);
