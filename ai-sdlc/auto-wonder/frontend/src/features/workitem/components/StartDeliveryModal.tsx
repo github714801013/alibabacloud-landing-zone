@@ -3,7 +3,7 @@ import { useLocalizedValidation } from '@/shared/i18n/useLocalizedValidation';
 import { useTranslation } from 'react-i18next';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Modal, Form, Select, DatePicker, message } from 'antd';
+import { Alert, Modal, Form, Select, DatePicker, message } from 'antd';
 import type { Dayjs } from 'dayjs';
 import { listSquads, getSquadMembers } from '@/features/squad/api';
 import type { SquadMember } from '@/features/squad/api';
@@ -27,6 +27,10 @@ interface StartDeliveryModalProps {
   workitemId: number | string;
   /** When true the workitem already has an SDLC bound; this is a re-assign, so the SDLC picker is hidden. */
   hasSdlc?: boolean;
+  /** Current agent assignee, used to tell a same-agent re-assign from a switch. */
+  currentAgentId?: number | null;
+  /** Current bound SDLC, used to tell whether the target agent brings a different flow. */
+  currentSdlcId?: number | null;
   onClose: () => void;
 }
 
@@ -38,7 +42,14 @@ function createRestartToken(): string {
   return `restart-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
-export function StartDeliveryModal({ open, workitemId, hasSdlc, onClose }: StartDeliveryModalProps) {
+export function StartDeliveryModal({
+  open,
+  workitemId,
+  hasSdlc,
+  currentAgentId,
+  currentSdlcId,
+  onClose,
+}: StartDeliveryModalProps) {
   const { t } = useTranslation('workitem');
   const [form] = Form.useForm();
   useLocalizedValidation(form, open);
@@ -46,6 +57,7 @@ export function StartDeliveryModal({ open, workitemId, hasSdlc, onClose }: Start
   const accessCommand = useAccessCommand();
   const queryClient = useQueryClient();
   const squadId = Form.useWatch('squadId', form);
+  const selectedAgentId = Form.useWatch('agentId', form);
   // One token per modal session: duplicate submits and network retries of this
   // reassignment converge onto one restart round server-side; reopening the modal
   // and reassigning again is an explicit new round.
@@ -141,6 +153,23 @@ export function StartDeliveryModal({ open, workitemId, hasSdlc, onClose }: Start
     enabled: open && !!squadId,
   });
 
+  // 换绑提示只对已绑定流程的工单、且在选中成员数据可用时展示。
+  const selectedMember = members.find((member: SquadMember) => member.agentId === selectedAgentId);
+  const sameAgent = hasSdlc && currentAgentId != null && selectedAgentId === currentAgentId;
+  const targetSdlcId = selectedMember?.sdlcId ?? null;
+  const switchesSdlc = hasSdlc && !sameAgent && targetSdlcId != null && targetSdlcId !== currentSdlcId;
+  const targetSdlcName = selectedMember?.sdlcName?.trim()
+    || (targetSdlcId != null ? t('start.switchSdlcUnknownFlow') : '');
+  const reassignHint = !hasSdlc || selectedAgentId == null || !selectedMember
+    ? null
+    : sameAgent
+      ? t('start.switchSdlcSameAgent')
+      : targetSdlcId == null
+        ? t('start.switchSdlcNoFlow')
+        : switchesSdlc
+          ? t('start.switchSdlcHint', { name: targetSdlcName })
+          : t('start.switchSdlcSameFlow');
+
   const handleOk = async () => {
     const values = await form.validateFields().catch(() => null);
     if (!values) return;
@@ -148,6 +177,19 @@ export function StartDeliveryModal({ open, workitemId, hasSdlc, onClose }: Start
       ? (values.scheduledStartAt as Dayjs).toISOString()
       : undefined;
     accessCommand('READ_WRITE', hasSdlc ? t('start.reassignCommand') : t('start.deliveryCommand'), async () => {
+      if (switchesSdlc) {
+        const confirmed = await new Promise<boolean>((resolve) => {
+          Modal.confirm({
+            title: t('start.switchSdlcTitle'),
+            content: t('start.switchSdlcConfirm', { name: targetSdlcName }),
+            okText: t('start.switchSdlcOk'),
+            cancelText: t('start.switchSdlcCancel'),
+            onOk: () => resolve(true),
+            onCancel: () => resolve(false),
+          });
+        });
+        if (!confirmed) return;
+      }
       try {
         await assignMut.mutateAsync({
           id: workitemId,
@@ -159,7 +201,10 @@ export function StartDeliveryModal({ open, workitemId, hasSdlc, onClose }: Start
         // The restart itself is asynchronous (stop old executions, then start the
         // new round); its live progress shows in the delivery recovery panel.
         if (hasSdlc) {
-          message.success(i18n.t(scheduledStartAt ? 'workitem:start.reassignedScheduled' : 'workitem:start.reassigned'));
+          const successKey = scheduledStartAt
+            ? (switchesSdlc ? 'workitem:start.reassignedScheduledSwitched' : 'workitem:start.reassignedScheduled')
+            : (switchesSdlc ? 'workitem:start.reassignedSwitched' : 'workitem:start.reassigned');
+          message.success(i18n.t(successKey));
         } else {
           message.success(i18n.t('workitem:start.started'));
         }
@@ -217,6 +262,14 @@ export function StartDeliveryModal({ open, workitemId, hasSdlc, onClose }: Start
             }}
           />
         </Form.Item>
+        {reassignHint && (
+          <Alert
+            type={sameAgent ? 'success' : 'info'}
+            showIcon
+            message={reassignHint}
+            style={{ marginBottom: 16 }}
+          />
+        )}
         <Form.Item name="scheduledStartAt" label={t('start.scheduledTime')}>
           <DatePicker
             showTime

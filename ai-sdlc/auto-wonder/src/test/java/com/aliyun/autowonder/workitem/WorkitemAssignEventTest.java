@@ -38,6 +38,7 @@ class WorkitemAssignEventTest {
     private AgentDao agentDao;
     private AgentVersionDao agentVersionDao;
     private SquadMemberDao squadMemberDao;
+    private WorkitemServiceRestartHandler restartHandler;
     private WorkitemService service;
 
     @BeforeEach
@@ -65,6 +66,8 @@ class WorkitemAssignEventTest {
                 mock(com.aliyun.autowonder.websocket.PresenceManager.class),
                 mock(com.aliyun.autowonder.integration.common.ExternalWorkitemLinkDao.class),
                 publisher);
+        restartHandler = mock(WorkitemServiceRestartHandler.class);
+        service.bindRestartHandler(restartHandler);
     }
 
     private WorkitemDO row() {
@@ -149,20 +152,25 @@ class WorkitemAssignEventTest {
     }
 
     @Test
-    void skipsBindWhenAlreadyBound() {
+    void restartsFromTargetFlowEntryWhenAlreadyBound() {
         WorkitemDO bound = row();
         bound.setSdlcId(9L);
         bound.setCurrentStepId(5L);
         when(workitemDao.findById(100L)).thenReturn(bound);
         when(workitemDao.updateAssignee(eq(100L), eq(7L), eq("AGENT"), eq(42L), eq(1), eq(3L)))
                 .thenReturn(1);
+        when(agentDao.findById(42L)).thenReturn(agent(42L, 7L, 420L));
+        when(agentVersionDao.findById(420L)).thenReturn(agentVersion(420L, 7L, 42L, 9L));
+        when(stepDao.listBySdlc(9L)).thenReturn(List.of(step(50L, 7L, 1)));
+        when(workitemDao.updateSdlcAndStep(eq(100L), eq(7L), eq(9L), eq(50L), eq(1), eq(3L)))
+                .thenReturn(1);
 
         service.assign(100L, "AGENT", 42L, 99L, null, 7L, 3L);
 
-        verify(workitemDao, never()).updateSdlcAndStep(anyLong(), anyLong(), anyLong(), anyLong(), anyInt(), anyLong());
-        ArgumentCaptor<WorkitemAssignedEvent> cap = ArgumentCaptor.forClass(WorkitemAssignedEvent.class);
-        verify(publisher).publishEvent(cap.capture());
-        org.junit.jupiter.api.Assertions.assertEquals(5L, cap.getValue().getSdlcStepId());
+        verify(workitemDao).updateSdlcAndStep(100L, 7L, 9L, 50L, 1, 3L);
+        verify(restartHandler).restartAgentDelivery(eq(100L), eq(7L), eq(42L), eq(50L), isNull(),
+                isNull(), eq(3L), any(AssignmentActor.class));
+        verify(publisher, never()).publishEvent(any());
     }
 
     @Test

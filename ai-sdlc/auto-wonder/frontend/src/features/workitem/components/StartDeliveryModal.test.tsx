@@ -1,11 +1,12 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { message } from 'antd';
+import { Form, Modal, message } from 'antd';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { http, HttpResponse } from 'msw';
 import { server } from '@/test/mocks/server';
 import { useAuthStore } from '@/shared/auth/store';
+import { i18n } from '@/shared/i18n';
 import { ApiError } from '@/shared/types/common';
 import { StartDeliveryModal } from './StartDeliveryModal';
 import {
@@ -39,6 +40,7 @@ describe('StartDeliveryModal', () => {
   beforeEach(() => {
     window.localStorage.clear();
     mutateAsync.mockReset();
+    Modal.destroyAll();
   });
 
   it('keeps invalid delivery confirmation inline without assignment or closing', async () => {
@@ -592,5 +594,200 @@ describe('StartDeliveryModal', () => {
 
     expect(tokens[0]).toEqual(expect.any(String));
     expect(tokens[1]).not.toBe(tokens[0]);
+  });
+
+  const sdlcSquadHandlers = [
+    http.get('/api/squads', () =>
+      HttpResponse.json({
+        success: true, code: '0', message: '', traceId: null,
+        data: { list: [{ id: 1, name: 'AW交付组', description: '', memberCount: 2, gmtCreate: '' }], total: 1, pageNum: 1, pageSize: 100 },
+      }),
+    ),
+    http.get('/api/squads/:squadId/members', () =>
+      HttpResponse.json({
+        success: true, code: '0', message: '', traceId: null,
+        data: [
+          { agentId: 77, agentName: 'Agent-77', roleCode: 'AW_FS_DEV', sdlcId: 30004, sdlcName: '标准普通开发' },
+          { agentId: 88, agentName: 'Agent-88', roleCode: 'AW_FS_DEV', sdlcId: 30003, sdlcName: '需求澄清流程' },
+        ],
+      }),
+    ),
+  ];
+
+  function renderReassign(close = () => {}) {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <StartDeliveryModal
+          open
+          workitemId={10000}
+          hasSdlc
+          currentAgentId={88}
+          currentSdlcId={30003}
+          onClose={close}
+        />
+      </QueryClientProvider>,
+    );
+  }
+
+  it('shows the target flow and first-step restart hint for another agent', async () => {
+    server.use(...sdlcSquadHandlers);
+    renderReassign();
+    await pickSquadAndAgent();
+
+    expect(await screen.findByText('将切换到「标准普通开发」并从首步重新开始交付')).toBeInTheDocument();
+    expect(screen.queryByLabelText('SDLC 流程')).not.toBeInTheDocument();
+  });
+
+  it('localizes the switch hint without remounting the modal', async () => {
+    server.use(...sdlcSquadHandlers);
+    renderReassign();
+    await pickSquadAndAgent();
+
+    await act(async () => { await i18n.changeLanguage('en-US'); });
+    try {
+      expect(await screen.findByText('Switches to "标准普通开发" and restarts delivery from its first step')).toBeInTheDocument();
+    } finally {
+      await act(async () => { await i18n.changeLanguage('zh-CN'); });
+    }
+  });
+
+  it('requires confirmation before switching to a different flow', async () => {
+    useAuthStore.getState().setCurrentWorkspace({ id: 1, name: 'O', description: '' }, 'READ_WRITE');
+    mutateAsync.mockResolvedValue({ id: 10000 });
+    const success = vi.spyOn(message, 'success').mockImplementation(
+      () => undefined as unknown as ReturnType<typeof message.success>,
+    );
+    server.use(...sdlcSquadHandlers);
+    renderReassign();
+    await pickSquadAndAgent();
+    expect(await screen.findByText('将切换到「标准普通开发」并从首步重新开始交付')).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: /重\s*新\s*指\s*派/ }));
+    const confirmTitle = (await screen.findAllByText('切换交付流程？'))[0];
+    const confirmDialog = confirmTitle.closest('.ant-modal') as HTMLElement;
+    await userEvent.click(within(confirmDialog).getByRole('button', { name: /^取\s*消$/ }));
+    await waitFor(() => expect(screen.queryAllByText('切换交付流程？')).toHaveLength(0));
+    expect(mutateAsync).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByRole('button', { name: /重\s*新\s*指\s*派/ }));
+    await screen.findAllByText('切换交付流程？');
+    await userEvent.click(screen.getByRole('button', { name: /确\s*认\s*切\s*换/ }));
+
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(1));
+    const body = mutateAsync.mock.calls[0][0];
+    expect(body).toMatchObject({ assigneeRef: 77, squadId: 1 });
+    expect(body).not.toHaveProperty('sdlcId');
+    success.mockRestore();
+  });
+
+  it('reports the new flow in the success message after a switch', async () => {
+    useAuthStore.getState().setCurrentWorkspace({ id: 1, name: 'O', description: '' }, 'READ_WRITE');
+    mutateAsync.mockResolvedValue({ id: 10000 });
+    const success = vi.spyOn(message, 'success').mockImplementation(
+      () => undefined as unknown as ReturnType<typeof message.success>,
+    );
+    server.use(...sdlcSquadHandlers);
+    renderReassign();
+    await pickSquadAndAgent();
+
+    await userEvent.click(screen.getByRole('button', { name: /重\s*新\s*指\s*派/ }));
+    await screen.findAllByText('切换交付流程？');
+    await userEvent.click(screen.getByRole('button', { name: /确\s*认\s*切\s*换/ }));
+
+    await waitFor(() => expect(success).toHaveBeenCalledWith('已重新指派，正在按新流程重启交付'));
+    success.mockRestore();
+  });
+
+  it('treats the same agent as an unchanged flow without confirmation', async () => {
+    useAuthStore.getState().setCurrentWorkspace({ id: 1, name: 'O', description: '' }, 'READ_WRITE');
+    mutateAsync.mockResolvedValue({ id: 10000 });
+    const success = vi.spyOn(message, 'success').mockImplementation(
+      () => undefined as unknown as ReturnType<typeof message.success>,
+    );
+    server.use(...sdlcSquadHandlers);
+    renderReassign();
+    await userEvent.click(screen.getByLabelText('小队'));
+    await userEvent.click(await screen.findByText('AW交付组'));
+    await userEvent.click(await screen.findByLabelText('首步执行 Agent'));
+    await userEvent.click(await screen.findByText('Agent-88 (AW_FS_DEV)'));
+
+    expect(await screen.findByText('同一数字人，流程不变')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: /重\s*新\s*指\s*派/ }));
+
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(1));
+    expect(screen.queryAllByText('切换交付流程？')).toHaveLength(0);
+    success.mockRestore();
+  });
+
+  it('explains the default-flow fallback when the selected member has no flow', async () => {
+    server.use(
+      http.get('/api/squads', () =>
+        HttpResponse.json({
+          success: true, code: '0', message: '', traceId: null,
+          data: { list: [{ id: 1, name: 'AW交付组', description: '', memberCount: 1, gmtCreate: '' }], total: 1, pageNum: 1, pageSize: 100 },
+        }),
+      ),
+      http.get('/api/squads/:squadId/members', () =>
+        HttpResponse.json({
+          success: true, code: '0', message: '', traceId: null,
+          data: [{ agentId: 77, agentName: 'Agent-77', roleCode: 'AW_FS_DEV' }],
+        }),
+      ),
+    );
+    renderReassign();
+    await pickSquadAndAgent();
+
+    expect(await screen.findByText('目标数字人未配置交付流程，将按平台默认流程处理；无默认流程时沿用当前流程')).toBeInTheDocument();
+    expect(screen.queryByText(/将切换到/)).not.toBeInTheDocument();
+  });
+
+  it('does not show reassign hints for a first delivery', async () => {
+    server.use(...sdlcSquadHandlers);
+    renderModal();
+    await pickSquadAndAgent();
+
+    expect(screen.queryByText(/将切换到/)).not.toBeInTheDocument();
+    expect(screen.queryByText('同一数字人，流程不变')).not.toBeInTheDocument();
+  });
+
+  it('keeps submission working without a flow name when members fail to load', async () => {
+    useAuthStore.getState().setCurrentWorkspace({ id: 1, name: 'O', description: '' }, 'READ_WRITE');
+    mutateAsync.mockResolvedValue({ id: 10000 });
+    let memberRequests = 0;
+    server.use(
+      http.get('/api/squads', () =>
+        HttpResponse.json({
+          success: true, code: '0', message: '', traceId: null,
+          data: { list: [{ id: 1, name: 'AW交付组', description: '', memberCount: 1, gmtCreate: '' }], total: 1, pageNum: 1, pageSize: 100 },
+        }),
+      ),
+      http.get('/api/squads/:squadId/members', () => {
+        memberRequests += 1;
+        return HttpResponse.json({ success: false, code: '50000', message: 'boom', traceId: null, data: null }, { status: 500 });
+      }),
+    );
+    const useForm = Form.useForm;
+    let form: ReturnType<typeof Form.useForm>[0];
+    const formSpy = vi.spyOn(Form, 'useForm').mockImplementation((instance) => {
+      const result = useForm(instance);
+      form = result[0];
+      return result;
+    });
+    renderReassign();
+
+    await screen.findByLabelText('小队');
+    await act(async () => { form!.setFieldsValue({ squadId: 1, agentId: 77 }); });
+    await waitFor(() => expect(memberRequests).toBe(1));
+    expect(screen.queryByText(/将切换到/)).not.toBeInTheDocument();
+    const submit = screen.getByRole('button', { name: /重\s*新\s*指\s*派/ });
+    expect(submit).toBeEnabled();
+
+    await userEvent.click(submit);
+
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ assigneeRef: 77, squadId: 1 }),
+    ));
+    formSpy.mockRestore();
   });
 });

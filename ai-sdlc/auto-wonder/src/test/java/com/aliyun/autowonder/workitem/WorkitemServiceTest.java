@@ -126,6 +126,14 @@ class WorkitemServiceTest {
         SdlcStepDO entry = new SdlcStepDO();
         entry.setId(300031L);
         when(sdlcResolver.firstStep(100L, 30003L)).thenReturn(entry);
+        // Reassignment now resolves the target agent's SDLC; keep the existing fixtures
+        // valid without per-test stubs. Resolution still falls back to the current flow.
+        for (long targetAgentId : new long[]{10002L, 40013L, 40014L}) {
+            AgentDO targetAgent = new AgentDO();
+            targetAgent.setId(targetAgentId);
+            targetAgent.setTenantId(100L);
+            when(agentDao.findById(targetAgentId)).thenReturn(targetAgent);
+        }
     }
 
     private StatusTemplateDO template(long id) {
@@ -3329,6 +3337,311 @@ class WorkitemServiceTest {
         verify(restartHandler).restartAgentDelivery(eq(500L), eq(100L), eq(40014L), eq(300031L), isNull(),
                 isNull(), eq(7L), isA(AssignmentActor.class));
         verify(eventPublisher, never()).publishEvent(isA(WorkitemAssignedEvent.class));
+    }
+
+    @Test
+    void reassignToDifferentAgentSwitchesToTargetSdlcEntry() {
+        WorkitemDO w = assignableWorkitem();
+        w.setAssigneeType("AGENT");
+        w.setAssigneeRef(40014L);
+        w.setCurrentStepId(300035L);
+        WorkitemDO restarted = assignableWorkitem();
+        restarted.setVersion(4);
+        restarted.setAssigneeType("AGENT");
+        restarted.setAssigneeRef(40015L);
+        restarted.setCurrentStepId(300035L);
+        when(workitemDao.findById(500L)).thenReturn(w, restarted);
+        when(workitemDao.updateAssignee(500L, 100L, "AGENT", 40015L, 3, 7L)).thenReturn(1);
+        AgentDO target = new AgentDO();
+        target.setId(40015L);
+        target.setTenantId(100L);
+        when(agentDao.findById(40015L)).thenReturn(target);
+        when(sdlcResolver.resolveSdlcId(100L, 40015L)).thenReturn(30004L);
+        SdlcStepDO newEntry = new SdlcStepDO();
+        newEntry.setId(300041L);
+        when(sdlcResolver.firstStep(100L, 30004L)).thenReturn(newEntry);
+        when(workitemDao.updateSdlcAndStep(500L, 100L, 30004L, 300041L, 4, 7L)).thenReturn(1);
+
+        service.assign(500L, "AGENT", 40015L, null, null, null, 100L, 7L);
+
+        // The new agent's flow replaces the old binding and the round starts from its entry.
+        verify(workitemDao).updateSdlcAndStep(500L, 100L, 30004L, 300041L, 4, 7L);
+        verify(restartHandler).restartAgentDelivery(eq(500L), eq(100L), eq(40015L), eq(300041L), isNull(),
+                isNull(), eq(7L), isA(AssignmentActor.class));
+    }
+
+    @Test
+    void reassignToDifferentAgentWritesSdlcSwitchEvent() {
+        WorkitemDO w = assignableWorkitem();
+        w.setAssigneeType("AGENT");
+        w.setAssigneeRef(40014L);
+        w.setCurrentStepId(300035L);
+        WorkitemDO restarted = assignableWorkitem();
+        restarted.setVersion(4);
+        restarted.setAssigneeType("AGENT");
+        restarted.setAssigneeRef(40015L);
+        restarted.setCurrentStepId(300035L);
+        when(workitemDao.findById(500L)).thenReturn(w, restarted);
+        when(workitemDao.updateAssignee(500L, 100L, "AGENT", 40015L, 3, 7L)).thenReturn(1);
+        AgentDO target = new AgentDO();
+        target.setId(40015L);
+        target.setTenantId(100L);
+        when(agentDao.findById(40015L)).thenReturn(target);
+        when(sdlcResolver.resolveSdlcId(100L, 40015L)).thenReturn(30004L);
+        SdlcStepDO newEntry = new SdlcStepDO();
+        newEntry.setId(300041L);
+        when(sdlcResolver.firstStep(100L, 30004L)).thenReturn(newEntry);
+        when(workitemDao.updateSdlcAndStep(500L, 100L, 30004L, 300041L, 4, 7L)).thenReturn(1);
+        SdlcDO oldSdlc = new SdlcDO();
+        oldSdlc.setId(30003L);
+        oldSdlc.setTenantId(100L);
+        oldSdlc.setName("需求澄清流程");
+        SdlcDO newSdlc = new SdlcDO();
+        newSdlc.setId(30004L);
+        newSdlc.setTenantId(100L);
+        newSdlc.setName("标准普通开发");
+        when(sdlcDao.findById(30003L)).thenReturn(oldSdlc);
+        when(sdlcDao.findById(30004L)).thenReturn(newSdlc);
+
+        service.assign(500L, "AGENT", 40015L, null, null, null, 100L, 7L);
+
+        ArgumentCaptor<WorkitemEventDO> captor = ArgumentCaptor.forClass(WorkitemEventDO.class);
+        verify(eventDao, times(2)).insert(captor.capture());
+        WorkitemEventDO switchEvent = captor.getAllValues().stream()
+                .filter(e -> WorkitemEventType.SDLC_SWITCH.code().equals(e.getEventType()))
+                .findFirst().orElseThrow();
+        assertEquals("需求澄清流程", switchEvent.getFromVal());
+        assertEquals("标准普通开发", switchEvent.getToVal());
+        assertEquals("HUMAN", switchEvent.getActorType());
+        assertEquals(Long.valueOf(7L), switchEvent.getActorRef());
+        assertTrue(switchEvent.getDetailJson().contains("\"fromSdlcId\":30003"));
+        assertTrue(switchEvent.getDetailJson().contains("\"toSdlcId\":30004"));
+    }
+
+    @Test
+    void timelineRendersSdlcSwitchWithFlowNames() {
+        WorkitemEventDO event = new WorkitemEventDO();
+        event.setId(1L);
+        event.setWorkitemId(500L);
+        event.setTenantId(100L);
+        event.setEventType(WorkitemEventType.SDLC_SWITCH.code());
+        event.setFromVal("需求澄清流程");
+        event.setToVal("标准普通开发");
+        event.setActorType("HUMAN");
+        event.setActorRef(7L);
+        when(workitemDao.findById(500L)).thenReturn(assignableWorkitem());
+        when(eventDao.listByWorkitem(500L)).thenReturn(List.of(event));
+
+        assertEquals("交付流程已切换：需求澄清流程 → 标准普通开发",
+                service.getUnifiedTimeline(500L).get(0).getContent());
+    }
+
+    @Test
+    void reassignToDifferentAgentWithoutResolvableSdlcKeepsCurrentFlow() {
+        WorkitemDO w = assignableWorkitem();
+        w.setAssigneeType("AGENT");
+        w.setAssigneeRef(40014L);
+        w.setCurrentStepId(300035L);
+        w.setWorkType("REQ");
+        WorkitemDO restarted = assignableWorkitem();
+        restarted.setVersion(4);
+        restarted.setAssigneeType("AGENT");
+        restarted.setAssigneeRef(40016L);
+        restarted.setCurrentStepId(300035L);
+        restarted.setWorkType("REQ");
+        when(workitemDao.findById(500L)).thenReturn(w, restarted);
+        when(workitemDao.updateAssignee(500L, 100L, "AGENT", 40016L, 3, 7L)).thenReturn(1);
+        AgentDO target = new AgentDO();
+        target.setId(40016L);
+        target.setTenantId(100L);
+        when(agentDao.findById(40016L)).thenReturn(target);
+        when(sdlcResolver.resolveSdlcId(100L, 40016L)).thenReturn(null);
+        when(sdlcDao.findDefault("REQ")).thenReturn(null);
+        when(workitemDao.updateSdlcAndStep(500L, 100L, 30003L, 300031L, 4, 7L)).thenReturn(1);
+
+        service.assign(500L, "AGENT", 40016L, null, null, null, 100L, 7L);
+
+        // A target without any resolvable flow must not block the reassignment.
+        verify(workitemDao).updateSdlcAndStep(500L, 100L, 30003L, 300031L, 4, 7L);
+        verify(restartHandler).restartAgentDelivery(eq(500L), eq(100L), eq(40016L), eq(300031L), isNull(),
+                isNull(), eq(7L), isA(AssignmentActor.class));
+        verify(eventDao, never()).insert(argThat(e -> WorkitemEventType.SDLC_SWITCH.code().equals(e.getEventType())));
+    }
+
+    @Test
+    void reassignToDifferentAgentFallsBackToWorkTypeDefaultSdlc() {
+        WorkitemDO w = assignableWorkitem();
+        w.setAssigneeType("AGENT");
+        w.setAssigneeRef(40014L);
+        w.setCurrentStepId(300035L);
+        w.setWorkType("REQ");
+        WorkitemDO restarted = assignableWorkitem();
+        restarted.setVersion(4);
+        restarted.setAssigneeType("AGENT");
+        restarted.setAssigneeRef(40020L);
+        restarted.setCurrentStepId(300035L);
+        restarted.setWorkType("REQ");
+        when(workitemDao.findById(500L)).thenReturn(w, restarted);
+        when(workitemDao.updateAssignee(500L, 100L, "AGENT", 40020L, 3, 7L)).thenReturn(1);
+        AgentDO target = new AgentDO();
+        target.setId(40020L);
+        target.setTenantId(100L);
+        when(agentDao.findById(40020L)).thenReturn(target);
+        when(sdlcResolver.resolveSdlcId(100L, 40020L)).thenReturn(null);
+        SdlcDO defaultSdlc = new SdlcDO();
+        defaultSdlc.setId(30004L);
+        defaultSdlc.setTenantId(100L);
+        defaultSdlc.setName("默认开发流程");
+        when(sdlcDao.findDefault("REQ")).thenReturn(defaultSdlc);
+        SdlcStepDO entry = new SdlcStepDO();
+        entry.setId(300041L);
+        when(sdlcResolver.firstStep(100L, 30004L)).thenReturn(entry);
+        when(workitemDao.updateSdlcAndStep(500L, 100L, 30004L, 300041L, 4, 7L)).thenReturn(1);
+        SdlcDO oldSdlc = new SdlcDO();
+        oldSdlc.setId(30003L);
+        oldSdlc.setTenantId(100L);
+        oldSdlc.setName("需求澄清流程");
+        when(sdlcDao.findById(30003L)).thenReturn(oldSdlc);
+        when(sdlcDao.findById(30004L)).thenReturn(defaultSdlc);
+
+        service.assign(500L, "AGENT", 40020L, null, null, null, 100L, 7L);
+
+        verify(workitemDao).updateSdlcAndStep(500L, 100L, 30004L, 300041L, 4, 7L);
+        verify(restartHandler).restartAgentDelivery(eq(500L), eq(100L), eq(40020L), eq(300041L), isNull(),
+                isNull(), eq(7L), isA(AssignmentActor.class));
+        ArgumentCaptor<WorkitemEventDO> captor = ArgumentCaptor.forClass(WorkitemEventDO.class);
+        verify(eventDao, times(2)).insert(captor.capture());
+        WorkitemEventDO switchEvent = captor.getAllValues().stream()
+                .filter(e -> WorkitemEventType.SDLC_SWITCH.code().equals(e.getEventType()))
+                .findFirst().orElseThrow();
+        assertEquals("默认开发流程", switchEvent.getToVal());
+    }
+
+    @Test
+    void reassignToDifferentAgentWithScheduledStartSwitchesFlowImmediately() {
+        WorkitemDO w = assignableWorkitem();
+        w.setAssigneeType("AGENT");
+        w.setAssigneeRef(40014L);
+        w.setCurrentStepId(300035L);
+        WorkitemDO restarted = assignableWorkitem();
+        restarted.setVersion(4);
+        restarted.setAssigneeType("AGENT");
+        restarted.setAssigneeRef(40021L);
+        restarted.setCurrentStepId(300035L);
+        when(workitemDao.findById(500L)).thenReturn(w, restarted);
+        when(workitemDao.updateAssignee(500L, 100L, "AGENT", 40021L, 3, 7L)).thenReturn(1);
+        AgentDO target = new AgentDO();
+        target.setId(40021L);
+        target.setTenantId(100L);
+        when(agentDao.findById(40021L)).thenReturn(target);
+        when(sdlcResolver.resolveSdlcId(100L, 40021L)).thenReturn(30004L);
+        SdlcStepDO entry = new SdlcStepDO();
+        entry.setId(300041L);
+        when(sdlcResolver.firstStep(100L, 30004L)).thenReturn(entry);
+        when(workitemDao.updateSdlcAndStep(500L, 100L, 30004L, 300041L, 4, 7L)).thenReturn(1);
+        Date planned = new Date(System.currentTimeMillis() + 3_600_000L);
+        when(workitemDao.updateScheduledStartAt(500L, 100L, planned, 4, 7L)).thenReturn(1);
+
+        service.assign(500L, "AGENT", 40021L, null, null, planned, 100L, 7L);
+
+        verify(workitemDao).updateSdlcAndStep(500L, 100L, 30004L, 300041L, 4, 7L);
+        verify(restartHandler).restartAgentDelivery(eq(500L), eq(100L), eq(40021L), eq(300041L), isNull(),
+                eq(planned), eq(7L), isA(AssignmentActor.class));
+    }
+
+    @Test
+    void reassignToDifferentAgentWithSteplessTargetSdlcKeepsCurrentFlow() {
+        WorkitemDO w = assignableWorkitem();
+        w.setAssigneeType("AGENT");
+        w.setAssigneeRef(40014L);
+        w.setCurrentStepId(300035L);
+        WorkitemDO restarted = assignableWorkitem();
+        restarted.setVersion(4);
+        restarted.setAssigneeType("AGENT");
+        restarted.setAssigneeRef(40017L);
+        restarted.setCurrentStepId(300035L);
+        when(workitemDao.findById(500L)).thenReturn(w, restarted);
+        when(workitemDao.updateAssignee(500L, 100L, "AGENT", 40017L, 3, 7L)).thenReturn(1);
+        AgentDO target = new AgentDO();
+        target.setId(40017L);
+        target.setTenantId(100L);
+        when(agentDao.findById(40017L)).thenReturn(target);
+        when(sdlcResolver.resolveSdlcId(100L, 40017L)).thenReturn(30004L);
+        when(sdlcResolver.firstStep(100L, 30004L)).thenReturn(null);
+        when(workitemDao.updateSdlcAndStep(500L, 100L, 30003L, 300031L, 4, 7L)).thenReturn(1);
+
+        service.assign(500L, "AGENT", 40017L, null, null, null, 100L, 7L);
+
+        verify(workitemDao).updateSdlcAndStep(500L, 100L, 30003L, 300031L, 4, 7L);
+        verify(restartHandler).restartAgentDelivery(eq(500L), eq(100L), eq(40017L), eq(300031L), isNull(),
+                isNull(), eq(7L), isA(AssignmentActor.class));
+        verify(eventDao, never()).insert(argThat(e -> WorkitemEventType.SDLC_SWITCH.code().equals(e.getEventType())));
+    }
+
+    @Test
+    void reassignToDifferentAgentWithSameSdlcOnlyResetsEntryStep() {
+        WorkitemDO w = assignableWorkitem();
+        w.setAssigneeType("AGENT");
+        w.setAssigneeRef(40014L);
+        w.setCurrentStepId(300035L);
+        WorkitemDO restarted = assignableWorkitem();
+        restarted.setVersion(4);
+        restarted.setAssigneeType("AGENT");
+        restarted.setAssigneeRef(40018L);
+        restarted.setCurrentStepId(300035L);
+        when(workitemDao.findById(500L)).thenReturn(w, restarted);
+        when(workitemDao.updateAssignee(500L, 100L, "AGENT", 40018L, 3, 7L)).thenReturn(1);
+        AgentDO target = new AgentDO();
+        target.setId(40018L);
+        target.setTenantId(100L);
+        when(agentDao.findById(40018L)).thenReturn(target);
+        when(sdlcResolver.resolveSdlcId(100L, 40018L)).thenReturn(30003L);
+        when(workitemDao.updateSdlcAndStep(500L, 100L, 30003L, 300031L, 4, 7L)).thenReturn(1);
+
+        service.assign(500L, "AGENT", 40018L, null, null, null, 100L, 7L);
+
+        verify(workitemDao).updateSdlcAndStep(500L, 100L, 30003L, 300031L, 4, 7L);
+        verify(restartHandler).restartAgentDelivery(eq(500L), eq(100L), eq(40018L), eq(300031L), isNull(),
+                isNull(), eq(7L), isA(AssignmentActor.class));
+        verify(eventDao, never()).insert(argThat(e -> WorkitemEventType.SDLC_SWITCH.code().equals(e.getEventType())));
+    }
+
+    @Test
+    void reassignToSameAgentDoesNotResolveTargetSdlc() {
+        WorkitemDO w = assignableWorkitem();
+        w.setAssigneeType("AGENT");
+        w.setAssigneeRef(40014L);
+        when(workitemDao.findById(500L)).thenReturn(w);
+
+        service.assign(500L, "AGENT", 40014L, null, null, null, 100L, 7L);
+
+        verify(sdlcResolver, never()).resolveSdlcId(anyLong(), anyLong());
+        verify(workitemDao, never()).updateSdlcAndStep(anyLong(), anyLong(), anyLong(), anyLong(), anyInt(), anyLong());
+        verify(eventDao, never()).insert(argThat(e -> WorkitemEventType.SDLC_SWITCH.code().equals(e.getEventType())));
+    }
+
+    @Test
+    void reassignToCrossTenantAgentFailsBeforeRestart() {
+        WorkitemDO w = assignableWorkitem();
+        w.setAssigneeType("AGENT");
+        w.setAssigneeRef(40014L);
+        w.setCurrentStepId(300035L);
+        when(workitemDao.findById(500L)).thenReturn(w);
+        when(workitemDao.updateAssignee(500L, 100L, "AGENT", 40019L, 3, 7L)).thenReturn(1);
+        AgentDO target = new AgentDO();
+        target.setId(40019L);
+        target.setTenantId(200L);
+        when(agentDao.findById(40019L)).thenReturn(target);
+
+        BizException ex = assertThrows(BizException.class,
+                () -> service.assign(500L, "AGENT", 40019L, null, null, null, 100L, 7L));
+
+        assertEquals(ErrorCode.AGENT_NOT_FOUND.getCode(), ex.getCode());
+        // The assignee write happens before resolution; rollback keeps both assignee and flow unchanged.
+        verify(workitemDao).updateAssignee(500L, 100L, "AGENT", 40019L, 3, 7L);
+        verify(workitemDao, never()).updateSdlcAndStep(anyLong(), anyLong(), anyLong(), anyLong(), anyInt(), anyLong());
+        verify(restartHandler, never()).restartAgentDelivery(anyLong(), anyLong(), any(), any(),
+                any(), any(), anyLong(), any());
     }
 
     @Test

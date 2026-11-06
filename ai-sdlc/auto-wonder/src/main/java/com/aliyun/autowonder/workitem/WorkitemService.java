@@ -959,17 +959,49 @@ public class WorkitemService {
                 // round and publish the restart event that stops old formal executions before
                 // the new round runs. WorkitemAssignedEvent must NOT also fire — that would
                 // enqueue a second, uncontrolled dispatch for the same reassignment.
-                SdlcStepDO entry = sdlcResolver.firstStep(tenantId, reloaded.getSdlcId());
+                // A reassignment to a different agent takes over that agent's current SDLC.
+                // Resolve before restarting so the new round starts from the target flow's
+                // entry step; a target without a usable flow keeps the current binding so
+                // the reassignment itself is never blocked.
+                Long targetSdlcId = reloaded.getSdlcId();
+                SdlcStepDO entry = null;
+                if (!sameAssignee) {
+                    try {
+                        Long resolvedSdlcId = resolveAgentSdlcId(assigneeRef, tenantId, reloaded.getWorkType());
+                        SdlcStepDO resolvedEntry = sdlcResolver.firstStep(tenantId, resolvedSdlcId);
+                        if (resolvedEntry != null) {
+                            targetSdlcId = resolvedSdlcId;
+                            entry = resolvedEntry;
+                        } else {
+                            log.info("Workitem {} reassign to agent {} resolved SDLC {} without steps; keeping {}",
+                                    id, assigneeRef, resolvedSdlcId, targetSdlcId);
+                        }
+                    } catch (BizException e) {
+                        if (!ErrorCode.SDLC_NOT_FOUND.getCode().equals(e.getCode())) {
+                            throw e;
+                        }
+                        log.info("Workitem {} reassign to agent {} has no resolvable SDLC; keeping {}",
+                                id, assigneeRef, targetSdlcId);
+                    }
+                }
+                if (entry == null) {
+                    entry = sdlcResolver.firstStep(tenantId, targetSdlcId);
+                }
                 if (entry == null) {
                     throw new BizException(ErrorCode.SDLC_STEP_NOT_FOUND);
                 }
-                if (!entry.getId().equals(reloaded.getCurrentStepId())) {
-                    int rows = workitemDao.updateSdlcAndStep(id, tenantId, reloaded.getSdlcId(),
+                Long currentSdlcId = reloaded.getSdlcId();
+                boolean sdlcChanged = !targetSdlcId.equals(currentSdlcId);
+                if (sdlcChanged || !entry.getId().equals(reloaded.getCurrentStepId())) {
+                    int rows = workitemDao.updateSdlcAndStep(id, tenantId, targetSdlcId,
                             entry.getId(), reloaded.getVersion(), modifierUserId);
                     if (rows == 0) {
                         throw new BizException(ErrorCode.WORKITEM_VERSION_CONFLICT);
                     }
                     reloaded = workitemDao.findById(id);
+                }
+                if (sdlcChanged) {
+                    writeSdlcSwitchEvent(tenantId, id, currentSdlcId, targetSdlcId, effectiveActor);
                 }
                 restartHandler.restartAgentDelivery(id, tenantId, assigneeRef, entry.getId(),
                         restartToken, scheduledStartAt, modifierUserId, effectiveActor);
@@ -3201,6 +3233,14 @@ public class WorkitemService {
             int count = detail.getJSONArray("affectedDispatches") == null ? 0 : detail.getJSONArray("affectedDispatches").size();
             return SystemMessages.render(key, new Object[]{count}, "交付控制: action=" + action + ", affected=" + count);
         }
+        if (eventType == WorkitemEventType.SDLC_SWITCH) {
+            String fromName = event.getFromVal() == null || event.getFromVal().isBlank()
+                    ? "-" : event.getFromVal();
+            String toName = event.getToVal() == null || event.getToVal().isBlank()
+                    ? "-" : event.getToVal();
+            return SystemMessages.render("workitem.event.sdlc_switch", new Object[]{fromName, toName},
+                    "交付流程已切换: " + fromName + " → " + toName);
+        }
         if (eventType == null) {
             if (event.getFromVal() != null && event.getToVal() != null) return event.getEventType() + ": " + fromVal + " → " + toVal;
             return event.getToVal() == null ? event.getEventType() : event.getEventType() + ": " + toVal;
@@ -3412,6 +3452,28 @@ public class WorkitemService {
         e.setActorRef(actorRef);
         e.setDetailJson(detailJson);
         eventDao.insert(e);
+    }
+
+    private void writeSdlcSwitchEvent(long tenantId, long workitemId, Long fromSdlcId, Long toSdlcId,
+                                      AssignmentActor actor) {
+        JSONObject detail = new JSONObject();
+        detail.put("fromSdlcId", fromSdlcId);
+        detail.put("toSdlcId", toSdlcId);
+        writeEvent(tenantId, workitemId, WorkitemEventType.SDLC_SWITCH.code(),
+                sdlcDisplayName(tenantId, fromSdlcId), sdlcDisplayName(tenantId, toSdlcId),
+                actor.type(), actor.ref(), detail.toJSONString());
+    }
+
+    private String sdlcDisplayName(long tenantId, Long sdlcId) {
+        if (sdlcId == null) {
+            return null;
+        }
+        SdlcDO sdlc = sdlcDao.findById(sdlcId);
+        if (sdlc == null || !Long.valueOf(tenantId).equals(sdlc.getTenantId())
+                || sdlc.getName() == null || sdlc.getName().isBlank()) {
+            return "-";
+        }
+        return sdlc.getName();
     }
 
     private String assignDetailJson(String fromType, String toType) {

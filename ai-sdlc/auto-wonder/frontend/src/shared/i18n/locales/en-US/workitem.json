@@ -947,6 +947,8 @@
     "deliveryCommand": "Start work item delivery",
     "reassignedScheduled": "Reassigned. Delivery will restart at the scheduled time.",
     "reassigned": "Reassigned. Restarting delivery.",
+    "reassignedScheduledSwitched": "Reassigned. Delivery restarts on the new flow at the scheduled time.",
+    "reassignedSwitched": "Reassigned. Restarting delivery on the new flow.",
     "started": "Delivery started.",
     "failed": "Could not start delivery. Please try again later.",
     "reassign": "Reassign",
@@ -959,7 +961,16 @@
     "memberPlaceholder": "Choose a squad member",
     "chooseSquadFirst": "Choose a squad first",
     "scheduledTime": "Scheduled start time (optional)",
-    "timePlaceholder": "Leave empty to execute now"
+    "timePlaceholder": "Leave empty to execute now",
+    "switchSdlcHint": "Switches to \"{{name}}\" and restarts delivery from its first step",
+    "switchSdlcSameAgent": "Same agent. The delivery flow stays unchanged.",
+    "switchSdlcSameFlow": "Same delivery flow. Delivery restarts from the first step.",
+    "switchSdlcNoFlow": "The selected agent has no delivery flow. The platform default flow applies; if none exists, the current flow is kept.",
+    "switchSdlcUnknownFlow": "the target flow",
+    "switchSdlcTitle": "Switch delivery flow?",
+    "switchSdlcConfirm": "Switches to \"{{name}}\" and restarts delivery from its first step. The running delivery will be stopped.",
+    "switchSdlcOk": "Switch flow",
+    "switchSdlcCancel": "Cancel"
   },
   "usage": {
     "model": "Model:",

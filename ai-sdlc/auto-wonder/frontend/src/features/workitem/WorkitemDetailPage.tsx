@@ -383,6 +383,8 @@ export function WorkitemDetailPage() {
         open={deliveryOpen}
         workitemId={id}
         hasSdlc={hasSdlc}
+        currentAgentId={workitem.assigneeType === 'AGENT' ? workitem.assigneeRef : null}
+        currentSdlcId={workitem.sdlcId}
         onClose={() => setDeliveryOpen(false)}
       />
       <AssignHumanModal
