@@ -14,6 +14,7 @@ public interface AgentConversationElicitationDao {
     int claimAnswerDelivery(@Param("id") long id, @Param("now") Date now, @Param("next") Date next);
     List<AgentConversationElicitationDO> listQuestionHistory(@Param("tenantId") long tenantId,
             @Param("conversationId") long conversationId);
+    int countByTurn(@Param("tenantId") long tenantId, @Param("turnId") long turnId);
     List<AgentConversationElicitationDO> listAnswerDeliveries(@Param("tenantId") long tenantId,
             @Param("conversationId") long conversationId);
     AgentConversationElicitationDO findByRequestIdForUpdate(@Param("tenantId") long tenantId,

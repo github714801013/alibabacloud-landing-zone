@@ -25,7 +25,8 @@ public class ImNotificationFormatter {
                         new Object[]{String.valueOf(task.workitemId())}, task.workitemTitle(), locale)
                 : safeText(task.workitemTitle());
         if (ImNotificationTask.TYPE_APPROVAL_REQUIRED.equals(task.notificationType())
-                || ImNotificationTask.TYPE_INPUT_REQUIRED.equals(task.notificationType())) {
+                || ImNotificationTask.TYPE_INPUT_REQUIRED.equals(task.notificationType())
+                || ImNotificationTask.TYPE_CLARIFICATION_REPLY.equals(task.notificationType())) {
             return render("human_input", locale, title, workspace, safeText(task.commentContentMd()),
                     workitemLink(normalizedBaseUrl, task, context.tenantId()));
         }

@@ -378,7 +378,8 @@ public class ImNotificationWorker implements DisposableBean {
         String notificationType = task == null ? null : task.notificationType();
         if (task != null && task.isPreRendered()) return task.workitemTitle();
         if (ImNotificationTask.TYPE_APPROVAL_REQUIRED.equals(notificationType)
-                || ImNotificationTask.TYPE_INPUT_REQUIRED.equals(notificationType)) return task.workitemTitle();
+                || ImNotificationTask.TYPE_INPUT_REQUIRED.equals(notificationType)
+                || ImNotificationTask.TYPE_CLARIFICATION_REPLY.equals(notificationType)) return task.workitemTitle();
         if (ImNotificationTask.TYPE_COMMENT_MENTION.equals(notificationType)) {
             return SystemMessages.render("im.push.comment", null, "工单评论提醒", task.deliveryLocale());
         }

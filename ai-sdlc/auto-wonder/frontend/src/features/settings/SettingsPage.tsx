@@ -56,6 +56,7 @@ const NOTIFY_TYPES = [
   { type: 'WORKITEM_ASSIGNED', labelKey: 'assigned' },
   { type: 'COMMENT_MENTION', labelKey: 'commentMention' },
   { type: 'WORKITEM_INPUT_REQUIRED', labelKey: 'inputRequired' },
+  { type: 'WORKITEM_CLARIFICATION_REPLY', labelKey: 'clarificationReply' },
   { type: 'WORKITEM_APPROVAL_REQUIRED', labelKey: 'approvalRequired' },
   { type: 'DELIVERY_BLOCKED', labelKey: 'deliveryBlocked' },
   { type: 'AI_SESSION_DONE', labelKey: 'aiDone' },

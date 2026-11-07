@@ -173,6 +173,8 @@ class AgentConversationServiceTest {
         // svc 是类级单例，逐一清掉用例注入的可选协作者，避免跨用例串味。
         svc.setConversationUsageService(null);
         svc.setAdmissionService(null);
+        svc.setEventPublisher(null);
+        svc.setElicitationDao(null);
         TransactionSynchronizationManager.initSynchronization();
         TransactionSynchronizationManager.setActualTransactionActive(true);
         when(turnDao.acquireConversationLock(anyString(), anyInt())).thenReturn(1);
@@ -1006,6 +1008,143 @@ class AgentConversationServiceTest {
         verify(convDao).updateCliSessionRef(1L, 77L, "sess-123");
         verify(browser).publishStatusEvent(1L, 77L, 55L, "completed");
         verify(sinkRegistry).find("WORKITEM_CLARIFICATION");
+    }
+
+    @Test
+    void clarificationAckPublishesReplyCompletedForTheRequester() {
+        AgentConversationDO conv = new AgentConversationDO();
+        conv.setId(77L);
+        conv.setTenantId(1L);
+        conv.setAgentId(3L);
+        conv.setChannel(WorkitemClarificationConversationService.CHANNEL);
+        conv.setBizRefType(WorkitemClarificationConversationService.BIZ_REF_TYPE);
+        conv.setBizRefId(10L);
+        conv.setExecutorId(9L);
+        when(convDao.findById(1L, 77L)).thenReturn(conv);
+        AgentConversationTurnDO inTurn = processingInboundTurn(77L);
+        inTurn.setSubmittedUserId(701L);
+        when(turnDao.findByConversationTurn(1L, 77L, 55L)).thenReturn(inTurn);
+        when(turnDao.updateInboundStatusIfProcessing(1L, 77L, 55L, "SUCCESS", null)).thenReturn(1);
+        when(turnDao.insert(any())).thenReturn(1);
+        var publisher = mock(org.springframework.context.ApplicationEventPublisher.class);
+        var elicitations = mock(AgentConversationElicitationDao.class);
+        when(elicitations.countByTurn(1L, 55L)).thenReturn(0);
+        svc.setEventPublisher(publisher);
+        svc.setElicitationDao(elicitations);
+
+        svc.acknowledgeTurn(1L, 9L, 77L, 55L, "SUCCESS", null, "reply-md", null);
+
+        verify(publisher).publishEvent(new AgentConversationService.WorkitemClarificationReplyCompleted(
+                1L, 10L, 77L, 3L, 55L, "reply-md", 701L));
+    }
+
+    @Test
+    void clarificationAckSkipsReplyNotificationWhenTheTurnHasAQuestion() {
+        AgentConversationDO conv = new AgentConversationDO();
+        conv.setId(77L);
+        conv.setTenantId(1L);
+        conv.setAgentId(3L);
+        conv.setChannel(WorkitemClarificationConversationService.CHANNEL);
+        conv.setBizRefType(WorkitemClarificationConversationService.BIZ_REF_TYPE);
+        conv.setBizRefId(10L);
+        conv.setExecutorId(9L);
+        when(convDao.findById(1L, 77L)).thenReturn(conv);
+        AgentConversationTurnDO inTurn = processingInboundTurn(77L);
+        inTurn.setSubmittedUserId(701L);
+        when(turnDao.findByConversationTurn(1L, 77L, 55L)).thenReturn(inTurn);
+        when(turnDao.updateInboundStatusIfProcessing(1L, 77L, 55L, "SUCCESS", null)).thenReturn(1);
+        when(turnDao.insert(any())).thenReturn(1);
+        var publisher = mock(org.springframework.context.ApplicationEventPublisher.class);
+        var elicitations = mock(AgentConversationElicitationDao.class);
+        when(elicitations.countByTurn(1L, 55L)).thenReturn(1);
+        svc.setEventPublisher(publisher);
+        svc.setElicitationDao(elicitations);
+
+        svc.acknowledgeTurn(1L, 9L, 77L, 55L, "SUCCESS", null, "reply-md", null);
+
+        verifyNoInteractions(publisher);
+    }
+
+    @Test
+    void clarificationAckSkipsReplyNotificationForNonClarificationChannel() {
+        AgentConversationDO conv = new AgentConversationDO();
+        conv.setId(77L);
+        conv.setTenantId(1L);
+        conv.setChannel("DINGTALK");
+        conv.setExecutorId(9L);
+        stubAckSettlement(conv, "SUCCESS", 701L);
+        var publisher = mock(org.springframework.context.ApplicationEventPublisher.class);
+        svc.setEventPublisher(publisher);
+
+        svc.acknowledgeTurn(1L, 9L, 77L, 55L, "SUCCESS", null, "reply-md", null);
+
+        verifyNoInteractions(publisher);
+    }
+
+    @Test
+    void clarificationAckSkipsReplyNotificationForFailedTurn() {
+        AgentConversationDO conv = new AgentConversationDO();
+        conv.setId(77L);
+        conv.setTenantId(1L);
+        conv.setAgentId(3L);
+        conv.setChannel(WorkitemClarificationConversationService.CHANNEL);
+        conv.setBizRefType(WorkitemClarificationConversationService.BIZ_REF_TYPE);
+        conv.setBizRefId(10L);
+        conv.setExecutorId(9L);
+        stubAckSettlement(conv, "FAILED", 701L);
+        var publisher = mock(org.springframework.context.ApplicationEventPublisher.class);
+        svc.setEventPublisher(publisher);
+
+        svc.acknowledgeTurn(1L, 9L, 77L, 55L, "FAILED", null, "reply-md", null);
+
+        verifyNoInteractions(publisher);
+    }
+
+    @Test
+    void clarificationAckSkipsReplyNotificationForBlankReply() {
+        AgentConversationDO conv = new AgentConversationDO();
+        conv.setId(77L);
+        conv.setTenantId(1L);
+        conv.setAgentId(3L);
+        conv.setChannel(WorkitemClarificationConversationService.CHANNEL);
+        conv.setBizRefType(WorkitemClarificationConversationService.BIZ_REF_TYPE);
+        conv.setBizRefId(10L);
+        conv.setExecutorId(9L);
+        stubAckSettlement(conv, "SUCCESS", 701L);
+        var publisher = mock(org.springframework.context.ApplicationEventPublisher.class);
+        svc.setEventPublisher(publisher);
+
+        svc.acknowledgeTurn(1L, 9L, 77L, 55L, "SUCCESS", null, "   ", null);
+
+        verifyNoInteractions(publisher);
+    }
+
+    @Test
+    void clarificationAckSkipsReplyNotificationWithoutRequester() {
+        AgentConversationDO conv = new AgentConversationDO();
+        conv.setId(77L);
+        conv.setTenantId(1L);
+        conv.setAgentId(3L);
+        conv.setChannel(WorkitemClarificationConversationService.CHANNEL);
+        conv.setBizRefType(WorkitemClarificationConversationService.BIZ_REF_TYPE);
+        conv.setBizRefId(10L);
+        conv.setExecutorId(9L);
+        stubAckSettlement(conv, "SUCCESS", null);
+        var publisher = mock(org.springframework.context.ApplicationEventPublisher.class);
+        svc.setEventPublisher(publisher);
+
+        svc.acknowledgeTurn(1L, 9L, 77L, 55L, "SUCCESS", null, "reply-md", null);
+
+        verifyNoInteractions(publisher);
+    }
+
+    private void stubAckSettlement(AgentConversationDO conv, String status, Long submittedUserId) {
+        when(convDao.findById(1L, 77L)).thenReturn(conv);
+        AgentConversationTurnDO inTurn = processingInboundTurn(77L);
+        inTurn.setSubmittedUserId(submittedUserId);
+        when(turnDao.findByConversationTurn(1L, 77L, 55L)).thenReturn(inTurn);
+        when(turnDao.updateInboundStatusIfProcessing(1L, 77L, 55L, status, null)).thenReturn(1);
+        when(turnDao.insert(any())).thenReturn(1);
     }
 
     @Test

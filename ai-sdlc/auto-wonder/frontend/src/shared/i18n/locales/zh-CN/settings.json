@@ -76,6 +76,7 @@
   "assigned": "工单指派",
   "commentMention": "评论提及",
   "inputRequired": "工单待澄清",
+  "clarificationReply": "澄清回复",
   "approvalRequired": "工单待审批",
   "deliveryBlocked": "交付阻塞",
   "aiDone": "AI任务完成",

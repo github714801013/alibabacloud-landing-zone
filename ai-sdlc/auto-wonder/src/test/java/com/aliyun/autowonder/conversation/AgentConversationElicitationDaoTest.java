@@ -39,6 +39,17 @@ class AgentConversationElicitationDaoTest {
     static AgentConversationElicitationDao dao;
 
     @Test
+    void countsQuestionsByTurnRegardlessOfStatus() {
+        dao.insertIfAbsent(pending("count-pending"));
+        AgentConversationElicitationDO answered = pending("count-answered");
+        answered.setStatus("ANSWERED");
+        dao.insertIfAbsent(answered);
+
+        assertEquals(2, dao.countByTurn(TENANT, TURN));
+        assertEquals(0, dao.countByTurn(TENANT, TURN + 1));
+    }
+
+    @Test
     void negotiatedQuestionIdentitySurvivesReload() {
         AgentConversationElicitationDO row = pending("delivery");
         row.setAnswerProtocolVersion(1);

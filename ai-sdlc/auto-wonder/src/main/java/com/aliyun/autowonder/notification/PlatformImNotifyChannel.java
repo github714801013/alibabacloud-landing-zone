@@ -52,6 +52,17 @@ public class PlatformImNotifyChannel implements NotifyChannel {
             // 企微只有 NOTIFY 连接持有者能发送：项目通知统一入可靠队列，由工人按偏好与身份投递。
             if (!configs.isReady(provider) || !Boolean.parseBoolean(settings.getDecryptedValue(
                     "NOTIFY", "wecom_enabled", notification.getTenantId()))) return false;
+            if (ImNotificationTask.TYPE_CLARIFICATION_REPLY.equals(notification.getType())) {
+                // 澄清回复要带澄清面板深链，交给格式化阶段按接收者语言补标题与链接。
+                queue.enqueue(new ImNotificationTask(
+                        "notice:" + notification.getId() + ":" + provider + ":" + notification.getRecipientId(),
+                        notification.getId(), notification.getTenantId(), notification.getRefId(),
+                        notification.getRecipientId(), "SYSTEM", 0, "数字员工", null,
+                        notification.getTitle(), notification.getType(), notification.getContent())
+                        .withLink(notification.getLink())
+                        .withRecipientLocale(notification.getRecipientLocale()));
+                return true;
+            }
             queue.enqueue(new ImNotificationTask(
                     "notice:" + notification.getId() + ":" + provider + ":" + notification.getRecipientId(),
                     notification.getId(), notification.getTenantId(), 0L, notification.getRecipientId(),

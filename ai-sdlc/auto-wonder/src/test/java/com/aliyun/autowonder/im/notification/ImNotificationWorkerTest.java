@@ -104,6 +104,10 @@ class ImNotificationWorkerTest {
         assertEquals("权限申请审批结果", titleFor(workspaceAccessTask(
                 ImNotificationTask.TYPE_WORKSPACE_ACCESS_REVIEWED, "READ_WRITE", "APPROVED")));
         assertEquals("AutoWonder collaboration notification test succeeded", titleFor(imTestTask()));
+        assertEquals("澄清回复", titleFor(new ImNotificationTask(
+                "WORKITEM_CLARIFICATION_REPLY:1:DINGTALK:9", 1L, 7L, 42L, 9L,
+                "SYSTEM", 0L, "数字员工", null, "澄清回复",
+                ImNotificationTask.TYPE_CLARIFICATION_REPLY, "工单「测试工单」\n已确认验收范围")));
     }
 
     @Test

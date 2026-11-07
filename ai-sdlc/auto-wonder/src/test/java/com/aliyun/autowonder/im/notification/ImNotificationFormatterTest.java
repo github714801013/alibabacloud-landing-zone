@@ -11,7 +11,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class ImNotificationFormatterTest {
 
     @ParameterizedTest
-    @ValueSource(strings = {ImNotificationTask.TYPE_APPROVAL_REQUIRED, ImNotificationTask.TYPE_INPUT_REQUIRED})
+    @ValueSource(strings = {ImNotificationTask.TYPE_APPROVAL_REQUIRED, ImNotificationTask.TYPE_INPUT_REQUIRED,
+            ImNotificationTask.TYPE_CLARIFICATION_REPLY})
     void localizesHumanRequestEnvelopeWithoutChangingTheRequestBody(String notificationType) {
         ImNotificationTask task = new ImNotificationTask("request:42", 1L, 7L, 42L, 9L,
                 "AGENT", 10L, "Agent", "request-1", "验收工单", notificationType, "完整步骤名：编写验收摘要");

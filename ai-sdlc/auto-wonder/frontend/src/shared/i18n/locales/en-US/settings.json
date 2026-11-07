@@ -77,6 +77,7 @@
   "assigned": "Work item assigned",
   "commentMention": "Comment mention",
   "inputRequired": "Work item clarification",
+  "clarificationReply": "Clarification reply",
   "approvalRequired": "Work item approval",
   "deliveryBlocked": "Delivery blocked",
   "aiDone": "AI task completed",

@@ -17,6 +17,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -81,6 +82,8 @@ public class AgentConversationService {
     private com.aliyun.autowonder.aiusage.AgentConversationUsageService conversationUsageService;
     private ImReplyDeliveryService replyDeliveryService;
     private ConversationAdmissionService admissionService;
+    private ApplicationEventPublisher eventPublisher;
+    private AgentConversationElicitationDao elicitationDao;
     private final Map<Long, ScheduledFuture<?>> pendingCancels = new ConcurrentHashMap<>();
     private final ScheduledExecutorService cancelTimeoutScheduler =
             Executors.newSingleThreadScheduledExecutor(runnable -> {
@@ -274,6 +277,16 @@ public class AgentConversationService {
     @Autowired(required = false)
     void setAdmissionService(ConversationAdmissionService admissionService) {
         this.admissionService = admissionService;
+    }
+
+    @Autowired(required = false)
+    void setEventPublisher(ApplicationEventPublisher eventPublisher) {
+        this.eventPublisher = eventPublisher;
+    }
+
+    @Autowired(required = false)
+    void setElicitationDao(AgentConversationElicitationDao elicitationDao) {
+        this.elicitationDao = elicitationDao;
     }
 
     void setCancelAckTimeoutSeconds(long cancelAckTimeoutSeconds) {
@@ -686,6 +699,7 @@ public class AgentConversationService {
             if (conversationUsageService != null) {
                 conversationUsageService.recordTurnUsage(tenantId, conv, turnId, usage);
             }
+            publishClarificationReply(tenantId, conv, inboundTurn, turnId, status, replyMarkdown);
             if (cliSessionId != null && !cliSessionId.isEmpty()) {
                 convDao.updateCliSessionRef(tenantId, conversationId, cliSessionId);
                 conv.setCliSessionRef(cliSessionId);
@@ -766,6 +780,25 @@ public class AgentConversationService {
             return replyMarkdown;
         }
         return CANCELED_FALLBACK_CONTENT;
+    }
+
+    /** 只有成功轮次且本轮没有提问时才把普通文本答复推给提问人；同轮提问由提问通知负责。 */
+    private void publishClarificationReply(Long tenantId, AgentConversationDO conv,
+            AgentConversationTurnDO inboundTurn, Long turnId, String status, String replyMarkdown) {
+        if (eventPublisher == null || !"SUCCESS".equalsIgnoreCase(status)) return;
+        if (!WorkitemClarificationConversationService.CHANNEL.equals(conv.getChannel())) return;
+        if (!WorkitemClarificationConversationService.BIZ_REF_TYPE.equals(conv.getBizRefType())
+                || conv.getBizRefId() == null) return;
+        if (replyMarkdown == null || replyMarkdown.isBlank()) return;
+        if (inboundTurn.getSubmittedUserId() == null) return;
+        if (hasQuestionInTurn(tenantId, turnId)) return;
+        eventPublisher.publishEvent(new WorkitemClarificationReplyCompleted(tenantId,
+                conv.getBizRefId(), conv.getId(), conv.getAgentId(), turnId, replyMarkdown,
+                inboundTurn.getSubmittedUserId()));
+    }
+
+    private boolean hasQuestionInTurn(Long tenantId, Long turnId) {
+        return elicitationDao != null && elicitationDao.countByTurn(tenantId, turnId) > 0;
     }
 
     private void publishCanceledStatusEvent(Long tenantId, Long conversationId, Long turnId) {
@@ -2070,5 +2103,10 @@ public class AgentConversationService {
     }
 
     private record RuntimeActivity(boolean reported, Set<Long> activeTurnIds) {
+    }
+
+    /** 工单澄清会话的成功轮次产生了普通文本答复，通知监听器据此推送给提问人。 */
+    public record WorkitemClarificationReplyCompleted(long tenantId, long workitemId,
+            long conversationId, Long agentId, long turnId, String replyMarkdown, long recipientId) {
     }
 }

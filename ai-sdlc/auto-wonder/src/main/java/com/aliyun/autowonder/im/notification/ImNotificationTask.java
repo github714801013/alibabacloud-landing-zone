@@ -32,6 +32,7 @@ public record ImNotificationTask(
     public static final String TYPE_COMMENT_MENTION = "COMMENT_MENTION";
     public static final String TYPE_APPROVAL_REQUIRED = "WORKITEM_APPROVAL_REQUIRED";
     public static final String TYPE_INPUT_REQUIRED = "WORKITEM_INPUT_REQUIRED";
+    public static final String TYPE_CLARIFICATION_REPLY = "WORKITEM_CLARIFICATION_REPLY";
     public static final String TYPE_WORKSPACE_ACCESS_REQUEST = "WORKSPACE_ACCESS_REQUEST";
     public static final String TYPE_WORKSPACE_ACCESS_REVIEWED = "WORKSPACE_ACCESS_REVIEWED";
     public static final String TYPE_IM_TEST = "IM_TEST";
