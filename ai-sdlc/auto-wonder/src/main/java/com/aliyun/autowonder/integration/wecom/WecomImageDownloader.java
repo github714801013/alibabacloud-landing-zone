@@ -88,7 +88,7 @@ public class WecomImageDownloader {
         }
     }
 
-    private static void validate(String url) {
+    static void validate(String url) {
         URI uri;
         try {
             uri = URI.create(url);
@@ -96,8 +96,10 @@ public class WecomImageDownloader {
             throw new IllegalArgumentException("企业微信图片地址无效", e);
         }
         String host = uri.getHost();
+        // 官方图片回调使用腾讯云 COS 桶（如 ww-aibot-img-1258476243.cos.ap-guangzhou.myqcloud.com）。
         if (!"https".equalsIgnoreCase(uri.getScheme()) || host == null
-                || !(host.equals("qq.com") || host.endsWith(".qq.com"))) {
+                || !(host.equals("qq.com") || host.endsWith(".qq.com")
+                || (host.startsWith("ww-aibot-img-") && host.endsWith(".myqcloud.com")))) {
             throw new IllegalArgumentException("企业微信图片地址无效");
         }
     }

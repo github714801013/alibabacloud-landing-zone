@@ -219,8 +219,9 @@ public class WecomInboundService implements WecomInboundListener {
                         imageScope(binding.getId(), groupId), bytes, "wecom-image").id());
             }
         } catch (RuntimeException e) {
-            log.warn("wecom inbound image failed bindingId={} msgId={} errorType={}",
-                    binding.getId(), msgId, e.getClass().getSimpleName());
+            log.warn("wecom inbound image failed bindingId={} msgId={} errorType={} error={} causeType={}",
+                    binding.getId(), msgId, e.getClass().getSimpleName(), e.getMessage(),
+                    e.getCause() == null ? "" : e.getCause().getClass().getSimpleName());
             reply(botId, reqId, text("im.wecom_image_failed"));
             return;
         }

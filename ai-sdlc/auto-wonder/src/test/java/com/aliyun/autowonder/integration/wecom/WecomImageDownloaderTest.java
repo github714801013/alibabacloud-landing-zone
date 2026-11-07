@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -19,12 +20,22 @@ class WecomImageDownloaderTest {
     }
 
     @Test
+    void officialImageUrlPassesValidation() {
+        assertDoesNotThrow(() -> WecomImageDownloader.validate(
+                "https://ww-aibot-img-1258476243.cos.ap-guangzhou.myqcloud.com/BHoPdA3/7571665296904772241?sign=test"));
+    }
+
+    @Test
     void rejectsInvalidKeysAndNonWecomUrls() {
         assertThrows(IllegalArgumentException.class, () -> WecomImageDownloader.decrypt(
                 new byte[16], Base64.getEncoder().encodeToString(new byte[16])));
         assertThrows(IllegalArgumentException.class,
-                () -> new WecomImageDownloader().download("http://wwcdn.weixin.qq.com/a.png", null));
+                () -> new WecomImageDownloader().download(
+                        "http://ww-aibot-img-1258476243.cos.ap-guangzhou.myqcloud.com/a.png", null));
         assertThrows(IllegalArgumentException.class,
                 () -> new WecomImageDownloader().download("https://evil.example/a.png", null));
+        assertThrows(IllegalArgumentException.class,
+                () -> WecomImageDownloader.validate(
+                        "https://other-bucket.cos.ap-guangzhou.myqcloud.com/a.png"));
     }
 }
