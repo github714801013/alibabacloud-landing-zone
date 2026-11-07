@@ -1953,6 +1953,40 @@ class McpToolServiceTest {
     }
 
     @Test
+    void createWorkitemSchemaExposesOptionalCreatorId() {
+        Map<String, Object> schema = schemaFor("autowonder.create_workitem");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> properties = (Map<String, Object>) schema.get("properties");
+
+        assertTrue(properties.containsKey("creatorId"));
+        assertEquals("integer", ((Map<?, ?>) properties.get("creatorId")).get("type"));
+        assertEquals(List.of("workspaceId", "workType", "title"), schema.get("required"));
+    }
+
+    @Test
+    void createWorkitemDescriptionDocumentsOwnerOnlyCreator() {
+        String description = toolFor("autowonder.create_workitem").getDescription();
+
+        assertTrue(description.contains("creatorId"));
+        assertTrue(description.contains("owner"));
+        assertTrue(description.contains("READ_WRITE"));
+    }
+
+    @Test
+    void createWorkitemDelegatesCreatorIdToService() {
+        WorkitemVO created = new WorkitemVO();
+        created.setId(99L);
+        when(workitemService.create(any(CreateWorkitemRequest.class), eq(100L), eq(7L))).thenReturn(created);
+
+        Object result = call(principal, "autowonder.create_workitem",
+                Map.of("workType", "REQ", "title", "MCP create", "creatorId", 88L));
+
+        assertSame(created, result);
+        verify(workitemService).create(argThat(req -> "REQ".equals(req.getWorkType())
+                && Long.valueOf(88L).equals(req.getCreatorId())), eq(100L), eq(7L));
+    }
+
+    @Test
     void updateWorkitemTagsPassesHumanActorForPersonalCredential() {
         WorkitemVO updated = new WorkitemVO();
         updated.setId(99L);

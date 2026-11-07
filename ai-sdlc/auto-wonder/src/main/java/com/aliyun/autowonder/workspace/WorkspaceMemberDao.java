@@ -11,6 +11,10 @@ public interface WorkspaceMemberDao {
     WorkspaceMemberDO findByWorkspaceAndUser(@Param("tenantId") Long tenantId, @Param("userId") Long userId);
     WorkspaceMemberDO findByWorkspaceAndUserForUpdate(@Param("tenantId") Long tenantId,
                                           @Param("userId") Long userId);
+
+    /** 空间拥有者 id；只读查询，用于代创建等需要区分 owner 的校验。 */
+    Long findWorkspaceOwnerId(@Param("tenantId") Long tenantId);
+
     List<WorkspaceMemberDO> listByTenant(@Param("tenantId") Long tenantId);
     int updateRole(@Param("tenantId") Long tenantId, @Param("userId") Long userId,
                    @Param("roleId") Long roleId, @Param("modifierId") Long modifierId);

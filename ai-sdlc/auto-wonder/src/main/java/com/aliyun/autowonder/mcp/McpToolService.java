@@ -807,6 +807,9 @@ public class McpToolService {
                         + "workType must be one of REQ (requirement), BUG (defect), or TASK (task). "
                         + "When assigneeType is omitted the workitem is assigned to the creator (HUMAN), "
                         + "priority defaults to 2, no SDLC is bound, and no scheduling is triggered. "
+                        + "The workspace owner may pass creatorId to create on behalf of another active human member "
+                        + "with READ_WRITE (or ADMIN) access and no WORKITEM read-only restriction; "
+                        + "the default assignee then follows that creator unless assigneeType is given explicitly. "
                         + "To assign to a digital worker, pass assigneeType=AGENT with assigneeRef=<agentId>; "
                         + "the SDLC is resolved automatically by the server (agent default first, then workitem-type match); "
                         + "do NOT ask the user to choose an SDLC and only pass sdlcId when the user explicitly names one. "
@@ -836,6 +839,11 @@ public class McpToolService {
                                                 + "key decisions and boundaries, acceptance criteria, constraints/dependencies/risks, "
                                                 + "and expected deliverables. If these are unclear, ask the user before creating the workitem."),
                                 prop("priority", "integer", "Optional. Priority value; defaults to 2 when omitted."),
+                                prop("creatorId", "integer", "Optional. Create this workitem on behalf of another user. "
+                                        + "Only the workspace owner may set it; the target must be an active human member "
+                                        + "with READ_WRITE (or ADMIN) access and no WORKITEM read-only restriction. "
+                                        + "When omitted the caller is the creator; when set without assigneeType, "
+                                        + "the workitem is assigned to this creator."),
                                 prop("assigneeType", "string", "Optional. Assignee type: HUMAN or AGENT. "
                                         + "When omitted the workitem is assigned to the creator and no SDLC is bound and no scheduling is triggered."),
                                 prop("assigneeRef", "integer", "Optional. Assignee reference id: "

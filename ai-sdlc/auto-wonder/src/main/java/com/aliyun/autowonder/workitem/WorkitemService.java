@@ -1,5 +1,7 @@
 package com.aliyun.autowonder.workitem;
 
+import com.aliyun.autowonder.access.WorkspaceAccessLevel;
+import com.aliyun.autowonder.access.WorkspaceDomain;
 import com.aliyun.autowonder.common.i18n.SystemMessages;
 import com.aliyun.autowonder.json.JSON;
 import com.aliyun.autowonder.json.JSONArray;
@@ -277,6 +279,7 @@ public class WorkitemService {
         if (init == null) {
             throw new BizException(ErrorCode.STATUS_TEMPLATE_NOT_FOUND);
         }
+        long creatorId = resolveCreatorId(req.getCreatorId(), workspaceId, userId);
         WorkitemDO w = new WorkitemDO();
         w.setTenantId(workspaceId);
         w.setWorkType(req.getWorkType());
@@ -289,9 +292,9 @@ public class WorkitemService {
         // binding, assign-operator, ASSIGN event, WorkitemAssignedEvent) matches a
         // separate post-create assignment exactly.
         w.setAssigneeType("HUMAN");
-        w.setAssigneeRef(userId);
+        w.setAssigneeRef(creatorId);
         w.setPriority(req.getPriority() == null ? 2 : req.getPriority());
-        w.setCreatorId(userId);
+        w.setCreatorId(creatorId);
         w.setOriginType(originType);
         w.setOriginId(originId);
         w.setVersion(0);
@@ -307,6 +310,60 @@ public class WorkitemService {
                     req.getSdlcId(), req.getSquadId(), req.getScheduledStartAt(), workspaceId, userId);
         }
         return toVO(w);
+    }
+
+    /** 生效创建人：未指定或指定为调用者本人时保持原行为；否则仅空间拥有者可代创建。 */
+    private long resolveCreatorId(Long requestedCreatorId, long workspaceId, long operatorId) {
+        if (requestedCreatorId == null || requestedCreatorId == operatorId) {
+            return operatorId;
+        }
+        if (requestedCreatorId <= 0) {
+            throw new BizException(ErrorCode.PARAM_INVALID);
+        }
+        requireWorkspaceOwner(workspaceId, operatorId);
+        requireEligibleDesignatedCreator(workspaceId, requestedCreatorId);
+        return requestedCreatorId;
+    }
+
+    private void requireWorkspaceOwner(long workspaceId, long operatorId) {
+        Long ownerId = workspaceMemberDao.findWorkspaceOwnerId(workspaceId);
+        if (!Objects.equals(ownerId, operatorId)) {
+            throw new BizException(ErrorCode.NO_PERMISSION);
+        }
+    }
+
+    /** 被指定创建人须为本空间有效人类成员，且具备工单写入权限。 */
+    private void requireEligibleDesignatedCreator(long workspaceId, long creatorId) {
+        WorkspaceMemberDO member = workspaceMemberDao.findByWorkspaceAndUser(workspaceId, creatorId);
+        if (member == null
+                || !Integer.valueOf(0).equals(member.getStatus())
+                || !Integer.valueOf(0).equals(member.getIsDeleted())) {
+            throw new BizException(ErrorCode.WORKSPACE_NOT_MEMBER);
+        }
+        UserDO user = userDao.findById(creatorId);
+        // 与关注人管理同一停用口径：status=1 一律拒绝，避免纯 SSO 停用账号漏过 statusOf。
+        if (user == null || Integer.valueOf(1).equals(user.getStatus())
+                || !UserAccountStates.NORMAL.equals(UserAccountStates.statusOf(user))) {
+            throw new BizException(ErrorCode.WORKSPACE_NOT_MEMBER);
+        }
+        String accessLevel = member.getAccessLevel();
+        if (accessLevel == null) {
+            throw new BizException(ErrorCode.WORKSPACE_ACCESS_INSUFFICIENT);
+        }
+        WorkspaceAccessLevel level;
+        try {
+            level = WorkspaceAccessLevel.valueOf(accessLevel);
+        } catch (IllegalArgumentException exception) {
+            throw new BizException(ErrorCode.WORKSPACE_ACCESS_INSUFFICIENT);
+        }
+        if (!level.allows(WorkspaceAccessLevel.READ_WRITE)) {
+            throw new BizException(ErrorCode.WORKSPACE_ACCESS_INSUFFICIENT);
+        }
+        // ADMIN 与 WorkspaceAccessAspect 一样豁免只读域限制。
+        if (level != WorkspaceAccessLevel.ADMIN
+                && WorkspaceDomain.fromJson(member.getReadOnlyDomains()).contains(WorkspaceDomain.WORKITEM)) {
+            throw new BizException(ErrorCode.WORKSPACE_ACCESS_INSUFFICIENT);
+        }
     }
 
     public WorkitemVO get(long id) {

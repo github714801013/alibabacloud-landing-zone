@@ -40,6 +40,9 @@
         LIMIT 1
         FOR UPDATE
     </select>
+    <select id="findWorkspaceOwnerId" resultType="java.lang.Long">
+        SELECT owner_id FROM `org` WHERE id = #{tenantId} AND is_deleted = 0 LIMIT 1
+    </select>
     <select id="listByTenant" resultType="com.aliyun.autowonder.workspace.WorkspaceMemberDO">
         <include refid="memberWithRole"/>
         WHERE m.tenant_id = #{tenantId} AND m.is_deleted = 0 AND m.status = 0
