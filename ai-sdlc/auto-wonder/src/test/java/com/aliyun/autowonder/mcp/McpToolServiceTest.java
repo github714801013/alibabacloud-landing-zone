@@ -3490,11 +3490,17 @@ class McpToolServiceTest {
     }
 
     @Test
-    void conversationTokenStillCannotUseDeprecatedMemoryAuthority() {
-        assertThrows(BizException.class, () -> call(scopedPrincipal(WorkspaceAccessLevel.READ_WRITE),
+    void conversationTokenReadsMemoryThroughThePagePath() {
+        var personalMemories = mock(com.aliyun.autowonder.memory.store.PersonalMcpMemoryService.class);
+        ReflectionTestUtils.setField(service, "personalMcpMemories", personalMemories);
+        when(personalMemories.search(WORKSPACE_ID, USER_ID, false, "MyBatis", null, null, null, 1, 20))
+                .thenReturn(List.of());
+
+        assertEquals(List.of(), call(scopedPrincipal(WorkspaceAccessLevel.READ_ONLY),
                 "autowonder.search_memories", Map.of("keyword", "MyBatis")));
 
-        verifyNoInteractions(dispatchDao);
+        verify(personalMemories).search(WORKSPACE_ID, USER_ID, false, "MyBatis", null, null, null, 1, 20);
+        verifyNoInteractions(mcpMemoryDocumentAdapter, dispatchDao);
     }
 
     @Test
@@ -6307,11 +6313,7 @@ class McpToolServiceTest {
             "zh-CN,runPage",
             "en-US,runPage",
             "zh-CN,action",
-            "en-US,action",
-            "zh-CN,memoryCreate",
-            "en-US,memoryCreate",
-            "zh-CN,memorySearch",
-            "en-US,memorySearch"})
+            "en-US,action"})
     void ownedToolValidatorsCarryExplicitIntentWithoutChangingRawContracts(String language,String problem) {
         var args=new java.util.LinkedHashMap<String,Object>(); args.put("workspaceId",WORKSPACE_ID);args.put("id",99L);
         String tool=switch(problem) {
@@ -6326,7 +6328,6 @@ class McpToolServiceTest {
             case "status", "page" -> "autowonder.list_scheduled_tasks";
             case "runPage" -> "autowonder.list_scheduled_task_runs";
             case "action" -> "autowonder.transition_scheduled_task";
-            case "memoryCreate" -> "autowonder.create_memory";
             default -> "autowonder.search_memories";
         };
         switch(problem) {
@@ -6379,7 +6380,7 @@ class McpToolServiceTest {
             case "action" -> "action supports only enable/pause/archive/run-now/pause-run/resume-run/cancel-run";
             default -> "Persistent memory can only be maintained by Agent tasks. Use the memory-stores API for manual management";
         };
-        var caller=(problem.equals("scope") || problem.startsWith("memory")) ? scopedPrincipal(WorkspaceAccessLevel.READ_WRITE) : principal;
+        var caller=problem.equals("scope") ? scopedPrincipal(WorkspaceAccessLevel.READ_WRITE) : principal;
         var error=assertThrows(BizException.class,()->service.call(caller,tool,args));
         assertEquals(problem.equals("scope") ? ErrorCode.NO_PERMISSION.getCode() : java.util.Set.of("workspace","positive","pending").contains(problem) ? ErrorCode.PARAM_INVALID.getCode() : problem.equals("recovery") ? ErrorCode.CONFLICT.getCode() : ErrorCode.MCP_TOOL_ARGUMENT_INVALID.getCode(),error.getCode());
         assertEquals(diagnostic,error.getMessage());assertEquals(diagnostic,error.getLocalizedMessage());assertNull(error.getCause());

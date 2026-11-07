@@ -2024,7 +2024,9 @@ public class McpToolService {
                         });
             } else {
                 result = (context.credentialType() == McpAccessTokenService.CredentialType.LONG_LIVED
-                        || isPlatformOwnerCredential(principal)) && isMemoryTool(name) ? invokePersonalMemory(context, name, safeArgs)
+                        || isPlatformOwnerCredential(principal)
+                        || context.credentialType() == McpAccessTokenService.CredentialType.CONVERSATION)
+                        && isMemoryTool(name) ? invokePersonalMemory(context, name, safeArgs)
                         : invoke(context, name, safeArgs);
                 auditMutation(context, name, safeArgs, result, null, false);
             }
