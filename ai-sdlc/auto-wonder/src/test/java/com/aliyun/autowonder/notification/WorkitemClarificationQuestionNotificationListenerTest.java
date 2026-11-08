@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -56,7 +57,7 @@ class WorkitemClarificationQuestionNotificationListenerTest {
         when(provider.getIfAvailable()).thenReturn(workitemService);
 
         new WorkitemClarificationQuestionNotificationListener(notifications, workitemDao, provider)
-                .onOpened(new WorkitemClarificationQuestionOpened(1L, 10L, 20L, 10035L, 100L,
+                .onOpened(new WorkitemClarificationQuestionOpened(1L, 10L, 20L, 10035L, 100L, null,
                         "req-1", "请确认以下问题"));
 
         var row = ArgumentCaptor.forClass(NotificationDO.class);
@@ -72,6 +73,35 @@ class WorkitemClarificationQuestionNotificationListenerTest {
         assertEquals(9L, task.getValue().recipientUserId());
         assertEquals("/workitems/10?workspaceId=1&panel=clarify&fullscreen=1&agent=10035&conversation=20",
                 task.getValue().link());
+    }
+
+    @Test
+    void notifiesOnlyTurnSubmitterWhenQuestionHasSubmitter() {
+        var notificationDao = mock(NotificationDao.class);
+        doAnswer(i -> { ((NotificationDO) i.getArgument(0)).setId(42L); return null; })
+                .when(notificationDao).insert(any());
+        var notifications = new NotifyService(notificationDao, mock(NotifyPrefDao.class), List.of());
+
+        var workitem = new WorkitemDO();
+        workitem.setId(10L);
+        workitem.setTenantId(1L);
+        workitem.setTitle("测试工单");
+        var workitemDao = mock(WorkitemDao.class);
+        when(workitemDao.findById(10L)).thenReturn(workitem);
+        var workitemService = mock(WorkitemService.class);
+        when(workitemService.getHumanParticipantIds(10L, 1L)).thenReturn(List.of(1L));
+        @SuppressWarnings("unchecked")
+        ObjectProvider<WorkitemService> provider = mock(ObjectProvider.class);
+        when(provider.getIfAvailable()).thenReturn(workitemService);
+
+        new WorkitemClarificationQuestionNotificationListener(notifications, workitemDao, provider)
+                .onOpened(new WorkitemClarificationQuestionOpened(1L, 10L, 20L, 10035L, 100L, 9L,
+                        "req-1", "请确认以下问题"));
+
+        var row = ArgumentCaptor.forClass(NotificationDO.class);
+        verify(notificationDao).insert(row.capture());
+        assertEquals(9L, row.getValue().getRecipientId());
+        verify(workitemService, never()).getHumanParticipantIds(10L, 1L);
     }
 
     @Test
@@ -97,7 +127,7 @@ class WorkitemClarificationQuestionNotificationListenerTest {
 
         new WorkitemClarificationQuestionNotificationListener(
                 new NotifyService(notificationDao, mock(NotifyPrefDao.class), List.of()), workitemDao, provider)
-                .onOpened(new WorkitemClarificationQuestionOpened(1L, 10L, 20L, 10035L, 100L,
+                .onOpened(new WorkitemClarificationQuestionOpened(1L, 10L, 20L, 10035L, 100L, null,
                         "req-2", "交付过程中确认下一项"));
 
         var row = ArgumentCaptor.forClass(NotificationDO.class);
@@ -115,7 +145,7 @@ class WorkitemClarificationQuestionNotificationListenerTest {
 
         new WorkitemClarificationQuestionNotificationListener(
                 new NotifyService(notificationDao, mock(NotifyPrefDao.class), List.of()), workitemDao, provider)
-                .onOpened(new WorkitemClarificationQuestionOpened(1L, 10L, 20L, 10035L, 100L, "req-1", "   "));
+                .onOpened(new WorkitemClarificationQuestionOpened(1L, 10L, 20L, 10035L, 100L, null, "req-1", "   "));
 
         verifyNoInteractions(notificationDao);
         verifyNoInteractions(workitemDao);
@@ -140,7 +170,7 @@ class WorkitemClarificationQuestionNotificationListenerTest {
 
         new WorkitemClarificationQuestionNotificationListener(
                 new NotifyService(notificationDao, mock(NotifyPrefDao.class), List.of()), workitemDao, provider)
-                .onOpened(new WorkitemClarificationQuestionOpened(1L, 10L, 20L, 10035L, 100L, "req-1",
+                .onOpened(new WorkitemClarificationQuestionOpened(1L, 10L, 20L, 10035L, 100L, null, "req-1",
                         "a".repeat(201)));
 
         var row = ArgumentCaptor.forClass(NotificationDO.class);
@@ -161,7 +191,7 @@ class WorkitemClarificationQuestionNotificationListenerTest {
 
         new WorkitemClarificationQuestionNotificationListener(
                 new NotifyService(notificationDao, mock(NotifyPrefDao.class), List.of()), workitemDao, provider)
-                .onOpened(new WorkitemClarificationQuestionOpened(1L, 10L, 20L, 10035L, 100L, "req-1", "请确认"));
+                .onOpened(new WorkitemClarificationQuestionOpened(1L, 10L, 20L, 10035L, 100L, null, "req-1", "请确认"));
 
         verifyNoInteractions(notificationDao);
     }
@@ -182,7 +212,7 @@ class WorkitemClarificationQuestionNotificationListenerTest {
 
         new WorkitemClarificationQuestionNotificationListener(
                 new NotifyService(notificationDao, mock(NotifyPrefDao.class), List.of()), workitemDao, provider)
-                .onOpened(new WorkitemClarificationQuestionOpened(1L, 10L, 20L, 10035L, 100L, "req-1", "请确认"));
+                .onOpened(new WorkitemClarificationQuestionOpened(1L, 10L, 20L, 10035L, 100L, null, "req-1", "请确认"));
 
         verifyNoInteractions(notificationDao);
     }
@@ -204,6 +234,6 @@ class WorkitemClarificationQuestionNotificationListenerTest {
                 workitemDao, provider);
 
         assertDoesNotThrow(() -> listener.onOpened(
-                new WorkitemClarificationQuestionOpened(1L, 10L, 20L, 10035L, 100L, "req-1", "请确认")));
+                new WorkitemClarificationQuestionOpened(1L, 10L, 20L, 10035L, 100L, null, "req-1", "请确认")));
     }
 }

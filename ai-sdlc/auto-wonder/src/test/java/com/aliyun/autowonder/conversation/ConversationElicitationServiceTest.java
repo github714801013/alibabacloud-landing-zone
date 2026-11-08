@@ -278,6 +278,9 @@ class ConversationElicitationServiceTest {
         conv.setAgentId(10035L);
         when(convDao.findById(1L, 10L)).thenReturn(conv);
         when(dao.insertIfAbsent(any())).thenReturn(1);
+        AgentConversationTurnDO asking = turn("IN", "PROCESSING");
+        asking.setSubmittedUserId(70L);
+        when(turnDao.findByConversationTurn(1L, 10L, 100L)).thenReturn(asking);
         List<Object> events = new ArrayList<>();
         service.setApplicationEventPublisher(events::add);
 
@@ -290,6 +293,7 @@ class ConversationElicitationServiceTest {
         assertEquals(10L, event.conversationId());
         assertEquals(10035L, event.agentId());
         assertEquals(100L, event.turnId());
+        assertEquals(70L, event.submittedUserId());
         assertEquals("req-1", event.requestId());
         assertEquals("pick", event.message());
     }

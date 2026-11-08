@@ -59,7 +59,9 @@ public class WorkitemClarificationQuestionNotificationListener {
         if (service == null) {
             return;
         }
-        List<Long> recipients = service.getHumanParticipantIds(question.workitemId(), question.tenantId());
+        List<Long> recipients = question.submittedUserId() != null
+                ? List.of(question.submittedUserId())
+                : service.getHumanParticipantIds(question.workitemId(), question.tenantId());
         if (recipients.isEmpty()) {
             return;
         }

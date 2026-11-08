@@ -147,8 +147,10 @@ public class ConversationElicitationService {
         record.setSchemaJson(requestedSchema == null ? null : requestedSchema.toJSONString());
         record.setStatus(STATUS_PENDING);
         AgentConversationDO conv = convDao.findById(tenantId, conversationId);
+        Long submittedUserId = null;
         {
             AgentConversationTurnDO turn = turnDao.findByConversationTurnForUpdate(tenantId, conversationId, turnId);
+            if (turn != null) submittedUserId = turn.getSubmittedUserId();
             if (AgentConversationService.questionExpiryStop(turn) != null) record.setStatus(STATUS_CANCELED);
             if (turn != null && turn.getDispatchAttempt() != null && turn.getDispatchAttempt() > 0
                     && conv != null && conv.getExecutorId() != null) {
@@ -165,7 +167,7 @@ public class ConversationElicitationService {
                 && WorkitemClarificationConversationService.BIZ_REF_TYPE.equals(conv.getBizRefType())
                 && conv.getBizRefId() != null) {
             events.publishEvent(new WorkitemClarificationQuestionOpened(tenantId, conv.getBizRefId(),
-                    conversationId, conv.getAgentId(), turnId, requestId, record.getMessage()));
+                    conversationId, conv.getAgentId(), turnId, submittedUserId, requestId, record.getMessage()));
         }
         if (STATUS_CANCELED.equals(record.getStatus())) {
             boolean settled = inserted == 1 || elicitationDao.settleIfPending(tenantId, conversationId,
@@ -523,5 +525,5 @@ public class ConversationElicitationService {
 
     /** 工单需求澄清对话中出现待人工回答的问题，通知监听器据此推送待决策提醒。 */
     public record WorkitemClarificationQuestionOpened(long tenantId, long workitemId, long conversationId,
-            Long agentId, long turnId, String requestId, String message) {}
+            Long agentId, long turnId, Long submittedUserId, String requestId, String message) {}
 }
