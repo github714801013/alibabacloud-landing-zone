@@ -32,8 +32,10 @@ import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.ServletRequestBindingException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -185,6 +187,18 @@ public class GlobalExceptionHandler {
                 : ErrorCode.PARAM_INVALID;
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                 .body(Result.fail(errorCode));
+    }
+
+    @ExceptionHandler(ServletRequestBindingException.class)
+    public ResponseEntity<Result<Void>> handleRequestBinding(ServletRequestBindingException ex) {
+        LOGGER.warn("request binding failed: {}", ex.getMessage());
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Result.fail(ErrorCode.PARAM_INVALID));
+    }
+
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<Result<Void>> handleTypeMismatch(MethodArgumentTypeMismatchException ex) {
+        LOGGER.warn("request parameter type mismatch: {}", ex.getMessage());
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Result.fail(ErrorCode.PARAM_INVALID));
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)

@@ -25,6 +25,8 @@ import org.springframework.validation.BeanPropertyBindingResult;
 import org.springframework.validation.FieldError;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -84,6 +86,24 @@ class GlobalExceptionHandlerTest {
     void handlesUnexpectedAsSystemError() {
         Result<Void> r = handler.handleThrowable(new IllegalStateException("boom"));
         assertEquals("10000", r.getCode());
+    }
+
+    @Test
+    void missingRequiredParameterReturnsHttp400WithParameterInvalidCode() {
+        ResponseEntity<Result<Void>> response = handler.handleRequestBinding(
+                new MissingServletRequestParameterException("storeId", "long"));
+
+        assertErrorResponse(response, HttpStatus.BAD_REQUEST, ErrorCode.PARAM_INVALID);
+    }
+
+    @Test
+    void parameterTypeMismatchReturnsHttp400WithParameterInvalidCode() {
+        MethodArgumentTypeMismatchException error = new MethodArgumentTypeMismatchException(
+                "abc", long.class, "limit", null, new IllegalArgumentException("bad number"));
+
+        ResponseEntity<Result<Void>> response = handler.handleTypeMismatch(error);
+
+        assertErrorResponse(response, HttpStatus.BAD_REQUEST, ErrorCode.PARAM_INVALID);
     }
 
     @Test
