@@ -637,6 +637,46 @@ describe('apiClient', () => {
     expect(useAuthStore.getState().refreshToken).toBeNull();
   });
 
+  it('on 401 when the refresh service returns 502, keeps the session and the current page', async () => {
+    let refreshCalls = 0;
+    useAuthStore.getState().setTokens('expired-access', 'still-valid-refresh');
+
+    server.use(
+      http.get('/api/data', () => HttpResponse.json({
+        success: false, code: '10401', message: '未登录或登录已失效',
+        data: null, traceId: null,
+      }, { status: 401 })),
+      http.post('/api/auth/refresh', () => {
+        refreshCalls += 1;
+        return HttpResponse.json({ message: 'Bad Gateway' }, { status: 502 });
+      }),
+    );
+
+    await expect(apiClient.get('/api/data')).rejects.toBeInstanceOf(ApiError);
+    expect(refreshCalls).toBe(1);
+    // 刷新服务暂不可用不等于凭证失效：会话必须留着，页面才不会被踢回登录页。
+    expect(useAuthStore.getState().accessToken).toBe('expired-access');
+    expect(useAuthStore.getState().refreshToken).toBe('still-valid-refresh');
+  });
+
+  it('on 401 when the refresh endpoint itself answers 403, keeps the session', async () => {
+    useAuthStore.getState().setTokens('expired-access', 'still-valid-refresh');
+
+    server.use(
+      http.get('/api/data', () => HttpResponse.json({
+        success: false, code: '10401', message: '未登录或登录已失效',
+        data: null, traceId: null,
+      }, { status: 401 })),
+      http.post('/api/auth/refresh', () => HttpResponse.json(
+        { message: 'Forbidden' }, { status: 403 },
+      )),
+    );
+
+    await expect(apiClient.get('/api/data')).rejects.toBeInstanceOf(ApiError);
+    expect(useAuthStore.getState().accessToken).toBe('expired-access');
+    expect(useAuthStore.getState().refreshToken).toBe('still-valid-refresh');
+  });
+
   it('concurrent 401s trigger only one refresh request (single-flight)', async () => {
     let refreshCalls = 0;
     let dataCalls = 0;

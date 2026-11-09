@@ -18,6 +18,7 @@ vi.mock('../clarification/WorkitemClarificationPanel', () => ({
     onContextChange,
     headerPrefix,
     headerSuffix,
+    workitemTitle,
   }: {
     onAgentConfirmed?: () => void;
     fullscreen?: boolean;
@@ -29,12 +30,14 @@ vi.mock('../clarification/WorkitemClarificationPanel', () => ({
     }) => void;
     headerPrefix?: ReactNode;
     headerSuffix?: ReactNode;
+    workitemTitle?: string;
   }) => (
     <div
       data-testid="clarification-panel-stub"
       data-fullscreen={fullscreen ? 'true' : 'false'}
       data-initial-agent={initialAgentId == null ? '' : String(initialAgentId)}
       data-initial-conversation={initialConversationId == null ? '' : String(initialConversationId)}
+      data-workitem-title={workitemTitle ?? ''}
     >
       {headerPrefix}
       {headerSuffix}
@@ -367,6 +370,14 @@ describe('RightPanel clarify fullscreen', () => {
 
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(screen.getByTestId('clarification-panel-stub')).toHaveAttribute('data-fullscreen', 'false');
+  });
+
+  it('passes the workitem title down to the clarification header', async () => {
+    renderPanel({ workitemTitle: '支持按执行器配置平台服务地址' });
+    await enterClarifyMode();
+
+    expect(screen.getByTestId('clarification-panel-stub'))
+      .toHaveAttribute('data-workitem-title', '支持按执行器配置平台服务地址');
   });
 });
 

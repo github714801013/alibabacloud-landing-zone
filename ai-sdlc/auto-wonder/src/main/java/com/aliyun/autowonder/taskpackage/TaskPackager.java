@@ -359,7 +359,7 @@ public class TaskPackager {
         List<Map<String, Object>> skills = new ArrayList<>();
         List<Map<String, Object>> plugins = new ArrayList<>();
         List<Map<String, Object>> mcpServers = new ArrayList<>();
-        mcpServers.add(builtinAutowonderMcp());
+        mcpServers.add(builtinAutowonderMcp(ctx));
         Set<String> names = new HashSet<>();
         names.add("MCP:autowonder");
 
@@ -449,14 +449,23 @@ public class TaskPackager {
         return document;
     }
 
-    private Map<String, Object> builtinAutowonderMcp() {
+    private Map<String, Object> builtinAutowonderMcp(PackageContext ctx) {
         Map<String, Object> server = new LinkedHashMap<>();
         server.put("name", "autowonder");
         server.put("transport", "http");
-        server.put("url", normalizeMcpUrl(autowonderMcpUrlSupplier.get()));
+        server.put("url", normalizeMcpUrl(effectiveMcpUrl(ctx)));
         server.put("authType", "autowonder-dispatch");
         server.put("required", true);
         return server;
+    }
+
+    /** 执行器配置了平台服务地址时使用覆盖值，否则使用全局 MCP 地址。 */
+    private String effectiveMcpUrl(PackageContext ctx) {
+        String override = ctx.getMcpBaseUrl();
+        if (override == null || override.isBlank()) {
+            return autowonderMcpUrlSupplier.get();
+        }
+        return override.trim().replaceAll("/+$", "") + "/api/mcp";
     }
 
     private static String normalizeBaseUrl(String publicBaseUrl) {

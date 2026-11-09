@@ -131,7 +131,8 @@ export function SdlcDetailPage() {
     <Result status="404" title={t('messages.invalidId')} extra={<Button onClick={() => navigate(-1)}>{t('actions.back')}</Button>} />
   );
   if (isLoading) return <Spin size="large" style={{ display: 'block', margin: '100px auto' }} />;
-  if (isError) return (
+  // 后台刷新失败时保留已加载数据，只有从未加载成功才整页报错（502 不抹数据）。
+  if (isError && !sdlc) return (
     <Result status="error" title={t('messages.loadFailed')} subTitle={error?.message || t('messages.retry')}
       extra={<Button onClick={() => navigate(-1)}>{t('actions.back')}</Button>} />
   );

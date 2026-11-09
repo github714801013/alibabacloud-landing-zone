@@ -166,6 +166,54 @@ class PackageContextAssemblerTest {
     }
 
     @Test
+    void carriesTheExecutorServerBaseUrlOverrideIntoThePackageContext() {
+        com.aliyun.autowonder.executor.ExecutorDao executorDao =
+                mock(com.aliyun.autowonder.executor.ExecutorDao.class);
+        assembler.setExecutorDao(executorDao);
+        WorkitemDO workitem = new WorkitemDO();
+        workitem.setId(200L);
+        workitem.setTenantId(TENANT);
+        when(workitemDao.findById(200L)).thenReturn(workitem);
+        when(skillDao.listByVersion(401L)).thenReturn(List.of());
+        when(memoryRefDao.listByVersion(401L)).thenReturn(List.of());
+        AgentRepoPermDO permission = new AgentRepoPermDO();
+        permission.setTenantId(TENANT);
+        permission.setAgentVersionId(401L);
+        permission.setRepoId(10L);
+        permission.setPermLevel("READ");
+        when(repoPermDao.listByVersion(401L)).thenReturn(List.of(permission));
+        when(repoDao.findById(10L)).thenReturn(repo(10L, "service"));
+        when(repoRelationDao.listByRepoId(TENANT, 10L)).thenReturn(List.of());
+        com.aliyun.autowonder.executor.ExecutorDO executor = new com.aliyun.autowonder.executor.ExecutorDO();
+        executor.setId(9L);
+        executor.setTenantId(TENANT);
+        executor.setLaunchConfig("{\"serverBaseUrl\":\"http://192.168.254.3:7001\"}");
+        when(executorDao.findById(9L)).thenReturn(executor);
+
+        DispatchDO withOverride = dispatch();
+        withOverride.setExecutorId(9L);
+        assertEquals("http://192.168.254.3:7001", assembler.assemble(withOverride, version()).getMcpBaseUrl());
+
+        executor.setLaunchConfig("{}");
+        DispatchDO withoutOverride = dispatch();
+        withoutOverride.setExecutorId(9L);
+        assertNull(assembler.assemble(withoutOverride, version()).getMcpBaseUrl());
+
+        // 跨租户执行器不得把私有地址带进任务包
+        executor.setLaunchConfig("{\"serverBaseUrl\":\"http://192.168.254.3:7001\"}");
+        executor.setTenantId(999L);
+        DispatchDO crossTenant = dispatch();
+        crossTenant.setExecutorId(9L);
+        assertNull(assembler.assemble(crossTenant, version()).getMcpBaseUrl());
+
+        // 执行器已删除时回退全局地址
+        when(executorDao.findById(9L)).thenReturn(null);
+        DispatchDO missing = dispatch();
+        missing.setExecutorId(9L);
+        assertNull(assembler.assemble(missing, version()).getMcpBaseUrl());
+    }
+
+    @Test
     void resolvesBoundCapabilitiesFromTheTenantCatalog() {
         AgentSkillDO binding = new AgentSkillDO();
         binding.setTenantId(TENANT);

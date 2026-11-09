@@ -1813,6 +1813,56 @@ describe('ExecutorListPage', () => {
     expect(seen[0].prefixCommand).toBe('SHELL=/bin/bash');
   });
 
+  it('saves the platform service address typed by hand', async () => {
+    const user = userEvent.setup();
+    const seen: Record<string, unknown>[] = [];
+    serveExecutor({ clientKind: 'QODER_CLI' });
+    server.use(http.put('/api/executors/10000/launch-config', async ({ request }) => {
+      const body = await request.json() as Record<string, unknown>;
+      seen.push(body);
+      return HttpResponse.json({
+        success: true, code: '0', message: '', traceId: null, data: { ...body, version: 2 },
+      });
+    }));
+    renderPage();
+
+    await expandAgentGroup(user, 'A（未编队）');
+    await user.click(await screen.findByRole('button', { name: /启动命令/ }));
+    const dialog = await findModalByTitle('启动命令 · dev-machine-01');
+    await user.type(within(dialog).getByLabelText('平台服务地址'), 'http://192.168.254.3:7001');
+
+    await user.click(within(dialog).getByRole('button', { name: '保存配置' }));
+    await waitFor(() => expect(seen).toHaveLength(1));
+    expect(seen[0].serverBaseUrl).toBe('http://192.168.254.3:7001');
+  });
+
+  it('rejects an invalid platform service address before saving', async () => {
+    const user = userEvent.setup();
+    serveExecutor({ clientKind: 'QODER_CLI' });
+    renderPage();
+
+    await expandAgentGroup(user, 'A（未编队）');
+    await user.click(await screen.findByRole('button', { name: /启动命令/ }));
+    const dialog = await findModalByTitle('启动命令 · dev-machine-01');
+    await user.type(within(dialog).getByLabelText('平台服务地址'), 'http://192.168.254.3:7001/foo');
+
+    await user.click(within(dialog).getByRole('button', { name: '保存配置' }));
+    expect(await within(dialog).findByText('请填写 scheme://host[:port] 形式的 http(s) 地址，不能包含路径、查询参数或片段')).toBeInTheDocument();
+    expect(launchConfigUpdatesFor(10000)).toHaveLength(0);
+  });
+
+  it('restores the saved platform service address when reopening the startup dialog', async () => {
+    const user = userEvent.setup();
+    serveExecutor({ clientKind: 'QODER_CLI' }, { serverBaseUrl: 'http://192.168.254.3:7001' });
+    renderPage();
+
+    await expandAgentGroup(user, 'A（未编队）');
+    await user.click(await screen.findByRole('button', { name: /启动命令/ }));
+    const dialog = await findModalByTitle('启动命令 · dev-machine-01');
+
+    expect(await within(dialog).findByLabelText('平台服务地址')).toHaveValue('http://192.168.254.3:7001');
+  });
+
   it('restores the saved prefix command when reopening the startup dialog', async () => {
     const user = userEvent.setup();
     serveExecutor({ clientKind: 'QODER_CLI' }, { prefixCommand: 'SHELL=/bin/bash' });

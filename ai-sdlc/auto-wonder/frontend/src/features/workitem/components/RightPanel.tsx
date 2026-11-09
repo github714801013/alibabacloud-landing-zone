@@ -29,6 +29,8 @@ const CLARIFY_MIN_HEIGHT = 280;
 
 interface RightPanelProps {
   workitemId: string;
+  /** 工单标题：透传给澄清面板，显示在「返回」与数字人名之间。 */
+  workitemTitle?: string;
   timeline?: TimelineItem[];
   participants: Participant[];
   participantsLoading?: boolean;
@@ -60,6 +62,7 @@ interface RightPanelProps {
 
 export function RightPanel({
   workitemId,
+  workitemTitle,
   timeline = [],
   participants,
   participantsLoading,
@@ -186,6 +189,7 @@ export function RightPanel({
         <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
           <WorkitemClarificationPanel
             workitemId={workitemId}
+            workitemTitle={workitemTitle}
             artifacts={clarificationArtifacts ?? artifacts}
             fullscreen={clarifyFullscreen}
             headerPrefix={(

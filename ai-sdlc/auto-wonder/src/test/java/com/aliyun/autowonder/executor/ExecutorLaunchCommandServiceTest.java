@@ -285,6 +285,28 @@ class ExecutorLaunchCommandServiceTest {
     }
 
     @Test
+    void serverBaseUrlOverridesTheWsUrlAndFallsBackWhenNotConfigured() {
+        ExecutorLaunchConfigService.LaunchConfig config = new ExecutorLaunchConfigService.LaunchConfig();
+        config.memoryMode = "platform";
+        config.model = "qmodel_latest";
+        config.reasoningEffort = "medium";
+        config.contextWindow = "260000";
+        config.maxConcurrentDispatches = 5;
+        config.serverBaseUrl = "http://192.168.254.3:7001";
+
+        ExecutorLaunchCommandVO overridden = service.buildAt("awexec_plain", 9L, "QODER_CLI", config, "posix", false, null);
+        assertEquals("ws://192.168.254.3:7001/ws/executor", overridden.getWsUrl());
+        assertTrue(overridden.getCommand().contains("--ws-url ws://192.168.254.3:7001/ws/executor"));
+
+        config.serverBaseUrl = "https://autowonder.dev.9ji.com";
+        assertEquals("wss://autowonder.dev.9ji.com/ws/executor",
+                service.buildAt("awexec_plain", 9L, "QODER_CLI", config, "posix", false, null).getWsUrl());
+
+        config.serverBaseUrl = "  ";
+        assertEquals(WS_URL, service.buildAt("awexec_plain", 9L, "QODER_CLI", config, "posix", false, null).getWsUrl());
+    }
+
+    @Test
     void launchCommandWsUrlFollowsTheBrandingDomainWithoutRestart() {
         PlatformBrandingDao dao = mock(PlatformBrandingDao.class);
         PlatformBrandingService realBranding = new PlatformBrandingService(

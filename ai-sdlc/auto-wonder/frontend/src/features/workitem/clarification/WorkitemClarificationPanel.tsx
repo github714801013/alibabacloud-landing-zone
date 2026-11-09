@@ -184,6 +184,8 @@ interface WorkitemClarificationPanelProps {
   headerPrefix?: ReactNode;
   /** 全屏合并头行插槽：「退出全屏」等尾部动作挂在头行末尾。 */
   headerSuffix?: ReactNode;
+  /** 当前工单标题：与「返回」同排显示在数字人名左侧，用于在澄清多个需求时分清对象。 */
+  workitemTitle?: string;
 }
 
 export function WorkitemClarificationPanel({
@@ -196,6 +198,7 @@ export function WorkitemClarificationPanel({
   onContextChange,
   headerPrefix,
   headerSuffix,
+  workitemTitle,
 }: WorkitemClarificationPanelProps) {
   const { t } = useTranslation('workitem');
   const [previewArtifact, setPreviewArtifact] = useState<Artifact | null>(null);
@@ -1287,6 +1290,22 @@ export function WorkitemClarificationPanel({
     ? { width: '100%', minWidth: 0, overflowWrap: 'break-word' }
     : {};
 
+  // 工单标题：与「返回」同排、数字人名左侧。maxWidth 让步进夹在两者之间也不会
+  // 把「切换数字人/会话」挤出视野，超长一律 ellipsis，悬停看全。
+  const workitemTitleNode = workitemTitle ? (
+    <Typography.Text
+      data-testid="clarification-workitem-title"
+      ellipsis={{ tooltip: workitemTitle }}
+      title={workitemTitle}
+      style={{
+        flex: '0 1 auto', minWidth: 0, maxWidth: fullscreen ? '40%' : '45%',
+        whiteSpace: 'nowrap',
+      }}
+    >
+      {workitemTitle}
+    </Typography.Text>
+  ) : null;
+
   if (needsAgentSelection) {
     return (
       <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
@@ -1308,6 +1327,7 @@ export function WorkitemClarificationPanel({
             }}
           >
             {headerPrefix}
+            {workitemTitleNode}
             <span style={{ flex: '1 1 0%' }} />
             {headerSuffix}
           </div>
@@ -1398,6 +1418,7 @@ export function WorkitemClarificationPanel({
           // 全屏：外层的「返回/退出全屏」与本面板控件融合为一行，永不换行。
           <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'nowrap', gap: 8 }}>
             {headerPrefix}
+            {workitemTitleNode}
             <Button
               size="middle"
               icon={<UserSwitchOutlined />}
@@ -1444,6 +1465,7 @@ export function WorkitemClarificationPanel({
           <>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
               {headerPrefix}
+              {workitemTitleNode}
               {agentNameNode(true)}
               {headerSuffix}
             </div>

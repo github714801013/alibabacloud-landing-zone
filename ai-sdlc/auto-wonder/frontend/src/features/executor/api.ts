@@ -140,6 +140,8 @@ export interface ExecutorLaunchConfig {
   extraArgs: string | null;
   // 前置命令，原样放在启动命令最前；与客户端类型无关，从未保存过时为 null
   prefixCommand: string | null;
+  // 执行器级平台服务地址；未配置时为 null，表示使用全局品牌地址
+  serverBaseUrl?: string | null;
   version: number;
 }
 
@@ -155,6 +157,7 @@ export interface UpdateExecutorLaunchConfigRequest {
   maxConcurrentDispatches?: number | null;
   extraArgs?: string | null;
   prefixCommand?: string | null;
+  serverBaseUrl?: string | null;
   version: number;
 }
 

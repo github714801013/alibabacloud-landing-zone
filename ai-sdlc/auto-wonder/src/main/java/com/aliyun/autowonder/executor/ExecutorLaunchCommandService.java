@@ -147,7 +147,10 @@ public class ExecutorLaunchCommandService {
         String resolvedShell = debug ? resolveShell(shell, resolvedOs) : null;
         // buildWsUrl keeps only scheme/host/port, so the effective platform base URL yields
         // the page's ws URL, following a domain saved in the brand settings immediately.
-        String publicBaseUrl = brandingService.effectivePublicBaseUrl();
+        // 执行器配置了平台服务地址时优先使用，未配置（null/空白）回退全局品牌地址。
+        String publicBaseUrl = config.serverBaseUrl == null || config.serverBaseUrl.isBlank()
+                ? brandingService.effectivePublicBaseUrl()
+                : config.serverBaseUrl;
         if (publicBaseUrl == null || publicBaseUrl.isBlank()) {
             throw BizException.keyed(ErrorCode.SYSTEM_ERROR, "executor.mcp_address_missing", null, "平台 MCP 地址未配置，无法生成执行器启动命令");
         }

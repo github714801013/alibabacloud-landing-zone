@@ -60,6 +60,8 @@ public class PackageContext {
     private Long sdlcId;
     private Long agentVersionId;
     private Long executorId;
+    /** 执行器级平台服务地址覆盖；null 表示任务包使用全局 MCP 地址。 */
+    private String mcpBaseUrl;
     private String roleCode;
     private String roleName;
     private String idempotencyKey;

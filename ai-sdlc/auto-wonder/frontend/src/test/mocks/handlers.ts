@@ -12,6 +12,7 @@ type StoredLaunchConfig = {
   daemonName?: string | null;
   debug?: boolean | null;
   prefixCommand?: string | null;
+  serverBaseUrl?: string | null;
   version: number;
 };
 
@@ -63,6 +64,7 @@ export type SeededLaunchConfig = {
   daemonName?: string | null;
   debug?: boolean | null;
   prefixCommand?: string | null;
+  serverBaseUrl?: string | null;
   version?: number;
 };
 
@@ -77,6 +79,7 @@ export function setExecutorLaunchConfig(id: number, config: SeededLaunchConfig):
     contextWindow: config.contextWindow === undefined ? current.contextWindow : config.contextWindow,
     memoryMode: config.memoryMode === undefined ? current.memoryMode : config.memoryMode,
     prefixCommand: config.prefixCommand === undefined ? current.prefixCommand : config.prefixCommand,
+    serverBaseUrl: config.serverBaseUrl === undefined ? current.serverBaseUrl : config.serverBaseUrl,
     version: config.version ?? current.version,
   });
 }
@@ -84,7 +87,7 @@ export function setExecutorLaunchConfig(id: number, config: SeededLaunchConfig):
 function emptyLaunchConfig(): StoredLaunchConfig {
   return {
     model: null, reasoningEffort: null, contextWindow: null, memoryMode: null,
-    prefixCommand: null, version: 1,
+    prefixCommand: null, serverBaseUrl: null, version: 1,
   };
 }
 
@@ -388,6 +391,7 @@ export const handlers = [
       contextWindow: body.contextWindow ?? null,
       memoryMode: body.memoryMode ?? null,
       prefixCommand: body.prefixCommand ?? null,
+      serverBaseUrl: body.serverBaseUrl?.trim() ? body.serverBaseUrl.trim() : null,
       version: current.version + 1,
     };
     executorLaunchConfigStore.set(id, next);

@@ -166,7 +166,8 @@ export function AgentDetailPage() {
     <Result status="404" title={t('errors.invalidId')} extra={<Button onClick={() => navigate(-1)}>{t('actions.back')}</Button>} />
   );
   if (isLoading) return <Spin size="large" style={{ display: 'block', margin: '100px auto' }} />;
-  if (isError) return (
+  // 后台刷新失败时保留已加载数据，只有从未加载成功才整页报错（502 不抹数据）。
+  if (isError && !agent) return (
     <Result status="error" title={t('errors.load')} subTitle={(error as Error)?.message || t('display.retryLater')}
       extra={<Button onClick={() => navigate(-1)}>{t('actions.back')}</Button>} />
   );

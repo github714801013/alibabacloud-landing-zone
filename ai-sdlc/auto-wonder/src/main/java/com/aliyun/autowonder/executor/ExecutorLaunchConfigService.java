@@ -16,6 +16,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.util.List;
 
 /**
@@ -140,6 +142,8 @@ public class ExecutorLaunchConfigService {
         stored.workspaceRoot = req.getWorkspaceRoot() == null ? previous.workspaceRoot : launchText(req.getWorkspaceRoot(), 4096);
         stored.daemonName = req.getDaemonName() == null ? previous.daemonName : launchText(req.getDaemonName(), 200);
         stored.debug = req.getDebug() == null ? previous.debug : req.getDebug();
+        stored.serverBaseUrl = req.getServerBaseUrl() == null
+                ? previous.serverBaseUrl : normalizeServerBaseUrl(req.getServerBaseUrl());
         return stored;
     }
 
@@ -308,6 +312,35 @@ public class ExecutorLaunchConfigService {
         return prefixCommand;
     }
 
+    /**
+     * 执行器级平台服务地址只接受 scheme://host[:port]，路径、查询参数、片段和用户信息一律拒绝；
+     * 空白表示回退全局品牌地址。
+     */
+    private static String normalizeServerBaseUrl(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        String trimmed = value.trim();
+        try {
+            URI uri = new URI(trimmed);
+            String scheme = uri.getScheme();
+            if ((!"http".equalsIgnoreCase(scheme) && !"https".equalsIgnoreCase(scheme))
+                    || uri.getHost() == null || uri.getRawUserInfo() != null
+                    || uri.getRawQuery() != null || uri.getRawFragment() != null
+                    || !uri.getRawPath().isEmpty()) {
+                throw invalidServerBaseUrl();
+            }
+            return trimmed;
+        } catch (URISyntaxException | IllegalArgumentException exception) {
+            throw invalidServerBaseUrl();
+        }
+    }
+
+    private static BizException invalidServerBaseUrl() {
+        return BizException.keyed(ErrorCode.PARAM_INVALID, "executor.config.server_base_url_invalid", null,
+                "平台服务地址必须是 scheme://host[:port] 形式的 http(s) 地址，且不能包含路径、查询参数或片段");
+    }
+
     private static BizException incomplete() {
         return new BizException(ErrorCode.EXECUTOR_LAUNCH_CONFIG_INCOMPLETE);
     }
@@ -360,6 +393,7 @@ public class ExecutorLaunchConfigService {
         vo.setDebug(config.debug);
         vo.setExtraArgs(config.extraArgs);
         vo.setPrefixCommand(config.prefixCommand);
+        vo.setServerBaseUrl(config.serverBaseUrl);
         vo.setVersion(version);
         return vo;
     }
@@ -434,5 +468,7 @@ public class ExecutorLaunchConfigService {
         public Boolean debug;
         public String extraArgs;
         public String prefixCommand;
+        /** 执行器级平台服务地址覆盖；null 表示回退全局品牌地址。 */
+        public String serverBaseUrl;
     }
 }

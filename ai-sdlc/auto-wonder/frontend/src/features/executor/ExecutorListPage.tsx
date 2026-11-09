@@ -266,6 +266,17 @@ function PrefixCommandField() {
   );
 }
 
+function ServerBaseUrlField() {
+  const { t } = useTranslation('executor');
+  return (
+    <Form.Item label={t('serverBaseUrl')} name="serverBaseUrl"
+      rules={[{ pattern: /^https?:\/\/[^/?#@\s]+$/i, message: t('serverBaseUrlInvalid') }]}
+      extra={t('serverBaseUrlHint')}>
+      <Input allowClear placeholder={t('serverBaseUrlPlaceholder')} />
+    </Form.Item>
+  );
+}
+
 function ClientKindSelect({ value, onChange }: { value?: string; onChange?: (v: string) => void }) {
   const { t } = useTranslation('executor');
   return (
@@ -365,6 +376,7 @@ interface StartupFormValues {
   contextWindow?: string;
   extraArgs?: string;
   prefixCommand?: string;
+  serverBaseUrl?: string;
 }
 
 export function ExecutorListPage() {
@@ -764,6 +776,7 @@ export function ExecutorListPage() {
         contextWindow: config.contextWindow ?? undefined,
         extraArgs: config.extraArgs ?? undefined,
         prefixCommand: config.prefixCommand ?? undefined,
+        serverBaseUrl: config.serverBaseUrl ?? undefined,
       });
       setStartupModelInvalid(!config.model);
     } else {
@@ -772,6 +785,7 @@ export function ExecutorListPage() {
         maxConcurrentDispatches: config.maxConcurrentDispatches ?? 5,
         extraArgs: config.extraArgs ?? undefined,
         prefixCommand: config.prefixCommand ?? undefined,
+        serverBaseUrl: config.serverBaseUrl ?? undefined,
       });
     }
     return config;
@@ -819,9 +833,10 @@ export function ExecutorListPage() {
         ...(kindMissing ? { clientKind: values.clientKind } : {}),
         memoryMode: values.memoryMode,
         maxConcurrentDispatches: values.maxConcurrentDispatches,
-        // 扩展参数与前置命令都与客户端类型无关，非 Qoder 执行器同样提交
+        // 扩展参数、前置命令与平台服务地址都与客户端类型无关，非 Qoder 执行器同样提交
         extraArgs: values.extraArgs,
         prefixCommand: values.prefixCommand,
+        serverBaseUrl: values.serverBaseUrl,
         ...(isQoder ? {
           model: values.model,
           reasoningEffort: values.reasoningEffort,
@@ -1330,6 +1345,7 @@ export function ExecutorListPage() {
           )}
           <ExtraArgsField />
           <PrefixCommandField />
+          <ServerBaseUrlField />
         </Form>
         </div>
         {commandDraft !== null ? <>

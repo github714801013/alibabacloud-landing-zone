@@ -31,5 +31,7 @@ public class UpdateExecutorLaunchConfigRequest {
     private String extraArgs;
     /** 前置命令，原样放在运行时命令之前；空白表示未配置。 */
     private String prefixCommand;
+    /** 执行器级平台服务地址；null 保留原值，空白表示回退全局。 */
+    private String serverBaseUrl;
     private Integer version;
 }

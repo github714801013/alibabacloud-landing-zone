@@ -18,6 +18,9 @@ import com.aliyun.autowonder.skill.SkillDO;
 import com.aliyun.autowonder.skill.SkillDao;
 import com.aliyun.autowonder.clarification.ClarificationDO;
 import com.aliyun.autowonder.clarification.ClarificationDao;
+import com.aliyun.autowonder.executor.ExecutorDO;
+import com.aliyun.autowonder.executor.ExecutorDao;
+import com.aliyun.autowonder.executor.ExecutorLaunchConfigService;
 import com.aliyun.autowonder.memory.MemoryDO;
 import com.aliyun.autowonder.memory.MemoryDao;
 import com.aliyun.autowonder.guidance.GuidanceDO;
@@ -89,6 +92,7 @@ public class PackageContextAssembler {
     private final StatusNodeDao statusNodeDao;
     private final DispatchCheckpointService checkpointService;
     private ExecutionSubjectRegistry subjectRegistry;
+    private ExecutorDao executorDao;
 
     @Autowired
     public PackageContextAssembler(WorkitemDao workitemDao, ClarificationDao clarificationDao,
@@ -172,7 +176,29 @@ public class PackageContextAssembler {
     public PackageContext assemble(DispatchDO dispatch, AgentVersionDO version) {
         ExecutionSubjectProvider provider = subjectRegistry.require(dispatch);
         ExecutionSubject subject = provider.load(dispatch.getTenantId(), dispatch.getWorkitemId());
-        return provider.assemble(dispatch, subject, version);
+        PackageContext context = provider.assemble(dispatch, subject, version);
+        context.setMcpBaseUrl(resolveMcpBaseUrl(dispatch));
+        return context;
+    }
+
+    /** 执行器级平台地址覆盖只影响任务包内的平台 MCP 地址；未配置时由 TaskPackager 回退全局地址。 */
+    private String resolveMcpBaseUrl(DispatchDO dispatch) {
+        if (executorDao == null || dispatch.getExecutorId() == null) {
+            return null;
+        }
+        ExecutorDO executor = executorDao.findById(dispatch.getExecutorId());
+        if (executor == null || executor.getTenantId() == null
+                || !executor.getTenantId().equals(dispatch.getTenantId())) {
+            return null;
+        }
+        String base = ExecutorLaunchConfigService.parse(executor.getLaunchConfig()).serverBaseUrl;
+        return base == null || base.isBlank() ? null : base.trim();
+    }
+
+    /** Spring 注入；直接用构造器组合（测试、非 Spring 环境）时保持 null 并回退全局地址。 */
+    @Autowired(required = false)
+    public void setExecutorDao(ExecutorDao executorDao) {
+        this.executorDao = executorDao;
     }
 
     /** Existing Workitem assembler retained as the adapter's compatibility implementation. */

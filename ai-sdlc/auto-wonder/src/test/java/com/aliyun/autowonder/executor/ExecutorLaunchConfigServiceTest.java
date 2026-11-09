@@ -363,6 +363,56 @@ class ExecutorLaunchConfigServiceTest {
     }
 
     @Test
+    void updateConfig_persists_and_reads_back_the_server_base_url() {
+        when(executorDao.findById(9L)).thenReturn(executor(9L, "QODER_CLI", null, 1));
+        ArgumentCaptor<String> json = ArgumentCaptor.forClass(String.class);
+        when(executorDao.updateLaunchConfig(eq(9L), eq(TENANT), json.capture(), eq(1), eq(USER))).thenReturn(1);
+
+        var request = req(1, "platform", "qmodel_38max", "medium", "260000");
+        request.setServerBaseUrl("  http://192.168.254.3:7001  ");
+        ExecutorLaunchConfigVO vo = service.updateConfig(9L, TENANT, request, USER);
+
+        assertEquals("http://192.168.254.3:7001", vo.getServerBaseUrl());
+        assertTrue(json.getValue().contains("\"serverBaseUrl\":\"http://192.168.254.3:7001\""), json.getValue());
+    }
+
+    @Test
+    void updateConfig_rejects_a_server_base_url_with_a_path_query_fragment_or_unsupported_scheme() {
+        when(executorDao.findById(9L)).thenReturn(executor(9L, "QODER_CLI", null, 1));
+
+        for (String invalid : new String[]{"http://host:7001/foo", "http://host:7001?a=1", "http://host:7001#x",
+                "http://host:7001/", "ftp://host", "http://", "//host:7001", "not a url"}) {
+            var request = req(1, "platform", "qmodel_38max", "medium", "260000");
+            request.setServerBaseUrl(invalid);
+            BizException ex = assertThrows(BizException.class,
+                    () -> service.updateConfig(9L, TENANT, request, USER), invalid);
+            assertEquals("10001", ex.getCode(), invalid);
+        }
+        verify(executorDao, never()).updateLaunchConfig(anyLong(), anyLong(), anyString(), anyInt(), anyLong());
+    }
+
+    @Test
+    void updateConfig_preserves_the_stored_server_base_url_when_omitted_and_clears_it_on_blank() {
+        when(executorDao.findById(9L)).thenReturn(executor(9L, "QODER_CLI",
+                "{\"memoryMode\":\"platform\",\"model\":\"qmodel_38max\",\"reasoningEffort\":\"medium\","
+                        + "\"contextWindow\":\"260000\",\"serverBaseUrl\":\"http://192.168.254.3:7001\"}", 1));
+        when(executorDao.updateLaunchConfig(eq(9L), eq(TENANT), anyString(), eq(1), eq(USER))).thenReturn(1);
+
+        var request = req(1, "platform", "qmodel_38max", "medium", "260000");
+        assertEquals("http://192.168.254.3:7001", service.updateConfig(9L, TENANT, request, USER).getServerBaseUrl());
+        request.setServerBaseUrl("  ");
+        assertNull(service.updateConfig(9L, TENANT, request, USER).getServerBaseUrl());
+    }
+
+    @Test
+    void readStoredConfig_returns_the_stored_server_base_url() {
+        when(executorDao.findById(9L)).thenReturn(executor(9L, "QODER_CLI",
+                "{\"memoryMode\":\"platform\",\"serverBaseUrl\":\"https://autowonder.dev.9ji.com\"}", 3));
+
+        assertEquals("https://autowonder.dev.9ji.com", service.readStoredConfig(9L, TENANT).getServerBaseUrl());
+    }
+
+    @Test
     void updateConfig_persists_and_reads_back_the_extra_args() {
         when(executorDao.findById(9L)).thenReturn(executor(9L, "QODER_CLI", null, 1));
         ArgumentCaptor<String> json = ArgumentCaptor.forClass(String.class);

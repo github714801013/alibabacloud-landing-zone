@@ -63,13 +63,16 @@ function mockAgent(overrides: Record<string, unknown> = {}) {
 
 function renderPage() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
-    <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={['/agents/1']}>
-        <Routes><Route path="/agents/:id" element={<AgentDetailPage />} /></Routes>
-      </MemoryRouter>
-    </QueryClientProvider>,
-  );
+  return {
+    queryClient,
+    ...render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/agents/1']}>
+          <Routes><Route path="/agents/:id" element={<AgentDetailPage />} /></Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    ),
+  };
 }
 
 describe('AgentDetailPage', () => {
@@ -84,6 +87,34 @@ describe('AgentDetailPage', () => {
     expect(await screen.findByText('Alpha')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /编辑配置/ })).toBeInTheDocument();
     expect(screen.getAllByText(/v2/).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('keeps the error page when the first load already fails with 502', async () => {
+    mockAgent();
+    server.use(http.get('/api/agents/1', () => HttpResponse.json(
+      { success: false, code: '502', message: 'Bad Gateway', traceId: null }, { status: 502 },
+    )));
+    renderPage();
+
+    expect(await screen.findByText('加载失败')).toBeInTheDocument();
+  });
+
+  // 需求：502 后台刷新失败不能把已加载的页面整页换成错误页。
+  it('keeps the loaded agent when a background refresh fails with 502', async () => {
+    mockAgent();
+    const { queryClient } = renderPage();
+    expect(await screen.findByText('Alpha')).toBeInTheDocument();
+
+    server.use(http.get('/api/agents/1', () => HttpResponse.json(
+      { success: false, code: '502', message: 'Bad Gateway', traceId: null }, { status: 502 },
+    )));
+    void queryClient.invalidateQueries({ queryKey: ['agent', 1, 'detail'] });
+
+    await waitFor(() => expect(
+      queryClient.getQueryCache().findAll({ queryKey: ['agent', 1, 'detail'] })[0]?.state.status,
+    ).toBe('error'));
+    expect(screen.getByText('Alpha')).toBeInTheDocument();
+    expect(screen.queryByText('加载失败')).not.toBeInTheDocument();
   });
 
   it('shows current release identity and stable official capability names', async () => {

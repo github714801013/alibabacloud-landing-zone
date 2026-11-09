@@ -39,11 +39,13 @@ async function synchronizeWorkspaceAfterFailure(code: string): Promise<void> {
   }
 }
 
-let refreshPromise: Promise<string | null> | null = null;
+type RefreshResult = { token: string | null; sessionExpired: boolean };
 
-async function performRefresh(): Promise<string | null> {
+let refreshPromise: Promise<RefreshResult> | null = null;
+
+async function performRefresh(): Promise<RefreshResult> {
   const { refreshToken: rt, currentWorkspace } = useAuthStore.getState();
-  if (!rt) return null;
+  if (!rt) return { token: null, sessionExpired: true };
   try {
     const resp = await fetch('/api/auth/refresh', {
       method: 'POST',
@@ -53,18 +55,20 @@ async function performRefresh(): Promise<string | null> {
       // call returns WORKSPACE_NOT_MEMBER, and RouteGuard bounces the user to /workspaces.
       body: JSON.stringify({ refreshToken: rt, workspaceId: currentWorkspace?.id ?? null }),
     });
-    if (!resp.ok) return null;
+    // 只有 401 是「明确的未授权」；5xx、网络错误和其它 4xx 都不能判定 refreshToken 失效：
+    // 误判会清空凭证并把用户踢回登录页，当前页面与已加载数据随之丢失。
+    if (!resp.ok) return { token: null, sessionExpired: resp.status === 401 };
     const body = await resp.json();
     if (body.success && body.data?.accessToken) {
-      return body.data.accessToken as string;
+      return { token: body.data.accessToken as string, sessionExpired: false };
     }
-    return null;
+    return { token: null, sessionExpired: true };
   } catch {
-    return null;
+    return { token: null, sessionExpired: false };
   }
 }
 
-function refreshAccessToken(): Promise<string | null> {
+function refreshAccessToken(): Promise<RefreshResult> {
   if (!refreshPromise) {
     refreshPromise = performRefresh().finally(() => {
       refreshPromise = null;
@@ -115,15 +119,19 @@ async function handleUnauthorized(
     return Promise.reject(new ApiError(ErrorCodes.UNAUTHORIZED, i18n.t('account.expired'), null));
   }
 
-  const newToken = await refreshAccessToken();
-  if (newToken) {
-    useAuthStore.getState().setAccessToken(newToken);
-    originalConfig.headers.Authorization = `Bearer ${newToken}`;
+  const result = await refreshAccessToken();
+  if (result.token) {
+    useAuthStore.getState().setAccessToken(result.token);
+    originalConfig.headers.Authorization = `Bearer ${result.token}`;
     return apiClient(originalConfig);
   }
 
-  useAuthStore.getState().clear();
-  redirectToLogin();
+  // 刷新服务 5xx / 网络错误：会话可能仍有效，保留凭证并停在当前页面，只让本次请求失败。
+  // 只有服务端明确判定 refreshToken 失效时才登出。
+  if (result.sessionExpired) {
+    useAuthStore.getState().clear();
+    redirectToLogin();
+  }
   return Promise.reject(new ApiError(ErrorCodes.UNAUTHORIZED, i18n.t('account.expired'), null));
 }
 

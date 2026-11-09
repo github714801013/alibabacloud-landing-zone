@@ -1,4 +1,5 @@
 import { i18n } from '@/shared/i18n';
+import type { ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -49,6 +50,8 @@ type PanelTestProps = {
   initialAgentId?: number | null;
   initialConversationId?: number | null;
   onContextChange?: (context: ReportedClarifyContext) => void;
+  headerPrefix?: ReactNode;
+  workitemTitle?: string;
 };
 
 function renderPanel(props: PanelTestProps = {}) {
@@ -2854,5 +2857,50 @@ describe('owned conversation fallback display', () => {
     await act(async () => { await i18n.changeLanguage('zh-CN'); });
     expect(blocks[0]).toHaveTextContent('响应已终止');
     expect(requests).toBe(count);
+  });
+});
+
+describe('clarification header workitem title', () => {
+  it('puts the workitem title right after the back button on the docked header', async () => {
+    mockSquads();
+    renderPanel({
+      workitemTitle: '支持按执行器配置平台服务地址',
+      headerPrefix: <button type="button" data-testid="stub-back">返回</button>,
+    });
+
+    const header = screen.getByTestId('clarification-panel-header');
+    const title = within(header).getByTestId('clarification-workitem-title');
+    expect(title).toHaveTextContent('支持按执行器配置平台服务地址');
+    // 超长截断，悬停看全：完整标题落在 title 属性上
+    expect(title).toHaveAttribute('title', '支持按执行器配置平台服务地址');
+    const back = within(header).getByTestId('stub-back');
+    expect(back.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    const comboboxes = await screen.findAllByRole('combobox');
+    await waitFor(() => expect(comboboxes[0]).not.toBeDisabled());
+  });
+
+  it('keeps the title on the fullscreen conversation header', async () => {
+    await renderActiveConversation({ fullscreen: true, workitemTitle: '支持按执行器配置平台服务地址' });
+
+    const header = screen.getByTestId('clarification-panel-header');
+    expect(within(header).getByTestId('clarification-workitem-title'))
+      .toHaveTextContent('支持按执行器配置平台服务地址');
+  });
+
+  it('renders no title slot without a title', async () => {
+    await renderActiveConversation();
+
+    expect(screen.queryByTestId('clarification-workitem-title')).toBeNull();
+  });
+
+  it('keeps a long workitem title complete for the hover tooltip while trimming its width', async () => {
+    const longTitle = '需求澄清头部超长工单标题'.repeat(10);
+    await renderActiveConversation({ workitemTitle: longTitle });
+
+    const title = screen.getByTestId('clarification-workitem-title');
+    expect(title).toHaveTextContent(longTitle);
+    expect(title).toHaveAttribute('title', longTitle);
+    expect(title).toHaveStyle({ maxWidth: '45%', whiteSpace: 'nowrap' });
   });
 });

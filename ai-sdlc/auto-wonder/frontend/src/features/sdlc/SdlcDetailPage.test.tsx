@@ -11,13 +11,16 @@ import { useAuthStore } from '@/shared/auth/store';
 
 function renderPage(initialPath = '/sdlcs/1') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
-    <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={[initialPath]}>
-        <Routes><Route path="/sdlcs/:id" element={<SdlcDetailPage />} /></Routes>
-      </MemoryRouter>
-    </QueryClientProvider>,
-  );
+  return {
+    queryClient,
+    ...render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={[initialPath]}>
+          <Routes><Route path="/sdlcs/:id" element={<SdlcDetailPage />} /></Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    ),
+  };
 }
 
 beforeEach(() => {
@@ -28,6 +31,35 @@ describe('SdlcDetailPage', () => {
   beforeEach(() => {
     useAuthStore.getState().clear();
     useAuthStore.getState().setCurrentWorkspace({ id: 1, name: 'O', description: '' }, 'READ_WRITE');
+  });
+
+  it('keeps the error page when the first load already fails with 502', async () => {
+    server.use(http.get('/api/sdlcs/1', () => HttpResponse.json(
+      { success: false, code: '502', message: 'Bad Gateway', traceId: null }, { status: 502 },
+    )));
+    renderPage();
+
+    expect(await screen.findByText('加载失败')).toBeInTheDocument();
+  });
+
+  // 需求：502 后台刷新失败不能把已加载的页面整页换成错误页。
+  it('keeps the loaded sdlc when a background refresh fails with 502', async () => {
+    server.use(http.get('/api/sdlcs/1', () => HttpResponse.json({
+      success: true, data: { id: '1', name: 'raw', status: 'DRAFT', steps: [] },
+    })));
+    const { queryClient } = renderPage();
+    expect(await screen.findByText('raw')).toBeInTheDocument();
+
+    server.use(http.get('/api/sdlcs/1', () => HttpResponse.json(
+      { success: false, code: '502', message: 'Bad Gateway', traceId: null }, { status: 502 },
+    )));
+    void queryClient.invalidateQueries({ queryKey: ['sdlc', '1'] });
+
+    await waitFor(() => expect(
+      queryClient.getQueryCache().findAll({ queryKey: ['sdlc', '1'], exact: true })[0]?.state.status,
+    ).toBe('error'));
+    expect(screen.getByText('raw')).toBeInTheDocument();
+    expect(screen.queryByText('加载失败')).not.toBeInTheDocument();
   });
 
   it('defaults approvers to the creator and saves multiple members and identity tags', async () => {

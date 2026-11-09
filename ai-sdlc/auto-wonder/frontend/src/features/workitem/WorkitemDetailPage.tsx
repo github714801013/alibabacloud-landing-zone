@@ -131,7 +131,9 @@ export function WorkitemDetailPage() {
 
   if (!id) return <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}><Result status="404" title={t('detail.invalidId')} extra={<Button onClick={() => navigate(-1)}>{t('detail.back')}</Button>} /></div>;
   if (isLoading) return <Spin size="large" style={{ display: 'block', margin: '100px auto' }} />;
-  if (isError) return (
+  // 轮询后台刷新失败时 react-query 会保留已加载数据（isError=true 但 data 还在）。
+  // 只有一次都没加载成功才整页替换成错误页，否则页面会从有数据被抹成 502（需求：502 保留数据）。
+  if (isError && !workitem) return (
     <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}>
       {owningWorkspace ? (
         <OtherWorkspacePrompt
@@ -347,6 +349,7 @@ export function WorkitemDetailPage() {
         <RightPanel
           key={id}
           workitemId={id}
+          workitemTitle={workitem.title}
           timeline={timeline}
           participants={participants}
           participantsLoading={participantsLoading}
