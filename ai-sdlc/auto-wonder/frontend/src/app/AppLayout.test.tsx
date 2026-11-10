@@ -1,6 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactElement } from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
@@ -38,10 +38,27 @@ function LocationProbe() {
   return <div data-testid="location-probe">{location.pathname}{location.search}</div>;
 }
 
+function stubMobileMatchMedia() {
+  vi.stubGlobal('matchMedia', (query: string) => ({
+    matches: query.includes('767.98px'),
+    media: query,
+    onchange: null,
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  }));
+}
+
 describe('AppLayout', () => {
   beforeEach(() => {
     useAuthStore.getState().clear();
     vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it('keeps the header on public help without platform navigation or workspace refresh', async () => {
@@ -416,5 +433,35 @@ describe('AppLayout', () => {
     expect(screen.queryByTitle(longEmail)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: '用户菜单' })).toHaveStyle({ width: '36px', height: '36px', borderRadius: '50%' });
     expect(screen.queryByTitle('状态模版')).not.toBeInTheDocument();
+  });
+
+  it('opens the navigation drawer on mobile and closes it after navigation', async () => {
+    stubMobileMatchMedia();
+    useAuthStore.getState().setCurrentWorkspace(
+      { id: 7, name: '星云工坊', description: '' },
+      'READ_WRITE',
+    );
+    renderWithQueryClient(
+      <MemoryRouter initialEntries={['/overview']}>
+        <Routes>
+          <Route element={<AppLayout />}>
+            <Route path="/overview" element={<div>总览页</div>} />
+            <Route path="/workitems" element={<div>工单页</div>} />
+          </Route>
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(screen.queryByRole('complementary')).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: '打开菜单' }));
+
+    const drawer = await screen.findByRole('dialog');
+    expect(within(drawer).getByText('星云工坊')).toBeInTheDocument();
+
+    await userEvent.click(within(drawer).getByRole('menuitem', { name: /工单/ }));
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    });
+    expect(screen.getByText('工单页')).toBeInTheDocument();
   });
 });

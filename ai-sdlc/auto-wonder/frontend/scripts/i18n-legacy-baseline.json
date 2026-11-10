@@ -317,6 +317,8 @@
   {"file":"src/features/statemachine/components/TransitionFormModal.tsx","kind":"literal","text":"`${n.name} (${n.code})`","reason":"User-authored node name and technical code, rendered as text with a locale-independent separator."},
   {"file":"src/features/workitem/SharedArtifactPage.tsx","kind":"literal","text":"` · ${file.size < 1024 ? `${file.size} B` : `${(file.size / 1024).toFixed(1)} KB`}`","reason":"File size numeric formatting and standard B/KB units; no prose or business label."},
   {"file":"src/features/workitem/WorkitemDetailPage.tsx","kind":"literal","text":"clarify","reason":"Protocol panel-mode discriminator inside a JSX condition; not rendered."},
+  {"file":"src/features/workitem/WorkitemDetailPage.tsx","kind":"literal","text":"comments","reason":"Mobile tab key matching the mobileView state value; labels use translations."},
+  {"file":"src/features/workitem/WorkitemDetailPage.tsx","kind":"literal","text":"progress","reason":"Mobile tab key matching the mobileView state value; labels use translations."},
   {"file":"src/features/workitem/WorkitemListPage.tsx","kind":"literal","text":"ID","reason":"Locale-independent work item identifier column."},
   {"file":"src/features/workitem/WorkitemListPage.tsx","kind":"jsx-text","text":"-","reason":"Locale-independent missing-value symbol."},
   {"file":"src/features/workitem/WorkitemListPage.tsx","kind":"literal","text":"AGENT","reason":"Stable assignee enum used in a conditional expression."},

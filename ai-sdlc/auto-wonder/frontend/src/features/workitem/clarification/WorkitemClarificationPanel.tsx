@@ -1295,6 +1295,7 @@ export function WorkitemClarificationPanel({
   const workitemTitleNode = workitemTitle ? (
     <Typography.Text
       data-testid="clarification-workitem-title"
+      className="aw-clarify-workitem-title"
       ellipsis={{ tooltip: workitemTitle }}
       title={workitemTitle}
       style={{
@@ -1416,7 +1417,7 @@ export function WorkitemClarificationPanel({
       >
         {fullscreen ? (
           // 全屏：外层的「返回/退出全屏」与本面板控件融合为一行，永不换行。
-          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'nowrap', gap: 8 }}>
+          <div className="aw-clarify-header-row" style={{ display: 'flex', alignItems: 'center', flexWrap: 'nowrap', gap: 8 }}>
             {headerPrefix}
             {workitemTitleNode}
             <Button
@@ -1778,6 +1779,7 @@ export function WorkitemClarificationPanel({
             ) : null}
             <div
               data-testid="clarification-input-actions"
+              className="aw-clarify-input-actions"
               style={{
                 width: '100%',
                 display: 'flex',

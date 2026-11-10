@@ -4,7 +4,7 @@
   "appearance": { "dark": "Dark", "light": "Light", "system": "System", "switch": "Switch appearance", "current": "Appearance: {{mode}}", "scope": "Appearance applies only to this browser." },
   "account": { "settings": "Profile settings", "logout": "Sign out", "menu": "User menu", "login": "Sign in", "expired": "You are not signed in or your session has expired", "networkError": "Network error" },
   "workspace": { "switched": "Switched to {{name}}", "switchFailed": "Could not switch workspace", "notMember": "You are not a member of this work item's workspace", "linkedSwitchFailed": "Could not switch to this work item's workspace", "manage": "Manage workspaces...", "unselected": "Not selected" },
-  "navigation": { "expand": "Expand menu", "collapse": "Collapse menu", "help": "Help center", "content": "Page content" },
+  "navigation": { "expand": "Expand menu", "collapse": "Collapse menu", "openMenu": "Open menu", "help": "Help center", "content": "Page content" },
   "duration": {
     "second_one": "{{count}} second",
     "second_other": "{{count}} seconds",

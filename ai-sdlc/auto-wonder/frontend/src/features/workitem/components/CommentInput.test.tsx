@@ -422,6 +422,23 @@ describe('CommentInput attachments', () => {
 });
 
 
+it('uses 16px composer text on mobile so iOS does not zoom the field', () => {
+  vi.stubGlobal('matchMedia', (query: string) => ({
+    matches: query.includes('767.98px'),
+    media: query,
+    onchange: null,
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  }));
+  render(<CommentInput workitemId="1" />);
+
+  expect(composer()).toHaveStyle({ fontSize: '16px' });
+  vi.unstubAllGlobals();
+});
+
 it.each(['需求 [v2].pdf', 'image.png', 'a`b``c.md', '<img src=x onerror=alert(1)>.txt', 'two words.docx'])(
   'renders an attachment path safely and opens the matching artifact: %s', (name) => {
     const artifact: Artifact = { id: 10, name: `requirements/${name}`, workitemId: 1,
