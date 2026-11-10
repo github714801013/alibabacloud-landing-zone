@@ -2884,8 +2884,13 @@ describe('clarification header workitem title', () => {
     await renderActiveConversation({ fullscreen: true, workitemTitle: '支持按执行器配置平台服务地址' });
 
     const header = screen.getByTestId('clarification-panel-header');
-    expect(within(header).getByTestId('clarification-workitem-title'))
-      .toHaveTextContent('支持按执行器配置平台服务地址');
+    const title = within(header).getByTestId('clarification-workitem-title');
+    expect(title).toHaveTextContent('支持按执行器配置平台服务地址');
+    // 「切换数字员工」固定在左侧，数字人名紧跟其后，标题再接名字
+    const switchButton = within(header).getByRole('button', { name: '切换数字员工' });
+    const agentName = within(header).getByText('Agent-X');
+    expect(switchButton.compareDocumentPosition(agentName) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(agentName.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('renders no title slot without a title', async () => {

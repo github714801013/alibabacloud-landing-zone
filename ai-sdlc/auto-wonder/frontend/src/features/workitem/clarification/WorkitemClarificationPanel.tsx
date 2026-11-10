@@ -1290,8 +1290,8 @@ export function WorkitemClarificationPanel({
     ? { width: '100%', minWidth: 0, overflowWrap: 'break-word' }
     : {};
 
-  // 工单标题：与「返回」同排、数字人名左侧。maxWidth 让步进夹在两者之间也不会
-  // 把「切换数字人/会话」挤出视野，超长一律 ellipsis，悬停看全。
+  // 工单标题：全屏紧跟数字人名，停靠态在首行数字人名左侧。maxWidth 让步进
+  // 也不会把「切换数字人/会话」挤出视野，超长一律 ellipsis，悬停看全。
   const workitemTitleNode = workitemTitle ? (
     <Typography.Text
       data-testid="clarification-workitem-title"
@@ -1377,13 +1377,14 @@ export function WorkitemClarificationPanel({
 
   // 数字人名称列：basis 0 + minWidth 0 让它只占「剩余空间」而不是内容宽度，
   // 名称再长也只是 ellipsis，不会把同行控件挤变形（停靠与全屏共用）。
-  // 停靠态名称在「返回/全屏」之间视觉居中：flex 占满中段 + 文本居中。
-  const agentNameNode = (centered: boolean) => (
+  // 停靠态名称在「返回/全屏」之间视觉居中：flex 占满中段 + 文本居中；
+  // 全屏态名称紧跟「切换数字员工」不占剩余空间，由后面的占位撑开右侧控件。
+  const agentNameNode = (centered: boolean, grow = true) => (
     <Typography.Text
       strong
       ellipsis={{ tooltip: displayName }}
       title={displayName}
-      style={{ flex: '1 1 0%', minWidth: 0, whiteSpace: 'nowrap', textAlign: centered ? 'center' : 'start' }}
+      style={{ flex: grow ? '1 1 0%' : '0 1 auto', minWidth: 0, whiteSpace: 'nowrap', textAlign: centered ? 'center' : 'start' }}
     >
       {displayName}
     </Typography.Text>
@@ -1418,7 +1419,6 @@ export function WorkitemClarificationPanel({
           // 全屏：外层的「返回/退出全屏」与本面板控件融合为一行，永不换行。
           <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'nowrap', gap: 8 }}>
             {headerPrefix}
-            {workitemTitleNode}
             <Button
               size="middle"
               icon={<UserSwitchOutlined />}
@@ -1433,7 +1433,9 @@ export function WorkitemClarificationPanel({
             >
               {t('clarification.switchAgent')}
             </Button>
-            {agentNameNode(false)}
+            {agentNameNode(false, false)}
+            {workitemTitleNode}
+            <span style={{ flex: '1 1 0%' }} />
             <Select
               data-testid="clarification-conversation-select"
               aria-label={t('clarification.selectClarificationConversation')}
