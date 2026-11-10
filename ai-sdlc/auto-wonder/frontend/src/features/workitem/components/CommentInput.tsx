@@ -8,6 +8,7 @@ import { useAddComment, useMentionCandidates, useUploadRequirementDocuments } fr
 import type { Artifact, Participant } from '@/shared/types/workitem';
 import { ApiError, ErrorCodes } from '@/shared/types/common';
 import { useAccessCommand } from '@/shared/auth/useAccessCommand';
+import { useIsMobile } from '@/shared/ui/useIsMobile';
 import {
   DOCUMENT_ACCEPT_ATTRIBUTE, DOCUMENT_UPLOAD_MESSAGES, documentsFromDataTransfer,
   filesFromClipboard, pastedFileForUpload, transferContainsFiles, validateDocumentSelection,
@@ -85,6 +86,7 @@ function findActiveMentionQuery(value: string, caretIndex: number): string | nul
 
 export function CommentInput({ workitemId, participants = [], documents = [] }: CommentInputProps) {
   const { t } = useTranslation('workitem');
+  const isMobile = useIsMobile();
   const [content, setContent] = useState('');
   const [targetAgentIds, setTargetAgentIds] = useState<number[]>([]);
   const [targetHumanIds, setTargetHumanIds] = useState<number[]>([]);
@@ -465,13 +467,13 @@ export function CommentInput({ workitemId, participants = [], documents = [] }: 
               rows={isExpanded ? 3 : 1}
               placeholder={t('comment.placeholder')}
               disabled={busy}
-              style={{ width: '100%', ...composerTextStyle }}
+              style={{ width: '100%', ...composerTextStyle, ...(isMobile ? { fontSize: 16 } : null) }}
             />
           </div>
           <Button
             icon={<SendOutlined />}
             style={{
-              alignSelf: 'stretch', height: 'auto', padding: '0 18px',
+              alignSelf: 'stretch', height: 'auto', padding: isMobile ? '0 12px' : '0 18px',
               background: 'rgba(var(--aw-accent-rgb),.10)', borderColor: 'var(--aw-accent)', color: 'var(--aw-accent-text)',
             }}
             onClick={handleSend}

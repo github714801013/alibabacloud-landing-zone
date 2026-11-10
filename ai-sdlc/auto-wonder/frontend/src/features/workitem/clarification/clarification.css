@@ -242,6 +242,31 @@
   padding: 20px 24px;
 }
 
+/* 手机全屏澄清：头部与会话操作允许换行，标题不再强制单行省略，避免 320px 下横向溢出。 */
+@media (max-width: 767.98px) {
+  .aw-clarify-header-row {
+    flex-wrap: wrap !important;
+  }
+
+  .aw-clarify-workitem-title {
+    max-width: 100% !important;
+    white-space: normal !important;
+  }
+
+  .aw-clarify-header-row > .ant-select {
+    width: 100% !important;
+  }
+
+  .aw-clarify-input-actions {
+    flex-wrap: wrap;
+  }
+
+  .aw-clarify-input-actions > div {
+    max-width: 100% !important;
+    flex-wrap: wrap;
+  }
+}
+
 @media (max-width: 640px) {
   .aw-clarify-artifact-browser:not(.is-maximized) {
     top: 0;

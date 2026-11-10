@@ -270,6 +270,8 @@
     "taskInfo": "任务信息",
     "invalidId": "无效的 ID",
     "back": "返回",
+    "commentsTab": "评论",
+    "progressTab": "进度与澄清",
     "loadFailed": "加载失败",
     "retryLater": "请稍后重试",
     "otherWorkspaceTitle": "该工单属于项目「{{name}}」",

@@ -169,6 +169,19 @@ function mockClarifyEndpoints() {
   ];
 }
 
+function stubMobileMatchMedia() {
+  vi.stubGlobal('matchMedia', (query: string) => ({
+    matches: query.includes('767.98px'),
+    media: query,
+    onchange: null,
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  }));
+}
+
 function renderPage(id = '1') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return {
@@ -208,6 +221,21 @@ describe('WorkitemDetailPage', () => {
     // Title appears in both breadcrumb and heading — use role to target the heading
     expect(await screen.findByRole('heading', { name: '跨境支付重构' })).toBeInTheDocument();
     expect(screen.getByText('开发中')).toBeInTheDocument();
+  });
+
+  it('switches between comments and progress tabs on mobile', async () => {
+    server.use(...setupHandlers());
+    stubMobileMatchMedia();
+    renderPage();
+
+    expect(await screen.findByRole('tab', { name: '评论' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: '进度与澄清' })).toBeInTheDocument();
+    expect(await screen.findByTestId('workitem-comment-input')).toBeInTheDocument();
+    expect(screen.queryByTestId('workitem-right-panel')).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('tab', { name: '进度与澄清' }));
+    expect(screen.getByTestId('workitem-right-panel')).toBeInTheDocument();
+    expect(screen.queryByTestId('workitem-comment-input')).not.toBeInTheDocument();
   });
 
   it('keeps the error page when the first load already fails with 502', async () => {

@@ -3,7 +3,7 @@ import { ChiefOfStaff } from '@/features/chiefOfStaff/ChiefOfStaff';
 import { LanguageSwitch } from '@/shared/i18n/LanguageSwitch';
 import { PlatformBrand } from '@/shared/ui/PlatformBrand';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Layout, Dropdown, Typography, Button, message, theme } from 'antd';
+import { Layout, Dropdown, Typography, Button, Drawer, message, theme } from 'antd';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { CheckOutlined, LoadingOutlined, DownOutlined, MenuFoldOutlined, MenuUnfoldOutlined } from '@ant-design/icons';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
@@ -22,6 +22,7 @@ import { apiClient } from '@/shared/api/client';
 import type { WorkspaceInfo, SwitchWorkspaceResponse } from '@/shared/types/common';
 import { ApiError } from '@/shared/types/common';
 import { refreshTenantScopedQueries } from '@/features/workitem/queryCache';
+import { useIsMobile } from '@/shared/ui/useIsMobile';
 
 const { Sider, Content } = Layout;
 const { Text } = Typography;
@@ -72,6 +73,16 @@ export function AppLayout({ helpCenter = false }: { helpCenter?: boolean }) {
   const setCurrentWorkspace = useAuthStore((s) => s.setCurrentWorkspace);
 
   const [collapsed, setCollapsed] = useState<boolean>(readCollapsedPref);
+  const isMobile = useIsMobile();
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+
+  useEffect(() => {
+    if (!isMobile) setMobileNavOpen(false);
+  }, [isMobile]);
+
+  useEffect(() => {
+    if (isMobile) setMobileNavOpen(false);
+  }, [isMobile, location.pathname]);
 
   useEffect(() => {
     if (helpCenter) return;
@@ -195,9 +206,67 @@ export function AppLayout({ helpCenter = false }: { helpCenter?: boolean }) {
   const workspaceName = currentWorkspace?.name || t('workspace.unselected');
   const menuButtonLabel = collapsed ? t('navigation.expand') : t('navigation.collapse');
 
+  const sidebarBody = (collapsedView: boolean) => (
+    <>
+      <div style={{ height: 60, display: 'flex', alignItems: 'center', justifyContent: collapsedView ? 'center' : 'flex-start', padding: collapsedView ? 0 : '0 18px', borderBottom: `1px solid ${token.colorBorderSecondary}`, gap: 10 }}>
+        <PlatformBrand to="/workitems" collapsed={collapsedView} />
+      </div>
+
+      <Dropdown menu={{ items: workspaceMenuItems }} trigger={['click']} placement="bottomLeft"
+        overlayClassName="aw-workspace-menu" overlayStyle={{ width: 196, minWidth: 196, maxWidth: 196 }}>
+        <div
+          title={collapsedView ? workspaceName : undefined}
+          style={{
+            margin: collapsedView ? '8px auto' : '8px 12px',
+            padding: collapsedView ? 0 : '7px 10px',
+            width: collapsedView ? 36 : 'auto',
+            height: collapsedView ? 36 : 'auto',
+            borderRadius: 7,
+            border: `1px solid ${token.colorBorder}`,
+            background: token.colorFillAlter,
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: collapsedView ? 'center' : 'flex-start',
+            gap: 8,
+            minWidth: 0,
+          }}
+        >
+          <div className="aw-initial-mark" style={{
+            width: 20, height: 20, borderRadius: 5,
+
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            fontWeight: 600, fontSize: 11, flexShrink: 0,
+          }}>
+            {workspaceName[0]}
+          </div>
+          {!collapsedView && (
+            <>
+              <EllipsisText
+                tooltip={workspaceName}
+                style={{
+                  fontSize: 12,
+                  flex: 1,
+                  minWidth: 0,
+                  color: token.colorText,
+                  fontWeight: 500,
+                }}
+              >
+                {workspaceName}
+              </EllipsisText>
+              <DownOutlined style={{ fontSize: 9, color: token.colorTextSecondary }} />
+            </>
+          )}
+        </div>
+      </Dropdown>
+
+      <Sidebar collapsed={collapsedView} />
+    </>
+  );
+
   return (
     <Layout className={helpCenter ? 'help-layout' : 'aw-shell'} style={{ height: '100vh', minWidth: 0 }}>
-      {!helpCenter && (
+      {!helpCenter && !isMobile && (
         <Sider
           width={220}
           collapsedWidth={72}
@@ -205,60 +274,20 @@ export function AppLayout({ helpCenter = false }: { helpCenter?: boolean }) {
           theme="light"
           style={{ borderRight: `1px solid ${token.colorBorderSecondary}`, overflow: 'auto' }}
         >
-          <div style={{ height: 60, display: 'flex', alignItems: 'center', justifyContent: collapsed ? 'center' : 'flex-start', padding: collapsed ? 0 : '0 18px', borderBottom: `1px solid ${token.colorBorderSecondary}`, gap: 10 }}>
-            <PlatformBrand to="/workitems" collapsed={collapsed} />
-          </div>
-
-          <Dropdown menu={{ items: workspaceMenuItems }} trigger={['click']} placement="bottomLeft"
-            overlayClassName="aw-workspace-menu" overlayStyle={{ width: 196, minWidth: 196, maxWidth: 196 }}>
-            <div
-              title={collapsed ? workspaceName : undefined}
-              style={{
-                margin: collapsed ? '8px auto' : '8px 12px',
-                padding: collapsed ? 0 : '7px 10px',
-                width: collapsed ? 36 : 'auto',
-                height: collapsed ? 36 : 'auto',
-                borderRadius: 7,
-                border: `1px solid ${token.colorBorder}`,
-                background: token.colorFillAlter,
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: collapsed ? 'center' : 'flex-start',
-                gap: 8,
-                minWidth: 0,
-              }}
-            >
-              <div className="aw-initial-mark" style={{
-                width: 20, height: 20, borderRadius: 5,
-
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                fontWeight: 600, fontSize: 11, flexShrink: 0,
-              }}>
-                {workspaceName[0]}
-              </div>
-              {!collapsed && (
-                <>
-                  <EllipsisText
-                    tooltip={workspaceName}
-                    style={{
-                      fontSize: 12,
-                      flex: 1,
-                      minWidth: 0,
-                      color: token.colorText,
-                      fontWeight: 500,
-                    }}
-                  >
-                    {workspaceName}
-                  </EllipsisText>
-                  <DownOutlined style={{ fontSize: 9, color: token.colorTextSecondary }} />
-                </>
-              )}
-            </div>
-          </Dropdown>
-
-          <Sidebar collapsed={collapsed} />
+          {sidebarBody(collapsed)}
         </Sider>
+      )}
+      {!helpCenter && isMobile && (
+        <Drawer
+          open={mobileNavOpen}
+          onClose={() => setMobileNavOpen(false)}
+          placement="left"
+          width={220}
+          closable={false}
+          styles={{ body: { padding: 0, overflow: 'auto' } }}
+        >
+          {sidebarBody(false)}
+        </Drawer>
       )}
 
       <Layout style={{ minWidth: 0 }}>
@@ -275,9 +304,9 @@ export function AppLayout({ helpCenter = false }: { helpCenter?: boolean }) {
             ) : <Button
               className="aw-sidebar-toggle"
               type="text"
-              onClick={toggleCollapsed}
-              aria-label={menuButtonLabel}
-              icon={collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
+              onClick={isMobile ? () => setMobileNavOpen(true) : toggleCollapsed}
+              aria-label={isMobile ? t('navigation.openMenu') : menuButtonLabel}
+              icon={isMobile || collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
               style={{ width: 32, padding: 0, fontSize: 16, color: token.colorTextSecondary, flexShrink: 0 }}
             />}
             {helpCenter && <Text type="secondary" style={{ marginLeft: 12 }}>{t('navigation.help')}</Text>}

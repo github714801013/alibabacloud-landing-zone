@@ -272,6 +272,8 @@
     "taskInfo": "Task information",
     "invalidId": "Invalid ID",
     "back": "Back",
+    "commentsTab": "Comments",
+    "progressTab": "Progress & clarification",
     "loadFailed": "Could not load the work item",
     "retryLater": "Please try again later.",
     "otherWorkspaceTitle": "This work item belongs to the project \"{{name}}\"",

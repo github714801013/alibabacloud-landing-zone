@@ -1,4 +1,4 @@
-import { beforeEach, describe, it, expect, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { ConfigProvider } from 'antd';
 import { http, HttpResponse } from 'msw';
@@ -7,6 +7,28 @@ import * as workitemApi from '../api';
 import { ExecutionControlTimeline } from './ExecutionControlTimeline';
 import { DeliveryProgress, formatDuration, convergeStepsForTerminalStatus } from './DeliveryProgress';
 import type { Artifact, DeliveryProgress as DeliveryProgressModel, DeliveryStep } from '@/shared/types/workitem';
+
+// jsdom 没有 PointerEvent 构造器，fireEvent.pointer* 会丢失坐标，用 MouseEvent 派生 pointer 事件
+function firePointer(type: 'pointerdown' | 'pointermove' | 'pointerup', target: HTMLElement, coords: { clientX?: number; clientY?: number } = {}) {
+  fireEvent(target, new MouseEvent(type, { bubbles: true, cancelable: true, ...coords }));
+}
+
+function stubMobileMatchMedia() {
+  vi.stubGlobal('matchMedia', (query: string) => ({
+    matches: query.includes('767.98px'),
+    media: query,
+    onchange: null,
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  }));
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 beforeEach(() => {
   server.use(http.get('/api/dispatches/:dispatchId/runtime-trace/events', ({ params }) => HttpResponse.json({ success: true, code: '0', data: { dispatchId: Number(params.dispatchId), events: [], changed: true } })));
@@ -45,6 +67,27 @@ describe('formatDuration', () => {
 });
 
 describe('DeliveryProgress', () => {
+  it('hides the workbench sidebar by default on mobile', () => {
+    stubMobileMatchMedia();
+    const progress: DeliveryProgressModel = {
+      steps: [],
+      agents: [{
+        agentId: 41, agentName: '开发', status: 'active', durationMs: null,
+        steps: [{
+          stepId: 101, name: '开发', status: 'active', agentName: '开发', executorName: null,
+          error: null, subSteps: null, durationMs: null,
+          attempts: [{ dispatchId: 301, agentName: '开发', executorName: null, status: 'RUNNING', startedAt: null, durationMs: null }],
+        }],
+      }],
+    };
+    render(<DeliveryProgress progress={progress} />);
+
+    fireEvent.click(screen.getByRole('button', { name: '查看执行' }));
+
+    const rail = within(screen.getByTestId('delivery-workbench')).getByRole('complementary', { hidden: true });
+    expect(rail).toHaveAttribute('hidden');
+  });
+
   it('shows scoped control history in each execution card and follows the selected session in the workbench', async () => {
     const progress: DeliveryProgressModel = { steps: [], executions: [301, 302].map(dispatchId => ({
       dispatchId, agentId: 41, agentName: 'RD', executorName: null, status: 'PAUSED', startedAt: null, durationMs: null,
@@ -1459,9 +1502,9 @@ describe('DeliveryProgress', () => {
     fireEvent.wheel(viewport, { deltaY: -1 });
     expect(viewport).toHaveAttribute('data-zoom', '1.20');
 
-    fireEvent.mouseDown(viewport, { clientX: 100, clientY: 100 });
-    fireEvent.mouseMove(viewport, { clientX: 124, clientY: 116 });
-    fireEvent.mouseUp(viewport, { clientX: 124, clientY: 116 });
+    firePointer('pointerdown', viewport, { clientX: 100, clientY: 100 });
+    firePointer('pointermove', viewport, { clientX: 124, clientY: 116 });
+    firePointer('pointerup', viewport, { clientX: 124, clientY: 116 });
     expect(viewport).toHaveAttribute('data-pan', '24,16');
 
     fireEvent.click(screen.getByLabelText('重置视图'));
