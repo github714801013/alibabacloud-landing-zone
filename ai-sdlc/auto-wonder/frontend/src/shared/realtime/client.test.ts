@@ -3,6 +3,7 @@ import { RealtimeClient, buildRealtimeUrl, getConfiguredRealtimeBase } from './c
 
 class MockWebSocket {
   static instances: MockWebSocket[] = [];
+  static OPEN = 1;
   url: string;
   readyState = 0;
   onopen: (() => void) | null = null;
@@ -138,6 +139,24 @@ describe('RealtimeClient', () => {
     vi.useRealTimers();
   });
 
+  it('rebind reconnects with the new token and replays server subscriptions', () => {
+    client.connect('old-token');
+    MockWebSocket.instances[0].simulateOpen();
+    client.subscribe('conversation:9', vi.fn());
+
+    client.rebind('new-token');
+
+    expect(MockWebSocket.instances).toHaveLength(2);
+    expect(MockWebSocket.instances[0].close).toHaveBeenCalled();
+    MockWebSocket.instances[1].simulateOpen();
+    expect(MockWebSocket.instances[1].send).toHaveBeenCalledWith(
+      JSON.stringify({ type: 'auth', token: 'new-token' }),
+    );
+    expect(MockWebSocket.instances[1].send).toHaveBeenCalledWith(
+      JSON.stringify({ type: 'subscribe', channel: 'conversation:9' }),
+    );
+  });
+
   it('ignores malformed frames and closes the socket on error', () => {
     client.connect('t');
     MockWebSocket.instances[0].simulateOpen();
@@ -148,6 +167,44 @@ describe('RealtimeClient', () => {
 
     MockWebSocket.instances[0].onerror?.();
     expect(MockWebSocket.instances[0].close).toHaveBeenCalled();
+  });
+});
+
+describe('getRealtimeClient 能力选择', () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.resetModules();
+  });
+
+  it('SharedWorker 不可用时回退现有客户端', async () => {
+    vi.stubGlobal('SharedWorker', undefined);
+    const { getRealtimeClient, RealtimeClient } = await import('./client');
+    expect(getRealtimeClient()).toBeInstanceOf(RealtimeClient);
+  });
+
+  it('SharedWorker 可用时返回标签页代理', async () => {
+    class FakeSharedWorker {
+      port = { onmessage: null, start: () => {}, postMessage: () => {}, close: () => {} };
+    }
+    vi.stubGlobal('SharedWorker', FakeSharedWorker);
+    const { getRealtimeClient } = await import('./client');
+    const { SharedWorkerClient } = await import('./sharedWorkerClient');
+    expect(getRealtimeClient()).toBeInstanceOf(SharedWorkerClient);
+  });
+
+  it('worker 构造失败时回退现有客户端', async () => {
+    class ThrowingSharedWorker {
+      constructor() {
+        throw new Error('blocked');
+      }
+    }
+    vi.stubGlobal('SharedWorker', ThrowingSharedWorker);
+    const { getRealtimeClient, RealtimeClient } = await import('./client');
+    expect(getRealtimeClient()).toBeInstanceOf(RealtimeClient);
   });
 });
 

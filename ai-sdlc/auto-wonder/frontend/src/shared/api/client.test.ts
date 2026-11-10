@@ -1,10 +1,16 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { http, HttpResponse } from 'msw';
 import { server } from '@/test/mocks/server';
 import { apiClient } from './client';
 import { ApiError } from '@/shared/types/common';
 import { useAuthStore } from '@/shared/auth/store';
 import { i18n } from '@/shared/i18n';
+
+const realtime = vi.hoisted(() => ({
+  disconnectRealtime: vi.fn(),
+  syncRealtimeAuth: vi.fn(),
+}));
+vi.mock('@/shared/realtime/client', () => realtime);
 
 describe('apiClient', () => {
   beforeEach(() => {
@@ -778,6 +784,69 @@ describe('apiClient', () => {
         message: '用户名或密码错误',
         traceId: 'trace-envelope',
       });
+  });
+});
+
+describe('apiClient 实时连接认证联动', () => {
+  beforeEach(() => {
+    useAuthStore.getState().clear();
+    server.resetHandlers();
+    realtime.disconnectRealtime.mockClear();
+    realtime.syncRealtimeAuth.mockClear();
+  });
+
+  it('静默刷新成功后用新 token 改绑实时连接', async () => {
+    useAuthStore.getState().setTokens('expired-access', 'valid-refresh');
+    server.use(
+      http.get('/api/data', ({ request }) =>
+        request.headers.get('Authorization') === 'Bearer fresh-access'
+          ? HttpResponse.json({
+            success: true, code: '0', message: '', data: { ok: true }, traceId: null,
+          })
+          : HttpResponse.json({
+            success: false, code: '10401', message: '', data: null, traceId: null,
+          }, { status: 401 }),
+      ),
+      http.post('/api/auth/refresh', () => HttpResponse.json({
+        success: true, code: '0', message: '',
+        data: { accessToken: 'fresh-access' }, traceId: null,
+      })),
+    );
+
+    await apiClient.get('/api/data');
+
+    expect(realtime.syncRealtimeAuth).toHaveBeenCalledWith('fresh-access');
+    expect(realtime.disconnectRealtime).not.toHaveBeenCalled();
+  });
+
+  it('会话失效时关闭实时连接', async () => {
+    useAuthStore.getState().setTokens('expired-access', 'expired-refresh');
+    server.use(
+      http.get('/api/data', () => HttpResponse.json({
+        success: false, code: '10401', message: '', data: null, traceId: null,
+      }, { status: 401 })),
+      http.post('/api/auth/refresh', () => HttpResponse.json({
+        success: false, code: '10401', message: '', data: null, traceId: null,
+      }, { status: 401 })),
+    );
+
+    await expect(apiClient.get('/api/data')).rejects.toBeInstanceOf(ApiError);
+
+    expect(realtime.disconnectRealtime).toHaveBeenCalled();
+    expect(realtime.syncRealtimeAuth).not.toHaveBeenCalled();
+  });
+
+  it('没有 refreshToken 的 401 同样关闭实时连接', async () => {
+    useAuthStore.getState().setAccessToken('expired-access');
+    server.use(
+      http.get('/api/data', () => HttpResponse.json({
+        success: false, code: '10401', message: '', data: null, traceId: null,
+      }, { status: 401 })),
+    );
+
+    await expect(apiClient.get('/api/data')).rejects.toBeInstanceOf(ApiError);
+
+    expect(realtime.disconnectRealtime).toHaveBeenCalled();
   });
 });
 

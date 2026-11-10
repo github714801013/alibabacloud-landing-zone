@@ -5,6 +5,7 @@ import { ApiError, ErrorCodes } from '@/shared/types/common';
 import type { ApiResult } from '@/shared/types/common';
 import { useAuthStore } from '@/shared/auth/store';
 import { refreshCurrentMembership } from '@/shared/auth/refreshCurrentMembership';
+import { disconnectRealtime, syncRealtimeAuth } from '@/shared/realtime/client';
 
 
 function safeParse(text: string) {
@@ -114,6 +115,7 @@ async function handleUnauthorized(
 ): Promise<AxiosResponse> {
   const rt = useAuthStore.getState().refreshToken;
   if (!rt || originalConfig.url === '/api/auth/refresh') {
+    disconnectRealtime();
     useAuthStore.getState().clear();
     redirectToLogin();
     return Promise.reject(new ApiError(ErrorCodes.UNAUTHORIZED, i18n.t('account.expired'), null));
@@ -122,6 +124,7 @@ async function handleUnauthorized(
   const result = await refreshAccessToken();
   if (result.token) {
     useAuthStore.getState().setAccessToken(result.token);
+    syncRealtimeAuth(result.token);
     originalConfig.headers.Authorization = `Bearer ${result.token}`;
     return apiClient(originalConfig);
   }
@@ -129,6 +132,7 @@ async function handleUnauthorized(
   // 刷新服务 5xx / 网络错误：会话可能仍有效，保留凭证并停在当前页面，只让本次请求失败。
   // 只有服务端明确判定 refreshToken 失效时才登出。
   if (result.sessionExpired) {
+    disconnectRealtime();
     useAuthStore.getState().clear();
     redirectToLogin();
   }

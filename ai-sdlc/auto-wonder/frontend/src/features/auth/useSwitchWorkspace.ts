@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { apiClient } from '@/shared/api/client';
 import { useAuthStore } from '@/shared/auth/store';
+import { syncRealtimeAuth } from '@/shared/realtime/client';
 import { ApiError, type SwitchWorkspaceResponse, type WorkspaceInfo } from '@/shared/types/common';
 import { refreshTenantScopedQueries } from '@/features/workitem/queryCache';
 
@@ -22,6 +23,7 @@ export function useSwitchWorkspace() {
       const { accessToken, accessLevel } = resp.data;
       setAccessToken(accessToken);
       setCurrentWorkspace(workspace, accessLevel);
+      syncRealtimeAuth(accessToken);
       await refreshTenantScopedQueries(queryClient);
       navigate(destination);
       return true;

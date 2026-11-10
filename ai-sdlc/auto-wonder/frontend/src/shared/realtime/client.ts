@@ -1,4 +1,12 @@
-import type { RealtimeEvent, EventHandler, Subscription, ConnectionState } from './types';
+import type {
+  RealtimeEvent,
+  EventHandler,
+  Subscription,
+  ConnectionState,
+  RealtimeClientLike,
+} from './types';
+import { isServerSubscriptionChannel } from './channels';
+import { SharedWorkerClient } from './sharedWorkerClient';
 
 function normalizeWsProtocol(protocol: string): string {
   if (protocol === 'https:') return 'wss:';
@@ -33,7 +41,7 @@ export function buildRealtimeUrl(base = getConfiguredRealtimeBase()): string {
   return wsUrl.toString();
 }
 
-export class RealtimeClient {
+export class RealtimeClient implements RealtimeClientLike {
   private url: string;
   private ws: WebSocket | null = null;
   private token: string | null = null;
@@ -68,6 +76,18 @@ export class RealtimeClient {
     this.doConnect();
   }
 
+  rebind(token: string) {
+    if (this.token === token) return;
+    this.disconnect();
+    // disconnect 清空了服务端订阅记录，重连前按本地订阅恢复。
+    for (const channel of this.subscribers.keys()) {
+      if (isServerSubscriptionChannel(channel)) {
+        this.serverSubscribedChannels.add(channel);
+      }
+    }
+    this.connect(token);
+  }
+
   disconnect() {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
@@ -86,7 +106,7 @@ export class RealtimeClient {
     }
     this.subscribers.get(channel)!.add(handler);
 
-    if (isNewChannel && this.isServerSubscriptionChannel(channel)) {
+    if (isNewChannel && isServerSubscriptionChannel(channel)) {
       this.sendServerSubscribe(channel);
     }
 
@@ -99,17 +119,13 @@ export class RealtimeClient {
           set.delete(handler);
           if (set.size === 0) {
             this.subscribers.delete(channel);
-            if (this.isServerSubscriptionChannel(channel)) {
+            if (isServerSubscriptionChannel(channel)) {
               this.sendServerUnsubscribe(channel);
             }
           }
         }
       },
     };
-  }
-
-  private isServerSubscriptionChannel(channel: string): boolean {
-    return channel.startsWith('conversation:') || channel.startsWith('scheduled-run:') || channel.startsWith('dispatch:');
   }
 
   private sendServerSubscribe(channel: string) {
@@ -175,11 +191,35 @@ export class RealtimeClient {
   }
 }
 
-let _instance: RealtimeClient | null = null;
+let _instance: RealtimeClientLike | null = null;
 
-export function getRealtimeClient(): RealtimeClient {
+export function getRealtimeClient(): RealtimeClientLike {
   if (!_instance) {
-    _instance = new RealtimeClient(buildRealtimeUrl());
+    _instance = createRealtimeClient();
   }
   return _instance;
+}
+
+// 仅在界面已请求过实时客户端时同步，避免登录页等无实时消费的场景新建连接。
+export function syncRealtimeAuth(token: string) {
+  _instance?.rebind(token);
+}
+
+export function disconnectRealtime() {
+  _instance?.disconnect();
+}
+
+function createRealtimeClient(): RealtimeClientLike {
+  if (typeof SharedWorker === 'undefined') {
+    return new RealtimeClient(buildRealtimeUrl());
+  }
+  try {
+    return new SharedWorkerClient({
+      buildUrl: () => buildRealtimeUrl(),
+      createFallback: () => new RealtimeClient(buildRealtimeUrl()),
+    });
+  } catch {
+    // worker 构造失败时保留每标签页一条连接的现有行为。
+    return new RealtimeClient(buildRealtimeUrl());
+  }
 }
