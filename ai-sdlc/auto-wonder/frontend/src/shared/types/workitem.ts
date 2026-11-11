@@ -413,7 +413,6 @@ export interface RuntimeTraceSpan {
   content?: string | null;
   errorCategory?: string | null;
   tokenUsage: RuntimeTraceTokenUsage;
-  eventIds: string[];
 }
 
 export interface RuntimeTraceTurn {
@@ -433,7 +432,6 @@ export interface RuntimeTraceTurn {
   contextFiles?: RuntimeTraceContextFile[];
   observations?: RuntimeTraceObservation[];
   tokenUsage: RuntimeTraceTokenUsage;
-  eventIds: string[];
   spans: RuntimeTraceSpan[];
 }
 
@@ -446,7 +444,6 @@ export interface RuntimeTraceSession {
   endedAt?: string | null;
   durationMs?: number | null;
   tokenUsage: RuntimeTraceTokenUsage;
-  eventIds: string[];
   boundaries: RuntimeTraceBoundary[];
   turns: RuntimeTraceTurn[];
 }
@@ -521,6 +518,7 @@ export interface RuntimeTrace {
   provider?: string | null;
   changed: boolean;
   lastSeq?: number | null;
+  nextBeforeId?: number | null;
   tokenUsage: RuntimeTraceTokenUsage;
   events: RuntimeTraceEvent[];
   sessions: RuntimeTraceSession[];

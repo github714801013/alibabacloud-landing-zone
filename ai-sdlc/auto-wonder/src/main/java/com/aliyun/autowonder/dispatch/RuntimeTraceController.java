@@ -35,13 +35,15 @@ public class RuntimeTraceController {
 
     @GetMapping("/{id}/runtime-trace")
     public Result<RuntimeTraceVO> get(@PathVariable("id") long id,
-                                      @RequestParam(value = "afterSeq", required = false) Long afterSeq) {
+                                      @RequestParam(value = "afterSeq", required = false) Long afterSeq,
+                                      @RequestParam(value = "limit", required = false) Integer limit,
+                                      @RequestParam(value = "beforeId", required = false) Long beforeId) {
         Long workspaceId = AutoWonderContext.get().getCurrentWorkspaceId();
         if (workspaceId == null) {
             throw new BizException(ErrorCode.WORKSPACE_NOT_MEMBER);
         }
         RuntimeTraceVO completed = artifactService.loadOutlineIfPresent(workspaceId, id);
-        return Result.ok(completed == null ? traceService.get(workspaceId, id, afterSeq) : completed);
+        return Result.ok(completed == null ? traceService.get(workspaceId, id, afterSeq, limit, beforeId) : completed);
     }
 
     /** Persisted event log, independent of the compact completed-trace outline. */

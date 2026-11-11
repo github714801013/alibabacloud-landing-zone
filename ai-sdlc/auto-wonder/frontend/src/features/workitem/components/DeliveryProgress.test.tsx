@@ -1528,7 +1528,6 @@ describe('DeliveryProgress', () => {
             sessionId: 's1', parentSessionId: null, status: 'INTERRUPTED',
             startedAt: '2026-07-30T10:00:00Z', endedAt: '2026-07-30T10:01:06Z', durationMs: 10000,
             tokenUsage: { available: true, inputTokens: 1700, outputTokens: 400, reasoningTokens: 80, cacheReadTokens: 400, cacheWriteTokens: 0, totalTokens: 2100, credits: 12.34 },
-            eventIds: [],
             boundaries: [
               { eventId: '302:1', kind: 'RESUMED', eventTime: '2026-07-30T10:00:00Z', label: 'RESUMED' },
               { eventId: '302:15', kind: 'INTERRUPTED', eventTime: '2026-07-30T10:01:06Z', label: 'INTERRUPTED · paused · checkpoint #18' },
@@ -1538,11 +1537,10 @@ describe('DeliveryProgress', () => {
               startedAt: '2026-07-30T10:01:01Z', endedAt: '2026-07-30T10:01:05Z', durationMs: 4000,
               prompt: 'Run the implementation tests', systemPrompt: 'Follow the worker SDLC',
               tokenUsage: { available: true, inputTokens: 500, outputTokens: 100, reasoningTokens: 20, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 600 },
-              eventIds: [],
               spans: [
-                { spanId: 't2:llm', parentSpanId: null, kind: 'LLM', name: 'gpt-5', status: 'COMPLETED', startedAt: '2026-07-30T10:01:01Z', endedAt: '2026-07-30T10:01:04Z', durationMs: 3000, model: 'gpt-5', inputSummary: null, outputSummary: null, errorCategory: null, tokenUsage: { available: true, inputTokens: 500, outputTokens: 100, reasoningTokens: 20, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 600 }, eventIds: [] },
-                { spanId: 'thinking-1', parentSpanId: 't2:llm', kind: 'THINKING', name: 'Thinking', status: 'COMPLETED', startedAt: '2026-07-30T10:01:01Z', endedAt: '2026-07-30T10:01:02Z', durationMs: 1000, model: 'gpt-5', inputSummary: null, outputSummary: null, errorCategory: null, tokenUsage: { available: false, inputTokens: 0, outputTokens: 0, reasoningTokens: 20, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 0 }, eventIds: [] },
-                { spanId: 'bash-1', parentSpanId: 't2', kind: 'BASH', name: 'bash', status: 'COMPLETED', startedAt: '2026-07-30T10:01:02Z', endedAt: '2026-07-30T10:01:03Z', durationMs: 1000, model: null, inputSummary: 'pnpm test', outputSummary: '26 passed', input: { command: 'pnpm test' }, output: '26 passed', errorCategory: null, tokenUsage: { available: false, inputTokens: 0, outputTokens: 0, reasoningTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 0 }, eventIds: [] },
+                { spanId: 't2:llm', parentSpanId: null, kind: 'LLM', name: 'gpt-5', status: 'COMPLETED', startedAt: '2026-07-30T10:01:01Z', endedAt: '2026-07-30T10:01:04Z', durationMs: 3000, model: 'gpt-5', inputSummary: null, outputSummary: null, errorCategory: null, tokenUsage: { available: true, inputTokens: 500, outputTokens: 100, reasoningTokens: 20, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 600 } },
+                { spanId: 'thinking-1', parentSpanId: 't2:llm', kind: 'THINKING', name: 'Thinking', status: 'COMPLETED', startedAt: '2026-07-30T10:01:01Z', endedAt: '2026-07-30T10:01:02Z', durationMs: 1000, model: 'gpt-5', inputSummary: null, outputSummary: null, errorCategory: null, tokenUsage: { available: false, inputTokens: 0, outputTokens: 0, reasoningTokens: 20, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 0 } },
+                { spanId: 'bash-1', parentSpanId: 't2', kind: 'BASH', name: 'bash', status: 'COMPLETED', startedAt: '2026-07-30T10:01:02Z', endedAt: '2026-07-30T10:01:03Z', durationMs: 1000, model: null, inputSummary: 'pnpm test', outputSummary: '26 passed', input: { command: 'pnpm test' }, output: '26 passed', errorCategory: null, tokenUsage: { available: false, inputTokens: 0, outputTokens: 0, reasoningTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 0 } },
               ],
             }],
           }],

@@ -9,6 +9,19 @@ import { getDeliveryProgress } from './api';
 
 afterEach(() => { vi.useRealTimers(); vi.clearAllMocks(); });
 
+it('keeps the same progress reference when a poll returns identical content', async () => {
+  vi.useFakeTimers();
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+  const { result, unmount } = renderHook(() => useDeliveryProgress('42', 'IN_PROGRESS'), { wrapper });
+  await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+  const first = result.current.data;
+  expect(first).toBeDefined();
+  await act(async () => { await result.current.refetch(); });
+  expect(result.current.data).toBe(first);
+  unmount(); client.clear();
+});
+
 describe('delivery progress polling', () => {
   it.each([
     ['IN_PROGRESS', [], 5000],

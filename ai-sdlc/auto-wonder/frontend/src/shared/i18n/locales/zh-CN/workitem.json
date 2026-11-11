@@ -890,6 +890,8 @@
     "title": "执行 Trace",
     "failure": "Dispatch 失败原因",
     "empty": "Runtime 尚未上报 Session Trace",
+    "loadEarlier": "加载更早的事件",
+    "backToLatest": "回到最新",
     "back": "返回 Turn",
     "input": "输入",
     "output": "输出",

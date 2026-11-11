@@ -88,36 +88,115 @@
     </select>
 
     <select id="listForProgress" databaseId="autowonder-source-aware" resultMap="runtimeEventMap">
-        SELECT id, tenant_id, workitem_id, dispatch_id, agent_id, event_id, seq, event_type,
-            step_id, step_key, step_order, step_name, message, error,
-            CASE WHEN event_type = 'workflow.plan_applied' THEN detail_json ELSE NULL END AS detail_json,
-            event_time, gmt_create FROM dispatch_runtime_event e
-        WHERE e.tenant_id = #{tenantId} AND e.workitem_id = #{workitemId}
-          AND EXISTS (
-              SELECT 1 FROM dispatch d
-              WHERE d.id = e.dispatch_id
-                AND d.tenant_id = #{tenantId}
-                AND d.source_type = 'WORKITEM'
-                AND d.workitem_id = #{workitemId}
-                AND d.is_deleted = 0
-          )
-        ORDER BY id ASC
+        <!-- 优化器取全列时会退化为全表扫描，STRAIGHT_JOIN 固定按调度驱动并逐调度命中类型索引。 -->
+        SELECT * FROM (
+            SELECT e.id, e.tenant_id, e.workitem_id, e.dispatch_id, e.agent_id, e.event_id, e.seq, e.event_type,
+                e.step_id, e.step_key, e.step_order, e.step_name, e.message, e.error,
+                CASE WHEN e.event_type = 'workflow.plan_applied' THEN e.detail_json ELSE NULL END AS detail_json,
+                e.event_time, e.gmt_create
+            FROM dispatch d STRAIGHT_JOIN dispatch_runtime_event e FORCE INDEX (idx_dispatch_event_type)
+                ON e.tenant_id = d.tenant_id AND e.dispatch_id = d.id
+            WHERE d.tenant_id = #{tenantId} AND d.workitem_id = #{workitemId}
+              AND d.source_type = 'WORKITEM'
+              AND d.is_deleted = 0
+              AND (e.event_type LIKE 'step.%'
+                  OR e.event_type IN ('completion_requested', 'dispatch.completed', 'workflow.plan_applied', 'dispatch.failed'))
+            UNION ALL
+            <!-- 带 error 的记录不受类型裁剪影响；不写 FORCE，避免未执行 V114 迁移的库报索引不存在。 -->
+            SELECT e.id, e.tenant_id, e.workitem_id, e.dispatch_id, e.agent_id, e.event_id, e.seq, e.event_type,
+                e.step_id, e.step_key, e.step_order, e.step_name, e.message, e.error,
+                CASE WHEN e.event_type = 'workflow.plan_applied' THEN e.detail_json ELSE NULL END AS detail_json,
+                e.event_time, e.gmt_create
+            FROM dispatch d STRAIGHT_JOIN dispatch_runtime_event e
+                ON e.tenant_id = d.tenant_id AND e.dispatch_id = d.id
+            WHERE d.tenant_id = #{tenantId} AND d.workitem_id = #{workitemId}
+              AND d.source_type = 'WORKITEM'
+              AND d.is_deleted = 0
+              AND e.error IS NOT NULL
+              AND NOT (e.event_type LIKE 'step.%'
+                  OR e.event_type IN ('completion_requested', 'dispatch.completed', 'workflow.plan_applied', 'dispatch.failed'))
+        ) merged
+        ORDER BY merged.id ASC
     </select>
 
     <select id="listForProgress" databaseId="autowonder-legacy" resultMap="runtimeEventMap">
+        <!-- 优化器取全列时会退化为全表扫描，STRAIGHT_JOIN 固定按调度驱动并逐调度命中类型索引。 -->
+        SELECT * FROM (
+            SELECT e.id, e.tenant_id, e.workitem_id, e.dispatch_id, e.agent_id, e.event_id, e.seq, e.event_type,
+                e.step_id, e.step_key, e.step_order, e.step_name, e.message, e.error,
+                CASE WHEN e.event_type = 'workflow.plan_applied' THEN e.detail_json ELSE NULL END AS detail_json,
+                e.event_time, e.gmt_create
+            FROM dispatch d STRAIGHT_JOIN dispatch_runtime_event e FORCE INDEX (idx_dispatch_event_type)
+                ON e.tenant_id = d.tenant_id AND e.dispatch_id = d.id
+            WHERE d.tenant_id = #{tenantId} AND d.workitem_id = #{workitemId}
+              AND d.is_deleted = 0
+              AND (e.event_type LIKE 'step.%'
+                  OR e.event_type IN ('completion_requested', 'dispatch.completed', 'workflow.plan_applied', 'dispatch.failed'))
+            UNION ALL
+            <!-- 带 error 的记录不受类型裁剪影响；不写 FORCE，避免未执行 V114 迁移的库报索引不存在。 -->
+            SELECT e.id, e.tenant_id, e.workitem_id, e.dispatch_id, e.agent_id, e.event_id, e.seq, e.event_type,
+                e.step_id, e.step_key, e.step_order, e.step_name, e.message, e.error,
+                CASE WHEN e.event_type = 'workflow.plan_applied' THEN e.detail_json ELSE NULL END AS detail_json,
+                e.event_time, e.gmt_create
+            FROM dispatch d STRAIGHT_JOIN dispatch_runtime_event e
+                ON e.tenant_id = d.tenant_id AND e.dispatch_id = d.id
+            WHERE d.tenant_id = #{tenantId} AND d.workitem_id = #{workitemId}
+              AND d.is_deleted = 0
+              AND e.error IS NOT NULL
+              AND NOT (e.event_type LIKE 'step.%'
+                  OR e.event_type IN ('completion_requested', 'dispatch.completed', 'workflow.plan_applied', 'dispatch.failed'))
+        ) merged
+        ORDER BY merged.id ASC
+    </select>
+
+    <select id="listLatestForProgress" databaseId="autowonder-source-aware" resultMap="runtimeEventMap">
         SELECT id, tenant_id, workitem_id, dispatch_id, agent_id, event_id, seq, event_type,
             step_id, step_key, step_order, step_name, message, error,
             CASE WHEN event_type = 'workflow.plan_applied' THEN detail_json ELSE NULL END AS detail_json,
             event_time, gmt_create FROM dispatch_runtime_event e
+        JOIN (
+            SELECT MAX(e2.id) AS max_id
+            FROM dispatch d
+            JOIN dispatch_runtime_event e2 ON e2.tenant_id = d.tenant_id AND e2.dispatch_id = d.id
+            WHERE d.tenant_id = #{tenantId} AND d.workitem_id = #{workitemId}
+              AND d.source_type = 'WORKITEM' AND d.is_deleted = 0
+            GROUP BY e2.dispatch_id
+            UNION
+            SELECT MAX(e2.id) AS max_id
+            FROM dispatch d
+            JOIN dispatch_runtime_event e2 ON e2.tenant_id = d.tenant_id AND e2.dispatch_id = d.id
+            WHERE d.tenant_id = #{tenantId} AND d.workitem_id = #{workitemId}
+              AND d.source_type = 'WORKITEM' AND d.is_deleted = 0
+              AND e2.event_type = 'agent.progress'
+            GROUP BY e2.dispatch_id
+        ) latest ON latest.max_id = e.id
         WHERE e.tenant_id = #{tenantId} AND e.workitem_id = #{workitemId}
-          AND EXISTS (
-              SELECT 1 FROM dispatch d
-              WHERE d.id = e.dispatch_id
-                AND d.tenant_id = #{tenantId}
-                AND d.workitem_id = #{workitemId}
-                AND d.is_deleted = 0
-          )
-        ORDER BY id ASC
+        ORDER BY e.id ASC
+    </select>
+
+    <select id="listLatestForProgress" databaseId="autowonder-legacy" resultMap="runtimeEventMap">
+        SELECT id, tenant_id, workitem_id, dispatch_id, agent_id, event_id, seq, event_type,
+            step_id, step_key, step_order, step_name, message, error,
+            CASE WHEN event_type = 'workflow.plan_applied' THEN detail_json ELSE NULL END AS detail_json,
+            event_time, gmt_create FROM dispatch_runtime_event e
+        JOIN (
+            SELECT MAX(e2.id) AS max_id
+            FROM dispatch d
+            JOIN dispatch_runtime_event e2 ON e2.tenant_id = d.tenant_id AND e2.dispatch_id = d.id
+            WHERE d.tenant_id = #{tenantId} AND d.workitem_id = #{workitemId}
+              AND d.is_deleted = 0
+            GROUP BY e2.dispatch_id
+            UNION
+            SELECT MAX(e2.id) AS max_id
+            FROM dispatch d
+            JOIN dispatch_runtime_event e2 ON e2.tenant_id = d.tenant_id AND e2.dispatch_id = d.id
+            WHERE d.tenant_id = #{tenantId} AND d.workitem_id = #{workitemId}
+              AND d.is_deleted = 0
+              AND e2.event_type = 'agent.progress'
+            GROUP BY e2.dispatch_id
+        ) latest ON latest.max_id = e.id
+        WHERE e.tenant_id = #{tenantId} AND e.workitem_id = #{workitemId}
+        ORDER BY e.id ASC
     </select>
 
     <select id="listByDispatch" resultMap="runtimeEventMap">
@@ -130,6 +209,19 @@
         SELECT <include refid="cols"/> FROM dispatch_runtime_event
         WHERE tenant_id = #{tenantId} AND dispatch_id = #{dispatchId}
         ORDER BY id ASC
+    </select>
+
+    <select id="listByDispatchForTrace" resultMap="runtimeEventMap">
+        SELECT <include refid="cols"/> FROM dispatch_runtime_event
+        WHERE tenant_id = #{tenantId} AND dispatch_id = #{dispatchId}
+          AND event_type &lt;&gt; 'agent.message'
+        ORDER BY id ASC
+    </select>
+
+    <select id="findLatestIdForTrace" resultType="java.lang.Long">
+        SELECT MAX(id) FROM dispatch_runtime_event
+        WHERE tenant_id = #{tenantId} AND dispatch_id = #{dispatchId}
+          AND event_type &lt;&gt; 'agent.message'
     </select>
 
     <select id="listByDispatchAfterId" resultMap="runtimeEventMap">

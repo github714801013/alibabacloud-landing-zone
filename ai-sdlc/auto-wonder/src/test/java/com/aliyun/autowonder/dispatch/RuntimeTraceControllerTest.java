@@ -32,6 +32,32 @@ class RuntimeTraceControllerTest {
     }
 
     @Test
+    void windowParametersArePassedToTraceService() {
+        RuntimeTraceService service = mock(RuntimeTraceService.class);
+        RuntimeTraceArtifactService artifacts = mock(RuntimeTraceArtifactService.class);
+        var trace = new com.aliyun.autowonder.dispatch.dto.RuntimeTraceVO();
+        AutoWonderContext.get().setCurrentWorkspaceId(73L);
+        when(service.get(73L, 301L, 100L, 50, 900L)).thenReturn(trace);
+        var controller = new RuntimeTraceController(service, artifacts, mock(DispatchLiveActivityService.class));
+
+        assertSame(trace, controller.get(301L, 100L, 50, 900L).getData());
+        verify(service).get(73L, 301L, 100L, 50, 900L);
+    }
+
+    @Test
+    void completedOutlineIgnoresWindowParameters() {
+        RuntimeTraceService service = mock(RuntimeTraceService.class);
+        RuntimeTraceArtifactService artifacts = mock(RuntimeTraceArtifactService.class);
+        var outline = new com.aliyun.autowonder.dispatch.dto.RuntimeTraceVO();
+        AutoWonderContext.get().setCurrentWorkspaceId(73L);
+        when(artifacts.loadOutlineIfPresent(73L, 301L)).thenReturn(outline);
+        var controller = new RuntimeTraceController(service, artifacts, mock(DispatchLiveActivityService.class));
+
+        assertSame(outline, controller.get(301L, null, 50, 900L).getData());
+        verifyNoInteractions(service);
+    }
+
+    @Test
     void returnsTheCompleteActivitiesSnapshotForTheCurrentWorkspace() {
         RuntimeTraceService traceService = mock(RuntimeTraceService.class);
         RuntimeTraceArtifactService artifactService = mock(RuntimeTraceArtifactService.class);

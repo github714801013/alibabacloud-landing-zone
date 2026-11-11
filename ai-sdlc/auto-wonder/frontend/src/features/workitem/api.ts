@@ -236,9 +236,17 @@ export async function getDeliveryProgress(workitemId: number | string): Promise<
   return resp.data;
 }
 
-export async function getRuntimeTrace(dispatchId: number | string, afterSeq?: number | null): Promise<RuntimeTrace> {
+export async function getRuntimeTrace(
+  dispatchId: number | string,
+  afterSeq?: number | null,
+  options?: { limit?: number; beforeId?: number },
+): Promise<RuntimeTrace> {
+  const params: Record<string, number> = {};
+  if (afterSeq != null) params.afterSeq = afterSeq;
+  if (options?.limit != null) params.limit = options.limit;
+  if (options?.beforeId != null) params.beforeId = options.beforeId;
   const resp = await apiClient.get<RuntimeTrace>(`/api/dispatches/${dispatchId}/runtime-trace`, {
-    params: afterSeq == null ? undefined : { afterSeq },
+    params: Object.keys(params).length ? params : undefined,
   });
   return resp.data;
 }

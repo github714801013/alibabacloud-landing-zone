@@ -565,6 +565,108 @@ class RuntimeTraceServiceTest {
         assertTrue(timeline.getActivities().stream().noneMatch(activity -> "45:6".equals(activity.getEventId())));
     }
 
+    @Test
+    void windowedTraceExcludesMessagesAndPagesByArrivalId() {
+        DispatchDao dispatchDao = mock(DispatchDao.class);
+        DispatchRuntimeEventDao eventDao = mock(DispatchRuntimeEventDao.class);
+        when(dispatchDao.findById(66L)).thenReturn(dispatch(66L, 1L));
+        List<DispatchRuntimeEventDO> rows = new java.util.ArrayList<>();
+        for (long id = 1; id <= 250; id++) {
+            rows.add(eventWithId(id, id, "turn.started", "2026-07-30T10:00:00Z",
+                    "{\"sessionId\":\"s1\",\"turnId\":\"t1\"}"));
+        }
+        when(eventDao.listByDispatchForTrace(1L, 66L)).thenReturn(rows);
+        RuntimeTraceService service = new RuntimeTraceService(dispatchDao, eventDao);
+
+        RuntimeTraceVO latest = service.get(1L, 66L, null, 100, null);
+        assertEquals(100, latest.getEvents().size());
+        assertEquals(151L, latest.getEvents().get(0).getSeq());
+        assertEquals(151L, latest.getNextBeforeId());
+        org.mockito.Mockito.verify(eventDao, org.mockito.Mockito.never())
+                .listByDispatchInArrivalOrder(1L, 66L);
+
+        RuntimeTraceVO older = service.get(1L, 66L, null, 100, 151L);
+        assertEquals(100, older.getEvents().size());
+        assertEquals(51L, older.getEvents().get(0).getSeq());
+        assertEquals(51L, older.getNextBeforeId());
+
+        RuntimeTraceVO olderWithCursor = service.get(1L, 66L, 250L, 100, 151L);
+        assertEquals(100, olderWithCursor.getEvents().size());
+        assertEquals(51L, olderWithCursor.getEvents().get(0).getSeq());
+
+        RuntimeTraceVO earliest = service.get(1L, 66L, null, 100, 1L);
+        assertTrue(earliest.getEvents().isEmpty());
+        assertNull(earliest.getNextBeforeId());
+        assertFalse(earliest.getSessions().isEmpty());
+    }
+
+    @Test
+    void windowedPollWithoutNewEventsSkipsDetailLoad() {
+        DispatchDao dispatchDao = mock(DispatchDao.class);
+        DispatchRuntimeEventDao eventDao = mock(DispatchRuntimeEventDao.class);
+        when(dispatchDao.findById(68L)).thenReturn(dispatch(68L, 1L));
+        when(eventDao.findLatestIdForTrace(1L, 68L)).thenReturn(250L);
+        RuntimeTraceService service = new RuntimeTraceService(dispatchDao, eventDao);
+
+        RuntimeTraceVO trace = service.get(1L, 68L, 250L, 100, null);
+
+        assertFalse(trace.isChanged());
+        assertTrue(trace.getEvents().isEmpty());
+        org.mockito.Mockito.verify(eventDao, org.mockito.Mockito.never())
+                .listByDispatchForTrace(1L, 68L);
+    }
+
+    @Test
+    void windowLimitIsClampedToMaximum() {
+        DispatchDao dispatchDao = mock(DispatchDao.class);
+        DispatchRuntimeEventDao eventDao = mock(DispatchRuntimeEventDao.class);
+        when(dispatchDao.findById(69L)).thenReturn(dispatch(69L, 1L));
+        List<DispatchRuntimeEventDO> rows = new java.util.ArrayList<>();
+        for (long id = 1; id <= 600; id++) {
+            rows.add(eventWithId(id, id, "turn.started", "2026-07-30T10:00:00Z",
+                    "{\"sessionId\":\"s1\",\"turnId\":\"t1\"}"));
+        }
+        when(eventDao.listByDispatchForTrace(1L, 69L)).thenReturn(rows);
+        RuntimeTraceService service = new RuntimeTraceService(dispatchDao, eventDao);
+
+        RuntimeTraceVO trace = service.get(1L, 69L, null, 501, null);
+
+        assertEquals(500, trace.getEvents().size());
+        assertEquals(101L, trace.getNextBeforeId());
+    }
+
+    @Test
+    void fullModeStillLoadsEveryEventAndRejectsCrossTenant() {
+        DispatchDao dispatchDao = mock(DispatchDao.class);
+        DispatchRuntimeEventDao eventDao = mock(DispatchRuntimeEventDao.class);
+        when(dispatchDao.findById(70L)).thenReturn(dispatch(70L, 1L));
+        when(eventDao.listByDispatchInArrivalOrder(1L, 70L)).thenReturn(List.of(
+                event(1, "agent.message", "2026-07-30T10:00:00Z", "{\"content\":\"a\"}"),
+                event(2, "turn.started", "2026-07-30T10:00:01Z", "{\"sessionId\":\"s1\",\"turnId\":\"t1\"}")));
+        RuntimeTraceService service = new RuntimeTraceService(dispatchDao, eventDao);
+
+        RuntimeTraceVO trace = service.get(1L, 70L, null, null, null);
+
+        assertEquals(2, trace.getEvents().size());
+        org.mockito.Mockito.verify(eventDao).listByDispatchInArrivalOrder(1L, 70L);
+        org.mockito.Mockito.verify(eventDao, org.mockito.Mockito.never())
+                .listByDispatchForTrace(1L, 70L);
+        assertThrows(com.aliyun.autowonder.common.error.BizException.class,
+                () -> service.get(2L, 70L, null, 100, null));
+    }
+
+    @Test
+    void rejectsNonPositiveWindowLimit() {
+        DispatchDao dispatchDao = mock(DispatchDao.class);
+        DispatchRuntimeEventDao eventDao = mock(DispatchRuntimeEventDao.class);
+        when(dispatchDao.findById(67L)).thenReturn(dispatch(67L, 1L));
+        RuntimeTraceService service = new RuntimeTraceService(dispatchDao, eventDao);
+
+        assertThrows(com.aliyun.autowonder.common.error.BizException.class,
+                () -> service.get(1L, 67L, null, 0, null));
+        org.mockito.Mockito.verifyNoInteractions(eventDao);
+    }
+
     private static DispatchDO dispatch(long id, long tenantId) {
         DispatchDO dispatch = new DispatchDO();
         dispatch.setId(id);

@@ -3,7 +3,7 @@ import { formatDateTime, formatNumber } from '@/shared/i18n/format';
 import { i18n } from '@/shared/i18n';
 import { runtimeStatusLabel, dispatchExecutionLabel, runtimeEdgeLabel, artifactTypeLabel, subStepName, graphAgentName } from '../runtimeLabels';
 import { useTranslation } from 'react-i18next';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Card, Typography, Space, Spin, Collapse, Tag, Tooltip, Button, Select, ConfigProvider, Modal, Tabs, Alert, Empty } from 'antd';
 import { CheckCircleFilled, ClockCircleOutlined, CloseCircleFilled, CompressOutlined, DownloadOutlined, EyeOutlined, FileTextOutlined, FullscreenOutlined, LoadingOutlined, PauseCircleOutlined, ReloadOutlined, ZoomInOutlined, ZoomOutOutlined } from '@ant-design/icons';
@@ -500,7 +500,7 @@ function authoritativeEdgeTone(type: ProcessGraphEdge['type']) {
   return { color: 'var(--aw-info)', background: 'color-mix(in srgb, var(--aw-info) 10%, var(--aw-panel))', border: 'var(--aw-info)', markerId: 'execution-graph-arrow-pass' };
 }
 
-function AuthoritativeExecutionProcessGraph({ processGraph }: { processGraph?: ProcessGraph | null }) {
+const AuthoritativeExecutionProcessGraph = memo(function AuthoritativeExecutionProcessGraph({ processGraph }: { processGraph?: ProcessGraph | null }) {
   const { t } = useTranslation('workitem');
   const dragState = useRef<{ active: boolean; startX: number; startY: number; panX: number; panY: number }>({ active: false, startX: 0, startY: 0, panX: 0, panY: 0 });
   const [zoom, setZoom] = useState(1);
@@ -516,6 +516,7 @@ function AuthoritativeExecutionProcessGraph({ processGraph }: { processGraph?: P
     detail: `${graphAgentName(selected.source)} -> ${graphAgentName(selected.target)} · dispatch ${selected.edge.sourceDispatchId ?? '-'} -> ${selected.edge.targetDispatchId ?? '-'}`,
   });
   const [traceNode, setTraceNode] = useState<ProcessGraphNode | null>(null);
+  const closeTrace = useCallback(() => setTraceNode(null), []);
 
   if (!processGraph || processGraph.nodes.length === 0) return null;
 
@@ -617,12 +618,12 @@ function AuthoritativeExecutionProcessGraph({ processGraph }: { processGraph?: P
       <div data-testid="execution-graph-detail-panel" style={{ marginTop: 8, minHeight: 58, padding: '7px 9px', border: '1px solid var(--aw-border)', borderRadius: 6, background: 'var(--aw-raised)' }}>
         {selection ? <Space direction="vertical" size={1}><Text strong style={{ fontSize: 12 }}>{selection.title}</Text><Text type="secondary" style={{ fontSize: 12 }}>{t('delivery.selection', { status: selection.status, duration: selection.duration })}</Text><Text type="secondary" style={{ fontSize: 12 }}>{selection.detail}</Text></Space> : <Text type="secondary" style={{ fontSize: 12 }}>{t('delivery.graphHint')}</Text>}
       </div>
-      <RuntimeTraceDrawer node={traceNode} processGraph={processGraph} onClose={() => setTraceNode(null)} />
+      <RuntimeTraceDrawer node={traceNode} processGraph={processGraph} onClose={closeTrace} />
     </Card>
   );
 
   return fullscreen ? <div data-testid="execution-graph-fullscreen" style={{ position: 'fixed', inset: 0, zIndex: 1000, padding: 16, background: 'var(--aw-panel)' }}>{graph}</div> : graph;
-}
+});
 
 async function downloadArtifact(artifact: Artifact) {
   const url = await getArtifactDownloadUrl(artifact.id);

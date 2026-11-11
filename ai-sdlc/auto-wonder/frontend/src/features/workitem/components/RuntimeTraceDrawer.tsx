@@ -5,7 +5,7 @@ import { i18n } from '@/shared/i18n';
 import { formatDuration } from '../duration';
 import { runtimeStatusLabel } from '../runtimeLabels';
 import { useTranslation } from 'react-i18next';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Button, Drawer, Empty, Space, Spin, Tag, Typography } from 'antd';
 import type {
   ProcessGraph, ProcessGraphNode, RuntimeTrace, RuntimeTraceBoundary, RuntimeTraceContextFile,
@@ -16,6 +16,7 @@ import { failureHistoryOf } from './failureHistory';
 import { FailureHistoryPanel } from './FailureHistoryPanel';
 
 const { Text, Title } = Typography;
+const TRACE_PAGE_SIZE = 100;
 const ACTIVE_STATUSES = new Set(['RUNNING', 'ACKED', 'DISPATCHED', 'PAUSING']);
 const FAILURE_EVENT_TYPES = new Set(['step.failed', 'session.failed']);
 const FIRST_CAUSE_REASON = /^tool_hook_blocked\b/;
@@ -100,10 +101,25 @@ function ObservationTree({ items, onSelect }: { items: RuntimeTraceObservation[]
   ))}</>;
 }
 
-function TraceTimeline({ trace, onSelect }: { trace: RuntimeTrace; onSelect: (selection: Selection) => void }) {
+interface TraceTimelineProps {
+  trace: RuntimeTrace;
+  onSelect: (selection: Selection) => void;
+  onLoadEarlier: () => void;
+  onBackToLatest: () => void;
+  loadingEarlier: boolean;
+  browsingEarlier: boolean;
+}
+
+const TraceTimeline = memo(function TraceTimeline({
+  trace, onSelect, onLoadEarlier, onBackToLatest, loadingEarlier, browsingEarlier,
+}: TraceTimelineProps) {
   const { t } = useTranslation('workitem');
   const runtimeEvents = (trace.events || []).filter((event) => !event.detail?.sessionId);
   return <div>
+    {(trace.nextBeforeId != null || browsingEarlier) && <Space style={{ marginBottom: 14 }}>
+      {trace.nextBeforeId != null && <Button size="small" loading={loadingEarlier} onClick={onLoadEarlier}>{t('trace.loadEarlier')}</Button>}
+      {browsingEarlier && <Button size="small" onClick={onBackToLatest}>{t('trace.backToLatest')}</Button>}
+    </Space>}
     {!!runtimeEvents.length && <div style={{ marginBottom: 14 }}>
       <Text strong style={{ fontSize: 12 }}>{t('trace.runtime')}</Text>
       {runtimeEvents.map((event, index) => {
@@ -149,7 +165,7 @@ function TraceTimeline({ trace, onSelect }: { trace: RuntimeTrace; onSelect: (se
       );
     })}
   </div>;
-}
+});
 
 function SpanDetails({ spans }: { spans: RuntimeTraceSpan[] }) {
   const { t } = useTranslation('workitem');
@@ -206,7 +222,7 @@ function DetailPanel({ dispatchId, selection, loading, onContext }: { dispatchId
   </div>;
 }
 
-export function RuntimeTraceDrawer({ node, processGraph, onClose }: RuntimeTraceDrawerProps) {
+export const RuntimeTraceDrawer = memo(function RuntimeTraceDrawer({ node, processGraph, onClose }: RuntimeTraceDrawerProps) {
   const { t } = useTranslation('workitem');
   const [trace, setTrace] = useState<RuntimeTrace | null>(null);
   const [selection, setSelection] = useState<Selection | null>(null);
@@ -214,7 +230,10 @@ export function RuntimeTraceDrawer({ node, processGraph, onClose }: RuntimeTrace
   const [detailLoading, setDetailLoading] = useState(false);
   const [error, setError] = useState<{ message?: string; fallback: 'trace.loadFailed' | 'trace.detailFailed' } | null>(null);
   const [contextPreview, setContextPreview] = useState<{ name: string; content: string } | null>(null);
+  const [browsingEarlier, setBrowsingEarlier] = useState(false);
+  const [loadingEarlier, setLoadingEarlier] = useState(false);
   const lastSeq = useRef<number | null>(null);
+  const traceEpoch = useRef(0);
   const detailPane = useRef<HTMLDivElement | null>(null);
   const active = ACTIVE_STATUSES.has(node?.status?.toUpperCase() || '');
   const failureReason = useMemo(
@@ -224,27 +243,63 @@ export function RuntimeTraceDrawer({ node, processGraph, onClose }: RuntimeTrace
   const failureHistory = useMemo(() => failureHistoryOf(trace?.events), [trace]);
 
   useEffect(() => {
-    if (node?.dispatchId == null) return undefined;
+    traceEpoch.current += 1;
+    setTrace(null); setSelection(null); setError(null); setLoading(true);
+    lastSeq.current = null; setBrowsingEarlier(false);
+  }, [node?.dispatchId]);
+
+  useEffect(() => {
+    if (node?.dispatchId == null || browsingEarlier) return undefined;
     let cancelled = false;
     const dispatchId = node.dispatchId;
-    setTrace(null); setSelection(null); setError(null); setLoading(true); lastSeq.current = null;
     const load = async () => {
+      const epoch = traceEpoch.current;
       try {
-        const next = await getRuntimeTrace(dispatchId, lastSeq.current);
-        if (cancelled) return;
+        const next = await getRuntimeTrace(dispatchId, lastSeq.current, { limit: TRACE_PAGE_SIZE });
+        if (cancelled || epoch !== traceEpoch.current) return;
         if (next.changed || lastSeq.current == null) {
           setTrace(next);
           setSelection((current) => current || (next.sessions[0] ? { kind: 'session', session: next.sessions[0] } : null));
         }
         lastSeq.current = next.lastSeq ?? lastSeq.current;
       } catch (reason) {
-        if (!cancelled) setError({ message: reason instanceof Error ? reason.message : undefined, fallback: 'trace.loadFailed' });
+        if (!cancelled && epoch === traceEpoch.current) {
+          setError({ message: reason instanceof Error ? reason.message : undefined, fallback: 'trace.loadFailed' });
+        }
       } finally { if (!cancelled) setLoading(false); }
     };
     void load();
     const timer = active ? window.setInterval(() => void load(), 2000) : null;
     return () => { cancelled = true; if (timer != null) window.clearInterval(timer); };
-  }, [active, node?.dispatchId]);
+  }, [active, browsingEarlier, node?.dispatchId]);
+
+  const loadEarlier = useCallback(async () => {
+    if (node?.dispatchId == null || trace?.nextBeforeId == null) return;
+    const beforeId = trace.nextBeforeId;
+    const epoch = ++traceEpoch.current;
+    setLoadingEarlier(true);
+    try {
+      const older = await getRuntimeTrace(node.dispatchId, null, { limit: TRACE_PAGE_SIZE, beforeId });
+      if (epoch !== traceEpoch.current) return;
+      // 成功后再次递增，作废本轮在途的轮询响应，避免旧窗口覆盖刚追加的页。
+      traceEpoch.current += 1;
+      setBrowsingEarlier(true);
+      setTrace((previous) => previous == null ? older : {
+        ...previous,
+        events: [...(older.events || []), ...(previous.events || [])],
+        nextBeforeId: older.nextBeforeId ?? null,
+      });
+    } catch (reason) {
+      if (epoch !== traceEpoch.current) return;
+      setError({ message: reason instanceof Error ? reason.message : undefined, fallback: 'trace.loadFailed' });
+    } finally { setLoadingEarlier(false); }
+  }, [node?.dispatchId, trace?.nextBeforeId]);
+
+  const backToLatest = useCallback(() => {
+    traceEpoch.current += 1;
+    lastSeq.current = null;
+    setBrowsingEarlier(false);
+  }, []);
 
   const continuity = useMemo(() => {
     if (!node) return { previous: null, next: null };
@@ -260,7 +315,7 @@ export function RuntimeTraceDrawer({ node, processGraph, onClose }: RuntimeTrace
     if (pane) pane.scrollTop = 0;
   }, [selection, contextPreview]);
 
-  const select = async (next: Selection) => {
+  const select = useCallback(async (next: Selection) => {
     if (node?.dispatchId == null || trace?.source !== 'OSS' || next.kind === 'session' || next.kind === 'boundary') { setSelection(next); return; }
     setDetailLoading(true);
     try {
@@ -272,7 +327,10 @@ export function RuntimeTraceDrawer({ node, processGraph, onClose }: RuntimeTrace
       }
     } catch (reason) { setError({ message: reason instanceof Error ? reason.message : undefined, fallback: 'trace.detailFailed' }); }
     finally { setDetailLoading(false); }
-  };
+  }, [node?.dispatchId, trace?.source]);
+
+  const handleSelect = useCallback((next: Selection) => { void select(next); }, [select]);
+  const handleLoadEarlier = useCallback(() => { void loadEarlier(); }, [loadEarlier]);
 
   const openContext = async (file: RuntimeTraceContextFile) => {
     if (node?.dispatchId == null) return;
@@ -305,7 +363,14 @@ export function RuntimeTraceDrawer({ node, processGraph, onClose }: RuntimeTrace
         <div data-testid="runtime-trace-panes" style={{ display: 'grid', gridTemplateColumns: '42% 58%', flex: 1, minHeight: 0, marginTop: 14, border: '1px solid var(--aw-border)', borderRadius: 10, overflow: 'hidden' }}>
           <div data-testid="runtime-trace-timeline-pane" style={{ padding: 14, overflow: 'auto', borderRight: '1px solid var(--aw-border)', background: 'var(--aw-raised)' }}>
             <div style={{ display: 'flex', alignItems: 'center', marginBottom: 12 }}><Title level={5} style={{ margin: 0, flex: 1 }}>{t('trace.timeline')}</Title><Tag>{trace.source || 'LIVE'}</Tag></div>
-            <TraceTimeline trace={trace} onSelect={(next) => void select(next)} />
+            <TraceTimeline
+              trace={trace}
+              onSelect={handleSelect}
+              onLoadEarlier={handleLoadEarlier}
+              onBackToLatest={backToLatest}
+              loadingEarlier={loadingEarlier}
+              browsingEarlier={browsingEarlier}
+            />
             {!trace.sessions.length && <Empty description={t('trace.empty')} />}
           </div>
           <div data-testid="runtime-trace-detail-pane" ref={detailPane} style={{ padding: 20, overflow: 'auto' }}>
@@ -316,4 +381,4 @@ export function RuntimeTraceDrawer({ node, processGraph, onClose }: RuntimeTrace
       )}
     </div>
   </Drawer>;
-}
+});

@@ -907,6 +907,8 @@
     "title": "Execution trace",
     "failure": "Dispatch failure reason",
     "empty": "The runtime has not reported a session trace yet",
+    "loadEarlier": "Load earlier events",
+    "backToLatest": "Back to latest",
     "back": "Back to turn",
     "input": "Input",
     "output": "Output",

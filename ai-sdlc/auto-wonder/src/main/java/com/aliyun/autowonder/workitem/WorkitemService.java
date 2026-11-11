@@ -1806,6 +1806,24 @@ public class WorkitemService {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.aliyun.autowonder.dispatch.DispatchRecoveryService deliveryRecoveryService;
 
+    static List<DispatchRuntimeEventDO> mergeProgressEvents(List<DispatchRuntimeEventDO> progress,
+                                                            List<DispatchRuntimeEventDO> latest) {
+        if (latest.isEmpty()) {
+            return progress;
+        }
+        Map<Long, DispatchRuntimeEventDO> byId = new LinkedHashMap<>();
+        for (DispatchRuntimeEventDO event : progress) {
+            byId.put(event.getId(), event);
+        }
+        for (DispatchRuntimeEventDO event : latest) {
+            byId.putIfAbsent(event.getId(), event);
+        }
+        List<DispatchRuntimeEventDO> merged = new ArrayList<>(byId.values());
+        merged.sort(Comparator.comparing(DispatchRuntimeEventDO::getId,
+                Comparator.nullsFirst(Comparator.naturalOrder())));
+        return merged;
+    }
+
     public DeliveryProgressVO getDeliveryProgress(long workitemId, long tenantId) {
         WorkitemDO w = workitemDao.findById(workitemId);
         if (w == null) {
@@ -1815,7 +1833,9 @@ public class WorkitemService {
         if (dispatches == null) {
             dispatches = List.of();
         }
-        List<DispatchRuntimeEventDO> runtimeEvents = safeList(runtimeEventDao.listForProgress(tenantId, workitemId));
+        List<DispatchRuntimeEventDO> runtimeEvents = mergeProgressEvents(
+                safeList(runtimeEventDao.listForProgress(tenantId, workitemId)),
+                safeList(runtimeEventDao.listLatestForProgress(tenantId, workitemId)));
         ProgressReadContext context = new ProgressReadContext(runtimeEvents);
         context.bindDelivery(tenantId, workitemId, dispatches);
         if (deliveryRecoveryService != null) {

@@ -43,7 +43,6 @@ public class RuntimeTraceVO {
         private String endedAt;
         private Long durationMs;
         private TokenUsage tokenUsage = new TokenUsage();
-        private List<String> eventIds = new ArrayList<>();
         private List<Boundary> boundaries = new ArrayList<>();
         private List<Turn> turns = new ArrayList<>();
     }
@@ -67,7 +66,6 @@ public class RuntimeTraceVO {
         private TokenUsage usage = new TokenUsage();
         private List<ContextFile> contextFiles = new ArrayList<>();
         private List<Observation> observations = new ArrayList<>();
-        private List<String> eventIds = new ArrayList<>();
         private List<Span> spans = new ArrayList<>();
     }
 
@@ -122,7 +120,6 @@ public class RuntimeTraceVO {
         private String content;
         private String errorCategory;
         private TokenUsage tokenUsage = new TokenUsage();
-        private List<String> eventIds = new ArrayList<>();
     }
 
     @Getter

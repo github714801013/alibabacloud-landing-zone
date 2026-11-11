@@ -15,8 +15,8 @@ describe('RuntimeTraceDrawer', () => {
       http.get('/api/dispatches/44/runtime-trace', () => HttpResponse.json({ success: true, code: '0', message: '', data: {
         schemaVersion: 'autowonder.runtime-trace.v2', source: 'OSS', dispatchId: 44, provider: 'qoder', changed: true,
         tokenUsage: usage, events: [], sessions: [{
-          sessionId: 'qoder-session', provider: 'qoder', status: 'COMPLETED', durationMs: 1200, tokenUsage: usage, boundaries: [], eventIds: [],
-          turns: [{ traceId: 'turn:1', turnId: 'turn:1', status: 'COMPLETED', durationMs: 1200, providerCoverage: 'PARTIAL', tokenUsage: usage, usage, eventIds: [], spans: [],
+          sessionId: 'qoder-session', provider: 'qoder', status: 'COMPLETED', durationMs: 1200, tokenUsage: usage, boundaries: [],
+          turns: [{ traceId: 'turn:1', turnId: 'turn:1', status: 'COMPLETED', durationMs: 1200, providerCoverage: 'PARTIAL', tokenUsage: usage, usage, spans: [],
             observations: [{ observationId: 'turn:1:provider', type: 'PROVIDER', name: 'qoder Provider Turn', children: [
               { observationId: 'thinking:1', parentObservationId: 'turn:1:provider', type: 'THINKING', name: 'Observed Thinking', durationMs: 420, children: [] },
               { observationId: 'wait:1', parentObservationId: 'turn:1:provider', type: 'WAIT', name: 'Model / Provider Wait', durationMs: 500, children: [] },
@@ -28,7 +28,7 @@ describe('RuntimeTraceDrawer', () => {
         turnRequests += 1;
         return HttpResponse.json({ success: true, code: '0', message: '', data: {
           traceId: 'turn:1', turnId: 'turn:1', status: 'COMPLETED', durationMs: 1200, providerCoverage: 'PARTIAL', tokenUsage: usage, usage,
-          prompt: 'exact user prompt', systemPrompt: 'exact system prompt', output: 'agent answer', eventIds: [], spans: [], observations: [], contextFiles: [],
+          prompt: 'exact user prompt', systemPrompt: 'exact system prompt', output: 'agent answer', spans: [], observations: [], contextFiles: [],
         } });
       }),
       http.get('/api/dispatches/44/runtime-trace/observations/mcp%3A1', () => {
@@ -53,6 +53,106 @@ describe('RuntimeTraceDrawer', () => {
     await waitFor(() => expect(observationRequests).toBe(1));
     expect(within(drawer).getByText(/posterior/)).toBeInTheDocument();
     expect(within(drawer).getByText('exact tool result')).toBeInTheDocument();
+  });
+
+  it('loads a bounded window and appends earlier events without duplicates', async () => {
+    const requests: Array<{ limit: string | null; beforeId: string | null }> = [];
+    const latestEvents = Array.from({ length: 100 }, (_, index) => ({
+      eventId: `latest-${index}`, eventType: 'latest-event', detail: {},
+    }));
+    const olderEvents = Array.from({ length: 100 }, (_, index) => ({
+      eventId: `older-${index}`, eventType: 'older-event', detail: {},
+    }));
+    server.use(
+      http.get('/api/dispatches/55/runtime-trace', ({ request }) => {
+        const url = new URL(request.url);
+        const beforeId = url.searchParams.get('beforeId');
+        const afterSeq = url.searchParams.get('afterSeq');
+        requests.push({ limit: url.searchParams.get('limit'), beforeId });
+        if (afterSeq != null) {
+          return HttpResponse.json({ success: true, code: '0', message: '', data: {
+            dispatchId: 55, changed: false, lastSeq: Number(afterSeq), tokenUsage: usage,
+            events: [], sessions: [],
+          } });
+        }
+        return HttpResponse.json({ success: true, code: '0', message: '', data: {
+          dispatchId: 55, changed: true, lastSeq: beforeId ? 150 : 250, tokenUsage: usage,
+          nextBeforeId: beforeId ? null : 151,
+          events: beforeId ? olderEvents : latestEvents,
+          sessions: [],
+        } });
+      }),
+    );
+
+    render(<RuntimeTraceDrawer node={{ key: 'dispatch:55', dispatchId: 55, agentName: '开发', status: 'SUCCEEDED' }} processGraph={{ nodes: [], edges: [] }} onClose={() => {}} />);
+    const drawer = await screen.findByTestId('runtime-trace-drawer');
+    await waitFor(() => expect(within(drawer).getAllByText('latest-event')).toHaveLength(100));
+    expect(requests[0]).toEqual({ limit: '100', beforeId: null });
+
+    fireEvent.click(within(drawer).getByText('加载更早的事件'));
+
+    await waitFor(() => expect(within(drawer).getAllByText('older-event')).toHaveLength(100));
+    expect(within(drawer).getAllByText('latest-event')).toHaveLength(100);
+    expect(requests[1]).toEqual({ limit: '100', beforeId: '151' });
+    expect(within(drawer).queryByText('加载更早的事件')).not.toBeInTheDocument();
+
+    fireEvent.click(within(drawer).getByText('回到最新'));
+
+    await waitFor(() => expect(within(drawer).queryByText('older-event')).not.toBeInTheDocument());
+    expect(within(drawer).getAllByText('latest-event')).toHaveLength(100);
+  });
+
+  it('keeps the timeline buttons when a polling response reports no change', async () => {
+    let requests = 0;
+    server.use(http.get('/api/dispatches/77/runtime-trace', ({ request }) => {
+      requests += 1;
+      const afterSeq = new URL(request.url).searchParams.get('afterSeq');
+      return HttpResponse.json({ success: true, code: '0', message: '', data: afterSeq == null
+        ? { dispatchId: 77, changed: true, lastSeq: 10, tokenUsage: usage, events: [{ eventId: 'evt-1', eventType: 'step.started', detail: {} }], sessions: [] }
+        : { dispatchId: 77, changed: false, lastSeq: 10, tokenUsage: usage, events: [], sessions: [] } });
+    }));
+
+    render(<RuntimeTraceDrawer node={{ key: 'dispatch:77', dispatchId: 77, agentName: '开发', status: 'RUNNING' }} processGraph={{ nodes: [], edges: [] }} onClose={() => {}} />);
+    const drawer = await screen.findByTestId('runtime-trace-drawer');
+    const firstButton = (await within(drawer).findByText('step.started')).closest('button');
+    await waitFor(() => expect(requests).toBeGreaterThanOrEqual(2), { timeout: 3500 });
+    expect(within(drawer).getByText('step.started').closest('button')).toBe(firstButton);
+  });
+
+  it('ignores an earlier-page response that arrives after the dispatch changed', async () => {
+    const nextEvents = Array.from({ length: 100 }, (_, index) => ({
+      eventId: `next-${index}`, eventType: 'next-event', detail: {},
+    }));
+    server.use(
+      http.get('/api/dispatches/55/runtime-trace', async ({ request }) => {
+        const url = new URL(request.url);
+        if (url.searchParams.get('beforeId')) {
+          await new Promise((resolve) => setTimeout(resolve, 80));
+          return HttpResponse.json({ success: true, code: '0', message: '', data: {
+            dispatchId: 55, changed: true, lastSeq: 150, tokenUsage: usage, nextBeforeId: null,
+            events: [{ eventId: 'stale', eventType: 'stale-event', detail: {} }], sessions: [],
+          } });
+        }
+        return HttpResponse.json({ success: true, code: '0', message: '', data: {
+          dispatchId: 55, changed: true, lastSeq: 250, nextBeforeId: 151, tokenUsage: usage,
+          events: [{ eventId: 'window', eventType: 'window-event', detail: {} }], sessions: [],
+        } });
+      }),
+      http.get('/api/dispatches/56/runtime-trace', () => HttpResponse.json({ success: true, code: '0', message: '', data: {
+        dispatchId: 56, changed: true, lastSeq: 350, tokenUsage: usage, events: nextEvents, sessions: [],
+      } })),
+    );
+
+    const { rerender } = render(<RuntimeTraceDrawer node={{ key: 'dispatch:55', dispatchId: 55, agentName: '开发', status: 'SUCCEEDED' }} processGraph={{ nodes: [], edges: [] }} onClose={() => {}} />);
+    const drawer = await screen.findByTestId('runtime-trace-drawer');
+    await within(drawer).findByText('window-event');
+    fireEvent.click(within(drawer).getByText('加载更早的事件'));
+
+    rerender(<RuntimeTraceDrawer node={{ key: 'dispatch:56', dispatchId: 56, agentName: '开发', status: 'SUCCEEDED' }} processGraph={{ nodes: [], edges: [] }} onClose={() => {}} />);
+
+    await waitFor(() => expect(within(drawer).getAllByText('next-event')).toHaveLength(100));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 150)); });
+    expect(within(drawer).queryByText('stale-event')).not.toBeInTheDocument();
   });
 
   const gateReason = 'step "400166" gate: evidence required but none provided';
@@ -151,7 +251,7 @@ describe('RuntimeTraceDrawer usage display', () => {
       schemaVersion: 'autowonder.runtime-trace.v2', source: 'OSS', dispatchId: 45, provider: 'qoder', changed: true,
       tokenUsage, events: [],
       sessions: [{
-        sessionId: 's1', provider: 'qoder', status: 'COMPLETED', durationMs: 1200, tokenUsage, boundaries: [], eventIds: [], turns: [],
+        sessionId: 's1', provider: 'qoder', status: 'COMPLETED', durationMs: 1200, tokenUsage, boundaries: [], turns: [],
       }],
     };
   }
@@ -193,7 +293,7 @@ describe('RuntimeTraceDrawer usage display', () => {
         schemaVersion: 'autowonder.runtime-trace.v2', source: 'OSS', dispatchId: 45, provider: 'qoder', changed: true,
         events: [],
         sessions: [{
-          sessionId: 's1', provider: 'qoder', status: 'COMPLETED', durationMs: 1200, boundaries: [], eventIds: [], turns: [],
+          sessionId: 's1', provider: 'qoder', status: 'COMPLETED', durationMs: 1200, boundaries: [], turns: [],
         }],
       } })),
     );
@@ -210,14 +310,14 @@ describe('RuntimeTraceDrawer usage display', () => {
 describe('RuntimeTraceDrawer independent pane scrolling', () => {
   const liveTurn = (turnId: string, stepName: string, contextFiles: unknown[] = []) => ({
     traceId: turnId, turnId, stepName, status: 'COMPLETED', durationMs: 900, providerCoverage: 'FULL',
-    tokenUsage: usage, usage, eventIds: [], spans: [], observations: [], contextFiles,
+    tokenUsage: usage, usage, spans: [], observations: [], contextFiles,
   });
 
   function liveTrace(dispatchId: number, turns: unknown[], events: unknown[] = []) {
     return {
       schemaVersion: 'autowonder.runtime-trace.v2', source: 'LIVE', dispatchId, provider: 'qoder', changed: true,
       tokenUsage: usage, events,
-      sessions: [{ sessionId: 'session-live', provider: 'qoder', status: 'COMPLETED', durationMs: 900, tokenUsage: usage, boundaries: [], eventIds: [], turns }],
+      sessions: [{ sessionId: 'session-live', provider: 'qoder', status: 'COMPLETED', durationMs: 900, tokenUsage: usage, boundaries: [], turns }],
     };
   }
 
