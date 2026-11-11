@@ -1,4 +1,5 @@
 import { useAuthStore } from '@/shared/auth/store';
+import { refreshRealtimeSession } from '@/shared/auth/sessionRefresh';
 import type { ConnectionState, EventHandler, RealtimeClientLike, Subscription } from './types';
 import { SHARED_WORKER_NAME, type TabToWorkerMessage, type WorkerToTabMessage } from './sharedWorkerProtocol';
 
@@ -27,6 +28,7 @@ export class SharedWorkerClient implements RealtimeClientLike {
   private handshakeTimer: ReturnType<typeof setTimeout> | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private pongTimer: ReturnType<typeof setTimeout> | null = null;
+  private authRefreshInFlight = false;
   private readonly buildUrl: () => string;
   private readonly createFallback: () => RealtimeClientLike;
 
@@ -197,6 +199,9 @@ export class SharedWorkerClient implements RealtimeClientLike {
       case 'fatal':
         this.activateFallback(message.reason);
         break;
+      case 'auth-failed':
+        void this.refreshAuth();
+        break;
       case 'state':
         this.setState(message.state);
         break;
@@ -207,6 +212,22 @@ export class SharedWorkerClient implements RealtimeClientLike {
       }
       default:
         break;
+    }
+  }
+
+  // worker 只在服务端以「未鉴权」关闭连接时通知；刷新成功用新 token 重连，失败则等下一次重连通知。
+  private async refreshAuth() {
+    if (this.fallback || this.authRefreshInFlight || !this.key) return;
+    this.authRefreshInFlight = true;
+    try {
+      const result = await refreshRealtimeSession();
+      if (result.kind === 'refreshed') {
+        this.rebind(result.token);
+      } else if (result.kind === 'expired') {
+        this.disconnect();
+      }
+    } finally {
+      this.authRefreshInFlight = false;
     }
   }
 

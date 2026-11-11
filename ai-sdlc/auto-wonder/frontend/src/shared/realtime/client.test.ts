@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { RealtimeClient, buildRealtimeUrl, getConfiguredRealtimeBase } from './client';
+import { useAuthStore } from '@/shared/auth/store';
 
 class MockWebSocket {
   static instances: MockWebSocket[] = [];
@@ -7,7 +8,7 @@ class MockWebSocket {
   url: string;
   readyState = 0;
   onopen: (() => void) | null = null;
-  onclose: (() => void) | null = null;
+  onclose: ((event: { code?: number; reason?: string }) => void) | null = null;
   onmessage: ((e: { data: string }) => void) | null = null;
   onerror: (() => void) | null = null;
   close = vi.fn();
@@ -27,9 +28,9 @@ class MockWebSocket {
     this.onmessage?.({ data: JSON.stringify(data) });
   }
 
-  simulateClose() {
+  simulateClose(event: { code?: number; reason?: string } = {}) {
     this.readyState = 3;
-    this.onclose?.();
+    this.onclose?.(event);
   }
 }
 
@@ -39,11 +40,13 @@ describe('RealtimeClient', () => {
   beforeEach(() => {
     MockWebSocket.instances = [];
     vi.stubGlobal('WebSocket', MockWebSocket);
+    useAuthStore.getState().clear();
     client = new RealtimeClient('ws://localhost:8080/ws');
   });
 
   afterEach(() => {
     client.disconnect();
+    useAuthStore.getState().clear();
     vi.unstubAllGlobals();
   });
 
@@ -155,6 +158,61 @@ describe('RealtimeClient', () => {
     expect(MockWebSocket.instances[1].send).toHaveBeenCalledWith(
       JSON.stringify({ type: 'subscribe', channel: 'conversation:9' }),
     );
+  });
+
+  it('鉴权失败关闭时刷新 token 并用新 token 重放订阅', async () => {
+    useAuthStore.setState({
+      refreshToken: 'rt-1',
+      currentWorkspace: { id: 2, name: 'Workspace', description: '' },
+    });
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ success: true, data: { accessToken: 'fresh-token' } }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    client.connect('expired-token');
+    MockWebSocket.instances[0].simulateOpen();
+    client.subscribe('conversation:9', vi.fn());
+    MockWebSocket.instances[0].simulateClose({ code: 1008, reason: 'auth required' });
+
+    await vi.waitFor(() => expect(MockWebSocket.instances).toHaveLength(2));
+    MockWebSocket.instances[1].simulateOpen();
+    expect(MockWebSocket.instances[1].send).toHaveBeenCalledWith(
+      JSON.stringify({ type: 'auth', token: 'fresh-token' }),
+    );
+    expect(MockWebSocket.instances[1].send).toHaveBeenCalledWith(
+      JSON.stringify({ type: 'subscribe', channel: 'conversation:9' }),
+    );
+    expect(fetchMock).toHaveBeenCalledWith('/api/auth/refresh', expect.objectContaining({ method: 'POST' }));
+    expect(useAuthStore.getState().accessToken).toBe('fresh-token');
+  });
+
+  it('刷新判定会话失效时断开并清理登录态', async () => {
+    useAuthStore.setState({
+      refreshToken: 'stale',
+      currentWorkspace: { id: 2, name: 'Workspace', description: '' },
+    });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 401 }));
+
+    client.connect('expired-token');
+    MockWebSocket.instances[0].simulateOpen();
+    MockWebSocket.instances[0].simulateClose({ code: 1008, reason: 'auth required' });
+
+    await vi.waitFor(() => expect(client.state).toBe('disconnected'));
+    expect(useAuthStore.getState().accessToken).toBeNull();
+  });
+
+  it('非鉴权原因的关闭不触发 token 刷新', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    client.connect('t');
+    MockWebSocket.instances[0].simulateOpen();
+    MockWebSocket.instances[0].simulateClose({ code: 1008, reason: 'invalid frame' });
+
+    await Promise.resolve();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('ignores malformed frames and closes the socket on error', () => {

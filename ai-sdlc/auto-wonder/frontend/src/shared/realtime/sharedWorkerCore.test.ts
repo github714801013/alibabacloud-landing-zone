@@ -8,7 +8,7 @@ class FakeSocket implements SocketLike {
   sent: string[] = [];
   onopen: (() => void) | null = null;
   onmessage: ((event: { data: string }) => void) | null = null;
-  onclose: (() => void) | null = null;
+  onclose: ((event?: { code?: number; reason?: string }) => void) | null = null;
   onerror: (() => void) | null = null;
   close = vi.fn(() => {
     this.readyState = 3;
@@ -32,6 +32,11 @@ class FakeSocket implements SocketLike {
   serverClose() {
     this.readyState = 3;
     this.onclose?.();
+  }
+
+  authClose() {
+    this.readyState = 3;
+    this.onclose?.({ code: 1008, reason: 'auth required' });
   }
 }
 
@@ -262,6 +267,30 @@ describe('SharedWorkerCore 多标签页与订阅聚合', () => {
       .map((frame) => frame.channel)
       .sort();
     expect(replayed).toEqual(['conversation:9', 'dispatch:9']);
+  });
+
+  it('鉴权失败关闭时只通知一个标签页刷新 token', () => {
+    const { core, sockets, messages } = createCore();
+    connect(core, 1);
+    connect(core, 2);
+    sockets[0].open();
+
+    sockets[0].authClose();
+
+    const authFailed = messages.filter((item) => item.message.type === 'auth-failed');
+    expect(authFailed).toHaveLength(1);
+    expect(authFailed[0].tabId).toBe(1);
+    expect(messages).toContainEqual({ tabId: 1, message: { type: 'state', state: 'reconnecting' } });
+  });
+
+  it('普通断开不触发 token 刷新通知', () => {
+    const { core, sockets, messages } = createCore();
+    connect(core, 1);
+    sockets[0].open();
+
+    sockets[0].serverClose();
+
+    expect(messages.filter((item) => item.message.type === 'auth-failed')).toHaveLength(0);
   });
 
   it('无人订阅的频道事件被丢弃且不抛异常', () => {

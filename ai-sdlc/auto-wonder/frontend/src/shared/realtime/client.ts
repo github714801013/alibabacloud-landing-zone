@@ -6,7 +6,9 @@ import type {
   RealtimeClientLike,
 } from './types';
 import { isServerSubscriptionChannel } from './channels';
+import { isAuthFailureClose } from './sharedWorkerProtocol';
 import { SharedWorkerClient } from './sharedWorkerClient';
+import { refreshRealtimeSession } from '@/shared/auth/sessionRefresh';
 
 function normalizeWsProtocol(protocol: string): string {
   if (protocol === 'https:') return 'wss:';
@@ -52,6 +54,7 @@ export class RealtimeClient implements RealtimeClientLike {
   private maxReconnectDelay = 30000;
   private _state: ConnectionState = 'disconnected';
   private stateListeners = new Set<(s: ConnectionState) => void>();
+  private authRefreshInFlight = false;
 
   constructor(url: string) {
     this.url = url;
@@ -152,16 +155,20 @@ export class RealtimeClient implements RealtimeClientLike {
 
   private doConnect() {
     this.setState('connecting');
-    this.ws = new WebSocket(this.url);
+    const ws = new WebSocket(this.url);
+    this.ws = ws;
 
-    this.ws.onopen = () => {
-      this.ws!.send(JSON.stringify({ type: 'auth', token: this.token }));
+    // 所有回调都校验 ws 仍是当前连接：rebind 关闭旧 socket 后，迟到的 close 不能触发多余重连。
+    ws.onopen = () => {
+      if (this.ws !== ws) return;
+      ws.send(JSON.stringify({ type: 'auth', token: this.token }));
       this.reconnectAttempt = 0;
       this.setState('connected');
       this.resubscribeAll();
     };
 
-    this.ws.onmessage = (e: MessageEvent) => {
+    ws.onmessage = (e: MessageEvent) => {
+      if (this.ws !== ws) return;
       try {
         const event = JSON.parse(e.data) as RealtimeEvent;
         const handlers = this.subscribers.get(event.channel);
@@ -171,14 +178,31 @@ export class RealtimeClient implements RealtimeClientLike {
       } catch { /* malformed message, skip */ }
     };
 
-    this.ws.onclose = () => {
-      if (this._state === 'disconnected') return;
+    ws.onclose = (event: CloseEvent) => {
+      if (this.ws !== ws || this._state === 'disconnected') return;
+      if (isAuthFailureClose(event.code, event.reason)) void this.refreshAuth();
       this.scheduleReconnect();
     };
 
-    this.ws.onerror = () => {
-      this.ws?.close();
+    ws.onerror = () => {
+      if (this.ws === ws) ws.close();
     };
+  }
+
+  // 服务端因 token 过期拒绝鉴权时刷新一次并改绑，避免拿着旧 token 无限重连。
+  private async refreshAuth() {
+    if (this.authRefreshInFlight) return;
+    this.authRefreshInFlight = true;
+    try {
+      const result = await refreshRealtimeSession();
+      if (result.kind === 'refreshed') {
+        this.rebind(result.token);
+      } else if (result.kind === 'expired') {
+        this.disconnect();
+      }
+    } finally {
+      this.authRefreshInFlight = false;
+    }
   }
 
   private scheduleReconnect() {

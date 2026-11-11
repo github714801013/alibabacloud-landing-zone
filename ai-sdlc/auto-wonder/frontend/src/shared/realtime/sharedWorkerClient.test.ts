@@ -216,6 +216,46 @@ describe('SharedWorkerClient 标签页代理', () => {
     });
   });
 
+  it('收到 auth-failed 时刷新 token 并以新 token 重连', async () => {
+    useAuthStore.setState({ refreshToken: 'rt-1' });
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ success: true, data: { accessToken: 'token-b' } }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = createClient();
+    client.connect('token-a');
+    const port = MockSharedWorker.instances[0].port;
+
+    port.receive({ type: 'auth-failed' });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(port.postMessage).toHaveBeenCalledWith({
+      type: 'connect',
+      key: '1:2',
+      token: 'token-b',
+      url: 'ws://example.test/ws',
+    });
+    expect(useAuthStore.getState().accessToken).toBe('token-b');
+  });
+
+  it('auth-failed 后刷新判定会话失效时断开并清理登录态', async () => {
+    useAuthStore.setState({ refreshToken: 'rt-1' });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 401 }));
+
+    const client = createClient();
+    client.connect('token-a');
+    const port = MockSharedWorker.instances[0].port;
+
+    port.receive({ type: 'auth-failed' });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(port.postMessage).toHaveBeenCalledWith({ type: 'disconnect', key: '1:2' });
+    expect(client.state).toBe('disconnected');
+    expect(useAuthStore.getState().accessToken).toBeNull();
+  });
+
   it('换工作区 rebind 改绑新键且不重放旧工作区订阅', () => {
     const client = createClient();
     client.connect('token-a');

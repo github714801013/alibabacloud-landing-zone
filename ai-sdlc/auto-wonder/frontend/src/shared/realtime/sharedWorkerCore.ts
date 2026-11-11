@@ -1,13 +1,13 @@
 import type { ConnectionState, RealtimeEvent } from './types';
 import { isServerSubscriptionChannel } from './channels';
-import type { TabToWorkerMessage, WorkerToTabMessage } from './sharedWorkerProtocol';
+import { isAuthFailureClose, type TabToWorkerMessage, type WorkerToTabMessage } from './sharedWorkerProtocol';
 
 export interface SocketLike {
   send(data: string): void;
   close(): void;
   onopen: (() => void) | null;
   onmessage: ((event: { data: string }) => void) | null;
-  onclose: (() => void) | null;
+  onclose: ((event?: { code?: number; reason?: string }) => void) | null;
   onerror: (() => void) | null;
 }
 
@@ -223,9 +223,14 @@ export class SharedWorkerCore {
       }
     };
 
-    socket.onclose = () => {
+    socket.onclose = (event) => {
       if (entry.socket !== socket) return;
       entry.socket = null;
+      if (isAuthFailureClose(event?.code, event?.reason)) {
+        // 只通知一个标签页刷新 token，避免多个标签页同时重复刷新；刷新成功后它会以新 token 重连。
+        const tabId = entry.tabs.values().next().value;
+        if (tabId !== undefined) this.sendToTab(tabId, { type: 'auth-failed' });
+      }
       this.scheduleReconnect(entry);
     };
 
