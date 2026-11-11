@@ -43,7 +43,9 @@ public class RuntimeTraceController {
             throw new BizException(ErrorCode.WORKSPACE_NOT_MEMBER);
         }
         RuntimeTraceVO completed = artifactService.loadOutlineIfPresent(workspaceId, id);
-        return Result.ok(completed == null ? traceService.get(workspaceId, id, afterSeq, limit, beforeId) : completed);
+        return Result.ok(completed == null
+                ? traceService.get(workspaceId, id, afterSeq, limit, beforeId)
+                : RuntimeTraceService.windowCompleted(completed, limit, beforeId));
     }
 
     /** Persisted event log, independent of the compact completed-trace outline. */

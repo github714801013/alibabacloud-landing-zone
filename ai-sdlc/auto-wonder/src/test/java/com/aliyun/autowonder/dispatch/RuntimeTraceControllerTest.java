@@ -5,6 +5,8 @@ import com.aliyun.autowonder.dispatch.dto.RuntimeActivityTimelineVO;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -45,15 +47,24 @@ class RuntimeTraceControllerTest {
     }
 
     @Test
-    void completedOutlineIgnoresWindowParameters() {
+    void completedOutlineUsesTheSameEventWindowAsLiveTrace() {
         RuntimeTraceService service = mock(RuntimeTraceService.class);
         RuntimeTraceArtifactService artifacts = mock(RuntimeTraceArtifactService.class);
         var outline = new com.aliyun.autowonder.dispatch.dto.RuntimeTraceVO();
+        for (int i = 0; i < 3; i++) {
+            var event = new com.aliyun.autowonder.dispatch.dto.RuntimeTraceVO.Event();
+            event.setEventId("e" + i);
+            event.setEventType(i == 1 ? "agent.message" : "bash.call");
+            outline.getEvents().add(event);
+        }
         AutoWonderContext.get().setCurrentWorkspaceId(73L);
         when(artifacts.loadOutlineIfPresent(73L, 301L)).thenReturn(outline);
         var controller = new RuntimeTraceController(service, artifacts, mock(DispatchLiveActivityService.class));
 
-        assertSame(outline, controller.get(301L, null, 50, 900L).getData());
+        var window = controller.get(301L, null, 50, null).getData();
+        assertEquals(java.util.List.of("e0", "e2"),
+                window.getEvents().stream().map(event -> event.getEventId()).toList());
+        assertNull(window.getNextBeforeId());
         verifyNoInteractions(service);
     }
 

@@ -667,6 +667,34 @@ class RuntimeTraceServiceTest {
         org.mockito.Mockito.verifyNoInteractions(eventDao);
     }
 
+    @Test
+    void completedOutlineIsWindowedByIndexAndSkipsAgentMessages() {
+        RuntimeTraceVO window = RuntimeTraceService.windowCompleted(outlineWithMessages(6), 2, null);
+        assertEquals(List.of("e3", "e5"),
+                window.getEvents().stream().map(RuntimeTraceVO.Event::getEventId).toList());
+        assertEquals(2L, window.getNextBeforeId());
+
+        RuntimeTraceVO earlier = RuntimeTraceService.windowCompleted(outlineWithMessages(6), 2, window.getNextBeforeId());
+        assertEquals(List.of("e0", "e2"),
+                earlier.getEvents().stream().map(RuntimeTraceVO.Event::getEventId).toList());
+        assertNull(earlier.getNextBeforeId());
+
+        assertEquals(6, RuntimeTraceService.windowCompleted(outlineWithMessages(6), null, null).getEvents().size());
+        assertThrows(com.aliyun.autowonder.common.error.BizException.class,
+                () -> RuntimeTraceService.windowCompleted(outlineWithMessages(6), 0, null));
+    }
+
+    private static RuntimeTraceVO outlineWithMessages(int count) {
+        RuntimeTraceVO trace = new RuntimeTraceVO();
+        for (int i = 0; i < count; i++) {
+            RuntimeTraceVO.Event event = new RuntimeTraceVO.Event();
+            event.setEventId("e" + i);
+            event.setEventType(i == 1 || i == 4 ? "agent.message" : "bash.call");
+            trace.getEvents().add(event);
+        }
+        return trace;
+    }
+
     private static DispatchDO dispatch(long id, long tenantId) {
         DispatchDO dispatch = new DispatchDO();
         dispatch.setId(id);

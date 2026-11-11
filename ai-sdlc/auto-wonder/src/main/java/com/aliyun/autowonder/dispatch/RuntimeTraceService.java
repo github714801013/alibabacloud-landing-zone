@@ -11,6 +11,7 @@ import org.springframework.stereotype.Service;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -57,6 +58,35 @@ public class RuntimeTraceService {
 
     public RuntimeTraceVO get(long tenantId, long dispatchId, Long afterSeq) {
         return get(tenantId, dispatchId, afterSeq, null, null);
+    }
+
+    /**
+     * 归档大纲与库内窗口使用同一套裁剪规则：排除 agent.message，最多 MAX_TRACE_WINDOW 条。
+     * 归档事件没有库内 id，beforeId/nextBeforeId 改用事件数组下标，服务端每次请求都会重新解析大纲，下标稳定。
+     */
+    public static RuntimeTraceVO windowCompleted(RuntimeTraceVO trace, Integer limit, Long beforeIndex) {
+        if (limit == null && beforeIndex == null) {
+            return trace;
+        }
+        if (limit != null && limit <= 0) {
+            throw new BizException(ErrorCode.PARAM_INVALID);
+        }
+        int windowSize = limit == null ? DEFAULT_TRACE_WINDOW : Math.min(limit, MAX_TRACE_WINDOW);
+        List<RuntimeTraceVO.Event> all = trace.getEvents() == null ? List.of() : trace.getEvents();
+        List<RuntimeTraceVO.Event> sources = new ArrayList<>(all.size());
+        for (RuntimeTraceVO.Event event : all) {
+            if (!"agent.message".equals(event.getEventType())) {
+                sources.add(event);
+            }
+        }
+        int end = sources.size();
+        if (beforeIndex != null) {
+            end = (int) Math.max(0L, Math.min((long) end, beforeIndex));
+        }
+        int start = Math.max(0, end - windowSize);
+        trace.setEvents(new ArrayList<>(sources.subList(start, end)));
+        trace.setNextBeforeId(start > 0 ? (long) start : null);
+        return trace;
     }
 
     /**
