@@ -19,6 +19,8 @@ public class BayesianEvidenceDO {
     private String outcome;
     private Double weight;
     private String evidenceJson;
+    // 仅 listRecentByAsset 从 evidence_json.failureCategory 派生，其他查询不填。
+    private String failureCategory;
     private String dependencyGroup;
     private String idempotencyKey;
     private Double alpha;

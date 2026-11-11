@@ -33,7 +33,11 @@
     </select>
 
     <select id="listRecentByAsset" resultType="com.aliyun.autowonder.evolution.BayesianEvidenceDO">
-        SELECT * FROM evolution_evidence
+        SELECT id, tenant_id, asset_type, asset_id, posterior_type, context_key,
+               source_type, source_ref, outcome, weight, dependency_group, idempotency_key,
+               alpha, beta, posterior_mean, effective_sample_size, gmt_create, creator_id,
+               NULLIF(JSON_UNQUOTE(JSON_EXTRACT(evidence_json, '$.failureCategory')), 'null') AS failure_category
+        FROM evolution_evidence
         WHERE tenant_id = #{tenantId}
           AND asset_type = #{assetType}
           AND asset_id = #{assetId}

@@ -425,7 +425,7 @@ public class EvolutionTelemetryEvidenceLiteService {
 		long durationFallbackMs;
 		Set<Long> skillIds = new LinkedHashSet<>();
 		Set<Long> invokedSkillIds = new LinkedHashSet<>();
-		List<String> eventTypes = new ArrayList<>();
+		Set<String> eventTypes = new LinkedHashSet<>();
 		List<String> skillNeedSignals = new ArrayList<>();
 
 		String evidenceJson(MetricEvidence metric) {

@@ -150,7 +150,7 @@ class BayesianPolicyLiteServiceTest {
         evidence.setBeta(beta);
         evidence.setPosteriorMean(alpha / (alpha + beta));
         evidence.setEffectiveSampleSize(alpha + beta - 2);
-        evidence.setEvidenceJson("{\"failureCategory\":\"agent_execution\"}");
+        evidence.setFailureCategory("agent_execution");
         return evidence;
     }
 }

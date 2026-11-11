@@ -268,13 +268,7 @@ public class BayesianPolicyLiteService {
 	}
 
 	private String failureMode(BayesianEvidenceDO evidence) {
-		if (evidence == null || blank(evidence.getEvidenceJson())) return null;
-		try {
-			JSONObject object = JSON.parseObject(evidence.getEvidenceJson());
-			return object == null ? null : object.getString("failureCategory");
-		} catch (RuntimeException ignored) {
-			return null;
-		}
+		return evidence == null ? null : evidence.getFailureCategory();
 	}
 
 	private double sample(BayesianEvidenceDO evidence) {
