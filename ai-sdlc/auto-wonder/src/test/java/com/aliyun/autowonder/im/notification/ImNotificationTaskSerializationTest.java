@@ -110,6 +110,21 @@ class ImNotificationTaskSerializationTest {
     }
 
     @Test
+    void wecomTestTaskKeepsProviderTypeAndRecipientLocaleSnapshot() throws JsonProcessingException {
+        ImNotificationTask original = new ImNotificationTask(
+                "IM_TEST:abc:WECOM:9", 0L, 7L, 0L, 9L, "SYSTEM", 0L, null, null,
+                "AutoWonder collaboration notification test succeeded",
+                ImNotificationTask.TYPE_IM_TEST, "## body", null, "en-US", null, null);
+
+        ImNotificationTask deserialized = objectMapper.readValue(
+                objectMapper.writeValueAsString(original), ImNotificationTask.class);
+
+        assertEquals("WECOM", deserialized.provider());
+        org.junit.jupiter.api.Assertions.assertTrue(deserialized.isImTest());
+        assertEquals(java.util.Locale.US, deserialized.deliveryLocale());
+    }
+
+    @Test
     void deserializesLegacyPayloadMissingSourceType() throws JsonProcessingException {
         String legacyJson = """
                 {"notificationKey":"92860:DINGTALK:10002","workitemEventId":92860,\
@@ -206,5 +221,30 @@ class ImNotificationTaskSerializationTest {
             tree.putObject("futureField").put("nested", true);
             assertEquals(task, mapper.treeToValue(tree, ImNotificationTask.class));
         }
+    }
+
+    @Test
+    void roundTripsOptionalLinksAndKeepsLegacyPayloadExact() throws Exception {
+        ImNotificationTask original = new ImNotificationTask(
+                "dispatch-request:1:WECOM:9", 1L, 7L, 42L, 9L,
+                "SYSTEM", 0L, "数字员工", null, "验收工单",
+                ImNotificationTask.TYPE_INPUT_REQUIRED, "请确认以下范围")
+                .withRelatedLinks(List.of(new NotificationLink("DETAIL", "验收工单",
+                        "/workitems/42?workspaceId=7&panel=clarify&fullscreen=1&agent=10035&conversation=99")));
+
+        ImNotificationTask deserialized = objectMapper.readValue(
+                objectMapper.writeValueAsString(original), ImNotificationTask.class);
+
+        assertEquals(original.relatedLinks(), deserialized.relatedLinks());
+        assertEquals(original.relatedLinks(), original.withRecipientLocale("en-US").relatedLinks());
+        ImNotificationTask legacy = objectMapper.readValue("""
+                {"notificationKey":"92860:DINGTALK:10002","workitemEventId":92860,\
+                "tenantId":10002,"workitemId":50460,"recipientUserId":10002,\
+                "actorType":"HUMAN","actorRef":10001,"actorDisplayName":"张三",\
+                "requestId":"rid-1","workitemTitle":"生产环境发布审批",\
+                "notificationType":"WORKITEM_ASSIGNED","commentContentMd":null}""",
+                ImNotificationTask.class);
+        assertNull(legacy.relatedLinks());
+        assertFalse(objectMapper.writeValueAsString(legacy).contains("\"relatedLinks\""));
     }
 }

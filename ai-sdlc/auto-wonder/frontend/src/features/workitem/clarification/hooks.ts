@@ -171,6 +171,9 @@ export function useCancelClarificationTurn(workitemId: number | string, conversa
   });
 }
 
+/** 服务端单轮可达数千条 token 级事件，实时数组只保留最近窗口，避免内存与渲染无限增长。 */
+export const MAX_STREAMED_EVENTS = 2000;
+
 export interface StreamedEvent {
   dispatchAttempt?: number;
   eventSeq: number;
@@ -237,7 +240,7 @@ export function useClarificationEvents(
           payload: payload.payload,
           receivedAt: Date.now(),
         },
-      ]);
+      ].slice(-MAX_STREAMED_EVENTS));
 
       if (payload.eventType === 'status' || payload.eventType === 'error') {
         const queryKey = ['workitem', workitemId, 'clarification-conversation', conversationId];

@@ -14,4 +14,14 @@ describe('expired turn display intent', () => {
     }
     await i18n.changeLanguage('zh-CN');
   });
+
+  it('maps only EXECUTOR_BUSY metadata with empty args in both languages', async () => {
+    for (const language of ['zh-CN', 'en-US']) {
+      await i18n.changeLanguage(language);
+      const t = i18n.getFixedT(language, 'workitem');
+      expect(conversationNotice({ code: 'EXECUTOR_BUSY', args: {} }, 'error', t)).toBe(t('clarification.ownedNotice.executorBusy'));
+      expect(conversationNotice({ code: 'EXECUTOR_BUSY', args: { detail: 'untrusted' } }, 'error', t)).toBeNull();
+    }
+    await i18n.changeLanguage('zh-CN');
+  });
 });

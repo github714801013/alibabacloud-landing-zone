@@ -13,8 +13,12 @@ public class ImNotificationFormatter {
     private static final String OUTCOME_APPROVED = "APPROVED";
 
     public String format(ImNotificationMessageContext context, ImNotificationTask task) {
-        String normalizedBaseUrl = trimTrailingSlash(context.baseUrl());
         Locale locale = task.deliveryLocale();
+        if (task.isPreRendered()) {
+            // 测试通知与通用平台通知在入队时已按接收者语言快照渲染，格式化阶段只取回原内容。
+            return safeText(task.commentContentMd());
+        }
+        String normalizedBaseUrl = trimTrailingSlash(context.baseUrl());
         String workspace = safeText(context.workspaceName());
         String actor = safeText(AssignmentActor.recipientDisplayName(task.actorDisplayName(), task.actorNameKind(), locale));
         String title = task.isScheduledTaskRun()
@@ -23,9 +27,10 @@ public class ImNotificationFormatter {
                         new Object[]{String.valueOf(task.workitemId())}, task.workitemTitle(), locale)
                 : safeText(task.workitemTitle());
         if (ImNotificationTask.TYPE_APPROVAL_REQUIRED.equals(task.notificationType())
-                || ImNotificationTask.TYPE_INPUT_REQUIRED.equals(task.notificationType())) {
+                || ImNotificationTask.TYPE_INPUT_REQUIRED.equals(task.notificationType())
+                || ImNotificationTask.TYPE_CLARIFICATION_REPLY.equals(task.notificationType())) {
             return render("human_input", locale, title, workspace, safeText(task.commentContentMd()),
-                    workitemUrl(normalizedBaseUrl, task.workitemId(), context.tenantId()));
+                    workitemLink(normalizedBaseUrl, task, context.tenantId()));
         }
         if (ImNotificationTask.TYPE_COMMENT_MENTION.equals(task.notificationType())) {
             boolean run = task.isScheduledTaskRun();
@@ -73,12 +78,30 @@ public class ImNotificationFormatter {
                 workitemUrl(normalizedBaseUrl, task.workitemId(), context.tenantId()));
     }
 
+    /** 测试通知标题与正文共用同一组资源，同步测试与队列测试保持一致。 */
+    public static String testTitle(String brand, Locale locale) {
+        return SystemMessages.render("im.test.success_title", new Object[]{brand},
+                brand + " 协作通知测试成功", locale);
+    }
+
+    public static String testMarkdown(String title, Locale locale) {
+        return SystemMessages.render("im.test.success_body", new Object[]{title},
+                "## " + title + "\n\n你的 IM 协作通知配置可正常使用。", locale);
+    }
+
     private static String render(String template, Locale locale, Object... args) {
         return SystemMessages.render("im.markdown." + template, args, "", locale);
     }
 
     private static String workitemUrl(String baseUrl, long workitemId, long tenantId) {
         return baseUrl + "/workitems/" + workitemId + "?workspaceId=" + tenantId;
+    }
+
+    /** 通知自带相对深链时优先使用，缺失时回退工单首页链接。 */
+    private static String workitemLink(String baseUrl, ImNotificationTask task, long tenantId) {
+        List<NotificationLink> links = task.relatedLinks();
+        String link = links == null || links.isEmpty() ? null : links.get(0).url();
+        return link == null || link.isBlank() ? workitemUrl(baseUrl, task.workitemId(), tenantId) : baseUrl + link;
     }
 
     /**

@@ -170,6 +170,20 @@ class DispatchCompensationTaskTest {
     }
 
     @Test
+    void unacknowledgedDispatchGetsAtLeastFiveMinutesBeforeRecovery() {
+        when(redisManager.tryAcquireLock(anyString(), anyString(), anyLong())).thenReturn(true);
+
+        task.sweep();
+        long afterSweep = System.currentTimeMillis();
+
+        var cutoff = org.mockito.ArgumentCaptor.forClass(Long.class);
+        verify(dispatchDao).listStuck(eq(List.of(DispatchStatus.DISPATCHED)), cutoff.capture(), anyInt());
+        long ageMs = afterSweep - cutoff.getValue();
+        assertTrue(ageMs >= 5 * 60_000L,
+                "long-running executors must get at least five minutes before ACK recovery, age=" + ageMs);
+    }
+
+    @Test
     void marksStalePausingDispatchAsFailedSoItCanBeRecovered() {
         when(redisManager.tryAcquireLock(anyString(), anyString(), anyLong())).thenReturn(true);
         DispatchDO pausing = row(7L, 104L, 207L, 307L, DispatchStatus.PAUSING);

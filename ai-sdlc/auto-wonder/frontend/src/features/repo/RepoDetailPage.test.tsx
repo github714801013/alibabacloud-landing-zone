@@ -16,13 +16,16 @@ vi.mock('@/shared/realtime/useRealtime', () => ({
 function renderPage(initialEntry = '/repos/1', accessLevel: 'READ_ONLY' | 'READ_WRITE' = 'READ_WRITE') {
   useAuthStore.setState({ accessLevel });
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
-    <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={[initialEntry]}>
-        <Routes><Route path="/repos/:id" element={<RepoDetailPage />} /></Routes>
-      </MemoryRouter>
-    </QueryClientProvider>,
-  );
+  return {
+    queryClient,
+    ...render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={[initialEntry]}>
+          <Routes><Route path="/repos/:id" element={<RepoDetailPage />} /></Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    ),
+  };
 }
 
 const mockRepo = {
@@ -64,6 +67,57 @@ describe('RepoDetailPage', () => {
     expect(screen.queryByText('扫描状态')).not.toBeInTheDocument();
     expect(screen.queryByText('上次扫描时间')).not.toBeInTheDocument();
     expect(screen.queryByText('认证方式')).not.toBeInTheDocument();
+  });
+
+  it('keeps the error page when the first load already fails with 502', async () => {
+    server.use(
+      http.get('/api/repos/1', () => HttpResponse.json(
+        { success: false, code: '502', message: 'Bad Gateway', traceId: null }, { status: 502 },
+      )),
+      http.get('/api/repos/1/conclusion', () => HttpResponse.json({
+        success: true, code: '0', message: '', traceId: null, data: null,
+      })),
+      http.get('/api/repos/relations', () => HttpResponse.json({
+        success: true, code: '0', message: '', traceId: null, data: [],
+      })),
+      http.get('/api/repos', () => HttpResponse.json({
+        success: true, code: '0', message: '', traceId: null, data: [],
+      })),
+    );
+    renderPage();
+
+    expect(await screen.findByText('加载失败')).toBeInTheDocument();
+  });
+
+  // 需求：502 后台刷新失败不能把已加载的页面整页换成错误页。
+  it('keeps the loaded repo when a background refresh fails with 502', async () => {
+    server.use(
+      http.get('/api/repos/1', () => HttpResponse.json({
+        success: true, code: '0', message: '', traceId: null, data: mockRepo,
+      })),
+      http.get('/api/repos/1/conclusion', () => HttpResponse.json({
+        success: true, code: '0', message: '', traceId: null, data: mockConclusion,
+      })),
+      http.get('/api/repos/relations', () => HttpResponse.json({
+        success: true, code: '0', message: '', traceId: null, data: [],
+      })),
+      http.get('/api/repos', () => HttpResponse.json({
+        success: true, code: '0', message: '', traceId: null, data: [mockRepo],
+      })),
+    );
+    const { queryClient } = renderPage();
+    expect(await screen.findByRole('tab', { name: '基础信息' })).toBeInTheDocument();
+
+    server.use(http.get('/api/repos/1', () => HttpResponse.json(
+      { success: false, code: '502', message: 'Bad Gateway', traceId: null }, { status: 502 },
+    )));
+    void queryClient.invalidateQueries({ queryKey: ['repo', '1'] });
+
+    await waitFor(() => expect(
+      queryClient.getQueryCache().findAll({ queryKey: ['repo', '1'], exact: true })[0]?.state.status,
+    ).toBe('error'));
+    expect(screen.getByRole('tab', { name: '基础信息' })).toBeInTheDocument();
+    expect(screen.queryByText('加载失败')).not.toBeInTheDocument();
   });
 
   it('exposes no reachable entry to start a repo scan session', async () => {

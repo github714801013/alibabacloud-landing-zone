@@ -64,7 +64,9 @@ class DispatchDaoContractTest {
         assertTrue(touchOwnedActive.contains("'RUNNING'"));
         assertFalse(touchOwnedActive.contains("'PAUSING'"));
         assertTrue(xml.contains("ORDER BY gmt_create ASC, id ASC"));
-        assertTrue(xml.contains("executor_id = NULL"));
+        // 非终态退回待办必须保留执行器绑定：换机会绕过绑定等待窗口，违反按派发锁定的交付语义。
+        assertFalse(mapperStatement(xml, "returnDispatchedToPending").contains("executor_id = NULL"));
+        assertFalse(mapperStatement(xml, "returnOwnedActiveToPending").contains("executor_id = NULL"));
         assertTrue(xml.contains("package_oss_ref = NULL"));
         assertTrue(xml.contains("id=\"listLatestByWorkitemAndAgent\""));
         assertTrue(xml.contains("ORDER BY id DESC"));

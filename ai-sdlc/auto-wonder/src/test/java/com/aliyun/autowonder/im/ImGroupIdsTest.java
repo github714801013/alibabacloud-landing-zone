@@ -37,6 +37,24 @@ class ImGroupIdsTest {
     }
 
     @Test
+    void normalizesWecomGroupIds() {
+        assertEquals("wrAbc+/=:$@-.,", ImGroupIds.normalize("WECOM", " wrAbc+/=:$@-., "));
+        assertEquals("R:1080000000", ImGroupIds.normalize("wecom", "R:1080000000"));
+        // 不复用钉钉正则：空格、#、~ 与非 ASCII 字符都是合法 chatid。
+        assertEquals("群 #1 ~50%", ImGroupIds.normalize("WECOM", " 群 #1 ~50% "));
+        assertEquals("a".repeat(200), ImGroupIds.normalize("WECOM", "a".repeat(200)));
+    }
+
+    @Test
+    void rejectsInvalidWecomGroupIds() {
+        assertInvalid("WECOM", null);
+        assertInvalid("WECOM", "   ");
+        assertInvalid("WECOM", "group\nid");
+        // 会话键为 bindingId + ":" + chatId，需落在 VARCHAR(256) 内。
+        assertInvalid("WECOM", "a".repeat(201));
+    }
+
+    @Test
     void unknownProviderOnlyRequiresNonBlankBoundedValue() {
         assertEquals("group-1", ImGroupIds.normalize("OTHER", " group-1 "));
         assertInvalid("OTHER", " ");

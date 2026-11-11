@@ -33,12 +33,21 @@ import com.aliyun.autowonder.workitem.WorkitemDO;
 import com.aliyun.autowonder.workitem.WorkitemDao;
 import com.aliyun.autowonder.workitem.WorkitemCommentDao;
 import com.aliyun.autowonder.workitem.WorkitemCommentDO;
+import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.core.LogEvent;
+import org.apache.logging.log4j.core.Logger;
+import org.apache.logging.log4j.core.appender.AbstractAppender;
+import org.apache.logging.log4j.core.config.Property;
+import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -156,6 +165,54 @@ class PackageContextAssemblerTest {
 
         assertNotNull(context.getRepoMap());
         assertEquals(List.of(), context.getRepoMap().get("relations"));
+    }
+
+    @Test
+    void carriesTheExecutorServerBaseUrlOverrideIntoThePackageContext() {
+        com.aliyun.autowonder.executor.ExecutorDao executorDao =
+                mock(com.aliyun.autowonder.executor.ExecutorDao.class);
+        assembler.setExecutorDao(executorDao);
+        WorkitemDO workitem = new WorkitemDO();
+        workitem.setId(200L);
+        workitem.setTenantId(TENANT);
+        when(workitemDao.findById(200L)).thenReturn(workitem);
+        when(skillDao.listByVersion(401L)).thenReturn(List.of());
+        when(memoryRefDao.listByVersion(401L)).thenReturn(List.of());
+        AgentRepoPermDO permission = new AgentRepoPermDO();
+        permission.setTenantId(TENANT);
+        permission.setAgentVersionId(401L);
+        permission.setRepoId(10L);
+        permission.setPermLevel("READ");
+        when(repoPermDao.listByVersion(401L)).thenReturn(List.of(permission));
+        when(repoDao.findById(10L)).thenReturn(repo(10L, "service"));
+        when(repoRelationDao.listByRepoId(TENANT, 10L)).thenReturn(List.of());
+        com.aliyun.autowonder.executor.ExecutorDO executor = new com.aliyun.autowonder.executor.ExecutorDO();
+        executor.setId(9L);
+        executor.setTenantId(TENANT);
+        executor.setLaunchConfig("{\"serverBaseUrl\":\"http://192.168.254.3:7001\"}");
+        when(executorDao.findById(9L)).thenReturn(executor);
+
+        DispatchDO withOverride = dispatch();
+        withOverride.setExecutorId(9L);
+        assertEquals("http://192.168.254.3:7001", assembler.assemble(withOverride, version()).getMcpBaseUrl());
+
+        executor.setLaunchConfig("{}");
+        DispatchDO withoutOverride = dispatch();
+        withoutOverride.setExecutorId(9L);
+        assertNull(assembler.assemble(withoutOverride, version()).getMcpBaseUrl());
+
+        // 跨租户执行器不得把私有地址带进任务包
+        executor.setLaunchConfig("{\"serverBaseUrl\":\"http://192.168.254.3:7001\"}");
+        executor.setTenantId(999L);
+        DispatchDO crossTenant = dispatch();
+        crossTenant.setExecutorId(9L);
+        assertNull(assembler.assemble(crossTenant, version()).getMcpBaseUrl());
+
+        // 执行器已删除时回退全局地址
+        when(executorDao.findById(9L)).thenReturn(null);
+        DispatchDO missing = dispatch();
+        missing.setExecutorId(9L);
+        assertNull(assembler.assemble(missing, version()).getMcpBaseUrl());
     }
 
     @Test
@@ -450,6 +507,15 @@ class PackageContextAssemblerTest {
         return repo;
     }
 
+    private AgentRepoPermDO permission(long repoId, String permLevel) {
+        AgentRepoPermDO permission = new AgentRepoPermDO();
+        permission.setTenantId(TENANT);
+        permission.setAgentVersionId(401L);
+        permission.setRepoId(repoId);
+        permission.setPermLevel(permLevel);
+        return permission;
+    }
+
     private AgentDO agent(long id, long tenantId, String kind) {
         AgentDO agent = new AgentDO();
         agent.setId(id);
@@ -593,6 +659,248 @@ class PackageContextAssemblerTest {
         assertFalse(ctx.getRepos().get(1).containsKey("allowedBranchPatterns"));
         assertFalse(ctx.getRepos().get(0).containsKey("worktreeBranch"));
         assertFalse(ctx.getRepos().get(1).containsKey("worktreeBranch"));
+    }
+
+    @Test
+    void workitemJiraScopeLimitsEagerPreparationToIncludedTaskRepos() {
+        WorkitemDO workitem = new WorkitemDO();
+        workitem.setId(200L);
+        workitem.setTenantId(TENANT);
+        workitem.setContentMd("需求说明\n\n<!-- autowonder-jira-status:start\n"
+                + "{\"schema\":1,\"scope_confirmed\":true,\"tasks\":["
+                + "{\"key\":\"HS-124\",\"repos\":[\"autoTransfer\"]},"
+                + "{\"key\":\"HS-125\",\"included\":false,\"repos\":[\"removed-repo\"]}]}\n"
+                + "autowonder-jira-status:end -->\n");
+        when(workitemDao.findById(200L)).thenReturn(workitem);
+        when(repoPermDao.listByVersion(401L)).thenReturn(List.of(
+                permission(700L, "WRITE"), permission(701L, "WRITE"), permission(702L, "WRITE")));
+        when(repoDao.findById(700L)).thenReturn(repo(700L, "autoTransfer"));
+        when(repoDao.findById(701L)).thenReturn(repo(701L, "oanew"));
+        when(repoDao.findById(702L)).thenReturn(repo(702L, "removed-repo"));
+        when(skillDao.listByVersion(401L)).thenReturn(List.of());
+        when(memoryRefDao.listByVersion(401L)).thenReturn(List.of());
+        when(dispatchDao.listSucceededByWorkitem(TENANT, 200L)).thenReturn(List.of());
+
+        PackageContext ctx = assembler.assemble(dispatch(), version());
+
+        assertEquals("eager", ctx.getRepos().get(0).get("mode"));
+        assertEquals("lazy", ctx.getRepos().get(1).get("mode"));
+        assertEquals(true, ctx.getRepos().get(1).get("allowCommit"));
+        assertEquals("lazy", ctx.getRepos().get(2).get("mode"));
+    }
+
+    @Test
+    void malformedJiraStatusBlockFallsBackToAllWritableEager() {
+        WorkitemDO workitem = new WorkitemDO();
+        workitem.setId(200L);
+        workitem.setTenantId(TENANT);
+        workitem.setContentMd("<!-- autowonder-jira-status:start\n{not json}\nautowonder-jira-status:end -->");
+        when(workitemDao.findById(200L)).thenReturn(workitem);
+        when(repoPermDao.listByVersion(401L)).thenReturn(List.of(
+                permission(700L, "WRITE"), permission(701L, "WRITE")));
+        when(repoDao.findById(700L)).thenReturn(repo(700L, "autoTransfer"));
+        when(repoDao.findById(701L)).thenReturn(repo(701L, "oanew"));
+        when(skillDao.listByVersion(401L)).thenReturn(List.of());
+        when(memoryRefDao.listByVersion(401L)).thenReturn(List.of());
+        when(dispatchDao.listSucceededByWorkitem(TENANT, 200L)).thenReturn(List.of());
+
+        PackageContext ctx = assembler.assemble(dispatch(), version());
+
+        assertEquals("eager", ctx.getRepos().get(0).get("mode"));
+        assertEquals("eager", ctx.getRepos().get(1).get("mode"));
+    }
+
+    @Test
+    void buildReposWithDeclaredScopeMarksOnlyDeclaredReposEager() {
+        when(repoPermDao.listByVersion(401L)).thenReturn(List.of(
+                permission(10L, "WRITE"), permission(11L, "WRITE"), permission(12L, "READ")));
+        when(repoDao.findById(10L)).thenReturn(repo(10L, "autoTransfer"));
+        when(repoDao.findById(11L)).thenReturn(repo(11L, "oanew"));
+        when(repoDao.findById(12L)).thenReturn(repo(12L, "autoTransfer"));
+
+        List<Map<String, Object>> repos = assembler.buildRepos(TENANT, 401L, null, Set.of("autotransfer"));
+
+        assertEquals("eager", repos.get(0).get("mode"));
+        assertEquals(true, repos.get(0).get("allowCommit"));
+        assertEquals("lazy", repos.get(1).get("mode"));
+        assertEquals(true, repos.get(1).get("allowCommit"));
+        assertEquals("lazy", repos.get(2).get("mode"));
+        assertEquals(false, repos.get(2).get("allowCommit"));
+    }
+
+    @Test
+    void emptyDeclaredScopeFallsBackToAllWritableEager() {
+        when(repoPermDao.listByVersion(401L)).thenReturn(List.of(permission(10L, "WRITE")));
+        when(repoDao.findById(10L)).thenReturn(repo(10L, "autoTransfer"));
+
+        List<Map<String, Object>> repos = assembler.buildRepos(TENANT, 401L, null, Set.of());
+
+        assertEquals("eager", repos.get(0).get("mode"));
+        assertEquals(true, repos.get(0).get("allowCommit"));
+        assertEquals(true, repos.get(0).get("allowPush"));
+    }
+
+    @Test
+    void workitemJiraStatusWithNoDeclaredReposFallsBackToAllWritableEagerAndWarns() {
+        WorkitemDO workitem = new WorkitemDO();
+        workitem.setId(200L);
+        workitem.setTenantId(TENANT);
+        workitem.setContentMd("<!-- autowonder-jira-status:start\n"
+                + "{\"schema\":1,\"tasks\":[{\"key\":\"HS-124\",\"included\":true,\"repos\":[]}]}\n"
+                + "autowonder-jira-status:end -->");
+        when(workitemDao.findById(200L)).thenReturn(workitem);
+        when(repoPermDao.listByVersion(401L)).thenReturn(List.of(
+                permission(700L, "WRITE"), permission(701L, "WRITE")));
+        when(repoDao.findById(700L)).thenReturn(repo(700L, "autoTransfer"));
+        when(repoDao.findById(701L)).thenReturn(repo(701L, "oanew"));
+        when(skillDao.listByVersion(401L)).thenReturn(List.of());
+        when(memoryRefDao.listByVersion(401L)).thenReturn(List.of());
+        when(dispatchDao.listSucceededByWorkitem(TENANT, 200L)).thenReturn(List.of());
+
+        List<String> warnings = captureWarnings(() -> {
+            PackageContext ctx = assembler.assemble(dispatch(), version());
+            assertEquals("eager", ctx.getRepos().get(0).get("mode"));
+            assertEquals("eager", ctx.getRepos().get(1).get("mode"));
+        });
+
+        assertTrue(warnings.stream().anyMatch(message -> message.contains("declares no repos")),
+                warnings.toString());
+    }
+
+    @Test
+    void workitemJiraStatusWithoutTasksFallsBackToAllWritableEagerAndWarns() {
+        WorkitemDO workitem = new WorkitemDO();
+        workitem.setId(200L);
+        workitem.setTenantId(TENANT);
+        workitem.setContentMd("<!-- autowonder-jira-status:start\n{\"schema\":1}\nautowonder-jira-status:end -->");
+        when(workitemDao.findById(200L)).thenReturn(workitem);
+        when(repoPermDao.listByVersion(401L)).thenReturn(List.of(permission(700L, "WRITE")));
+        when(repoDao.findById(700L)).thenReturn(repo(700L, "autoTransfer"));
+        when(skillDao.listByVersion(401L)).thenReturn(List.of());
+        when(memoryRefDao.listByVersion(401L)).thenReturn(List.of());
+        when(dispatchDao.listSucceededByWorkitem(TENANT, 200L)).thenReturn(List.of());
+
+        List<String> warnings = captureWarnings(() -> {
+            PackageContext ctx = assembler.assemble(dispatch(), version());
+            assertEquals("eager", ctx.getRepos().get(0).get("mode"));
+        });
+
+        assertTrue(warnings.stream().anyMatch(message -> message.contains("has no tasks")),
+                warnings.toString());
+    }
+
+    @Test
+    void workitemJiraStatusWithOnlyExcludedTasksFallsBackToAllWritableEager() {
+        WorkitemDO workitem = new WorkitemDO();
+        workitem.setId(200L);
+        workitem.setTenantId(TENANT);
+        workitem.setContentMd("<!-- autowonder-jira-status:start\n"
+                + "{\"schema\":1,\"tasks\":[{\"key\":\"HS-124\",\"included\":false,\"repos\":[\"removed-repo\"]}]}\n"
+                + "autowonder-jira-status:end -->");
+        when(workitemDao.findById(200L)).thenReturn(workitem);
+        when(repoPermDao.listByVersion(401L)).thenReturn(List.of(
+                permission(700L, "WRITE"), permission(702L, "WRITE")));
+        when(repoDao.findById(700L)).thenReturn(repo(700L, "autoTransfer"));
+        when(repoDao.findById(702L)).thenReturn(repo(702L, "removed-repo"));
+        when(skillDao.listByVersion(401L)).thenReturn(List.of());
+        when(memoryRefDao.listByVersion(401L)).thenReturn(List.of());
+        when(dispatchDao.listSucceededByWorkitem(TENANT, 200L)).thenReturn(List.of());
+
+        List<String> warnings = captureWarnings(() -> {
+            PackageContext ctx = assembler.assemble(dispatch(), version());
+            assertEquals("eager", ctx.getRepos().get(0).get("mode"));
+            assertEquals("eager", ctx.getRepos().get(1).get("mode"));
+        });
+
+        assertTrue(warnings.stream().anyMatch(message -> message.contains("declares no repos")),
+                warnings.toString());
+    }
+
+    @Test
+    void workitemJiraScopeAppliesEvenWhenScopeConfirmedIsFalse() {
+        WorkitemDO workitem = new WorkitemDO();
+        workitem.setId(200L);
+        workitem.setTenantId(TENANT);
+        workitem.setContentMd("<!-- autowonder-jira-status:start\n"
+                + "{\"schema\":1,\"scope_confirmed\":false,\"tasks\":["
+                + "{\"key\":\"HS-124\",\"repos\":[\"autoTransfer\"]}]}\n"
+                + "autowonder-jira-status:end -->");
+        when(workitemDao.findById(200L)).thenReturn(workitem);
+        when(repoPermDao.listByVersion(401L)).thenReturn(List.of(
+                permission(700L, "WRITE"), permission(701L, "WRITE")));
+        when(repoDao.findById(700L)).thenReturn(repo(700L, "autoTransfer"));
+        when(repoDao.findById(701L)).thenReturn(repo(701L, "oanew"));
+        when(skillDao.listByVersion(401L)).thenReturn(List.of());
+        when(memoryRefDao.listByVersion(401L)).thenReturn(List.of());
+        when(dispatchDao.listSucceededByWorkitem(TENANT, 200L)).thenReturn(List.of());
+
+        PackageContext ctx = assembler.assemble(dispatch(), version());
+
+        assertEquals("eager", ctx.getRepos().get(0).get("mode"));
+        assertEquals("lazy", ctx.getRepos().get(1).get("mode"));
+    }
+
+    @Test
+    void declaredRepoNotBoundWarnsAndKeepsWritableReposLazy() {
+        when(repoPermDao.listByVersion(401L)).thenReturn(List.of(permission(10L, "WRITE")));
+        when(repoDao.findById(10L)).thenReturn(repo(10L, "service"));
+
+        List<String> warnings = captureWarnings(() -> {
+            List<Map<String, Object>> repos = assembler.buildRepos(TENANT, 401L, null, Set.of("missing"));
+            assertEquals("lazy", repos.get(0).get("mode"));
+            assertEquals(true, repos.get(0).get("allowCommit"));
+        });
+
+        assertTrue(warnings.stream().anyMatch(message ->
+                message.contains("not bound") && message.contains("missing")), warnings.toString());
+    }
+
+    @Test
+    void declaredRepoBoundReadOnlyWarnsAndKeepsRepoLazy() {
+        when(repoPermDao.listByVersion(401L)).thenReturn(List.of(permission(10L, "READ")));
+        when(repoDao.findById(10L)).thenReturn(repo(10L, "service"));
+
+        List<String> warnings = captureWarnings(() -> {
+            List<Map<String, Object>> repos = assembler.buildRepos(TENANT, 401L, null, Set.of("service"));
+            assertEquals("lazy", repos.get(0).get("mode"));
+            assertEquals(false, repos.get(0).get("allowCommit"));
+        });
+
+        assertTrue(warnings.stream().anyMatch(message ->
+                message.contains("read-only") && message.contains("service")), warnings.toString());
+    }
+
+    @Test
+    void declaredRepoMatchingMultipleWritableBindingsWarnsAndMarksAllEager() {
+        when(repoPermDao.listByVersion(401L)).thenReturn(List.of(
+                permission(10L, "WRITE"), permission(11L, "WRITE")));
+        when(repoDao.findById(10L)).thenReturn(repo(10L, "service"));
+        when(repoDao.findById(11L)).thenReturn(repo(11L, "Service"));
+
+        List<String> warnings = captureWarnings(() -> {
+            List<Map<String, Object>> repos = assembler.buildRepos(TENANT, 401L, null, Set.of("service"));
+            assertEquals("eager", repos.get(0).get("mode"));
+            assertEquals("eager", repos.get(1).get("mode"));
+        });
+
+        assertTrue(warnings.stream().anyMatch(message ->
+                message.contains("multiple") && message.contains("service")), warnings.toString());
+    }
+
+    @Test
+    void declaredRepoMatchingIgnoresCaseAndWhitespace() {
+        when(repoPermDao.listByVersion(401L)).thenReturn(List.of(
+                permission(10L, "WRITE"), permission(11L, "WRITE")));
+        when(repoDao.findById(10L)).thenReturn(repo(10L, "autoTransfer"));
+        when(repoDao.findById(11L)).thenReturn(repo(11L, "other"));
+
+        List<String> warnings = captureWarnings(() -> {
+            List<Map<String, Object>> repos = assembler.buildRepos(TENANT, 401L, null, Set.of("  AutoTransfer  "));
+            assertEquals("eager", repos.get(0).get("mode"));
+            assertEquals("lazy", repos.get(1).get("mode"));
+        });
+
+        assertTrue(warnings.isEmpty(), warnings.toString());
     }
 
     @Test
@@ -1590,6 +1898,37 @@ class PackageContextAssemblerTest {
             assertTrue(message.startsWith("Repository “ns/<b>raw</b>” (#17)"));
             assertFalse(message.contains("仓库名称")); assertEquals("ns/<b>raw</b>", repo.getName());
         } finally { org.springframework.context.i18n.LocaleContextHolder.setLocaleContext(previous); }
+    }
+
+    private static List<String> captureWarnings(Runnable action) {
+        Logger logger = (Logger) LogManager.getLogger(PackageContextAssembler.class);
+        Level previousLevel = logger.getLevel();
+        CapturingAppender appender = new CapturingAppender();
+        appender.start();
+        logger.addAppender(appender);
+        logger.setLevel(Level.WARN);
+        try {
+            action.run();
+        } finally {
+            logger.removeAppender(appender);
+            logger.setLevel(previousLevel);
+            appender.stop();
+        }
+        return appender.messages;
+    }
+
+    private static final class CapturingAppender extends AbstractAppender {
+        private final List<String> messages = new ArrayList<>();
+
+        private CapturingAppender() {
+            super("package-context-test", null, PatternLayout.createDefaultLayout(), true,
+                    Property.EMPTY_ARRAY);
+        }
+
+        @Override
+        public void append(LogEvent event) {
+            messages.add(event.getMessage().getFormattedMessage());
+        }
     }
 
 }

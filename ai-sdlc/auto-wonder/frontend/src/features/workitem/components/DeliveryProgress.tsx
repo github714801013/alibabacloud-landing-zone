@@ -21,6 +21,7 @@ import { RuntimeLogPanel } from './RuntimeLogDrawer';
 import './DeliveryWorkbench.css';
 import { TokenUsageBadge, StepTokenBadge } from './TokenUsageBadge';
 import { StepDurationChart } from './StepDurationChart';
+import { useIsMobile } from '@/shared/ui/useIsMobile';
 
 const { Text } = Typography;
 
@@ -559,11 +560,12 @@ function AuthoritativeExecutionProcessGraph({ processGraph }: { processGraph?: P
         data-zoom={zoom.toFixed(2)}
         data-pan={`${Math.round(pan.x)},${Math.round(pan.y)}`}
         onWheel={(event) => { event.preventDefault(); zoomBy(event.deltaY > 0 ? -0.08 : 0.08); }}
-        onMouseDown={(event) => beginDrag(event.clientX, event.clientY)}
-        onMouseMove={(event) => moveDrag(event.clientX, event.clientY)}
-        onMouseUp={endDrag}
-        onMouseLeave={endDrag}
-        style={{ height: fullscreen ? 'calc(100vh - 190px)' : 420, border: '1px solid var(--aw-accent)', borderRadius: 6, background: 'var(--aw-panel)', overflow: 'hidden', cursor: 'grab' }}
+        onPointerDown={(event) => beginDrag(event.clientX, event.clientY)}
+        onPointerMove={(event) => moveDrag(event.clientX, event.clientY)}
+        onPointerUp={endDrag}
+        onPointerLeave={endDrag}
+        onPointerCancel={endDrag}
+        style={{ height: fullscreen ? 'calc(100vh - 190px)' : 420, border: '1px solid var(--aw-accent)', borderRadius: 6, background: 'var(--aw-panel)', overflow: 'hidden', cursor: 'grab', touchAction: 'none' }}
       >
         <svg width="100%" height="100%" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={t('delivery.graphAria')}>
           {markerDefs()}
@@ -843,7 +845,8 @@ function DeliveryWorkbench({ agents, progress, artifacts, artifactsLoading, onEx
   const [pinnedDispatch, setPinnedDispatch] = useState<number | null>(null);
   const [pinnedAgent, setPinnedAgent] = useState<number | null>(null);
   const [selectedStepId, setSelectedStepId] = useState<number | null>(null);
-  const [railVisible, setRailVisible] = useState(() => window.innerWidth >= 760);
+  const isMobile = useIsMobile();
+  const [railVisible, setRailVisible] = useState(() => !isMobile);
   const [railWidth, setRailWidth] = useState(260);
   const [showAllExecutions, setShowAllExecutions] = useState(false);
   const followCurrent = pinnedDispatch === null && pinnedAgent === null;

@@ -137,6 +137,10 @@
           AND status IN ('EXPIRED','CANCELED','ANSWERED','DECLINED')
         ORDER BY id DESC LIMIT 100
     </select>
+    <select id="countByTurn" resultType="int">
+        SELECT COUNT(*) FROM agent_conversation_elicitation
+        WHERE tenant_id = #{tenantId} AND turn_id = #{turnId}
+    </select>
     <select id="listAnswerDeliveries" resultMap="BaseResultMap">
         SELECT * FROM (
             SELECT <include refid="BaseColumns"/> FROM agent_conversation_elicitation

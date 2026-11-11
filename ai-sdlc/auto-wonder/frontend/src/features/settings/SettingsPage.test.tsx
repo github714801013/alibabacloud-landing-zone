@@ -171,6 +171,17 @@ describe('SettingsPage', () => {
     });
   });
 
+  it('renders AI collaboration defaults in a dedicated settings tab', async () => {
+    useCommonSettingsHandlers([]);
+
+    renderPage();
+    await userEvent.click(await screen.findByRole('tab', { name: 'AI 默认值' }));
+
+    expect(await screen.findByText('需求澄清')).toBeInTheDocument();
+    expect(screen.getByText('开始交付')).toBeInTheDocument();
+    expect(await screen.findByText('保存后仅对当前浏览器生效')).toBeInTheDocument();
+  });
+
   it('keeps save commands visible but blocks read-only users before mutation', async () => {
     let quotaUpdates = 0;
     useAuthStore.getState().setCurrentWorkspace({ id: 1, name: 'O', description: '' }, 'READ_ONLY');
@@ -207,6 +218,59 @@ it('only saves Feishu settings and preferences when the platform selects Feishu'
   expect(await screen.findByLabelText('启用飞书通知')).toBeInTheDocument();
   expect(screen.queryByLabelText('启用钉钉通知')).not.toBeInTheDocument();
   await userEvent.click(screen.getByRole('button', { name: /保存通知配置/ }));
-  await waitFor(() => expect(saved.prefs?.items[0]).toEqual({ type: 'WORKITEM_ASSIGNED', inApp: true, feishu: true, dingtalk: false }));
+  await waitFor(() => expect(saved.prefs?.items[0]).toEqual({ type: 'WORKITEM_ASSIGNED', inApp: true, feishu: true, dingtalk: false, wecom: false }));
   expect(saved.settings?.items).toEqual([{ key: 'feishu_enabled', valueJson: 'true', secret: false }]);
+});
+
+it('keeps personal notification preferences usable for non-admin members', async () => {
+  let prefsSaves = 0;
+  let settingsUpdates = 0;
+  useAuthStore.getState().setCurrentWorkspace({ id: 1, name: 'O', description: '' }, 'READ_WRITE');
+  useCommonSettingsHandlers([
+    http.get('/api/platform/im-channels', () => HttpResponse.json(apiOk([{ provider: 'WECOM', selected: true, enabled: false }]))),
+    http.get('/api/settings/NOTIFY', () => HttpResponse.json({
+      success: false, code: '10403', message: 'denied', traceId: null, data: null,
+    }, { status: 403 })),
+    http.get('/api/notifications/prefs', () => HttpResponse.json(apiOk([{ type: 'WORKITEM_ASSIGNED', inApp: true, wecom: false }]))),
+    http.put('/api/notifications/prefs', () => { prefsSaves += 1; return HttpResponse.json(apiOk(null)); }),
+    http.put('/api/settings/NOTIFY', () => { settingsUpdates += 1; return HttpResponse.json(apiOk(null)); }),
+  ]);
+
+  renderPage();
+  await userEvent.click(await screen.findByRole('tab', { name: '通知配置' }));
+
+  expect(await screen.findByText('通知偏好')).toBeInTheDocument();
+  expect(screen.queryByText('通知配置加载失败，请刷新重试')).not.toBeInTheDocument();
+  expect(await screen.findByRole('switch', { name: '工单指派：站内' })).toBeChecked();
+  expect(screen.queryByLabelText('启用企业微信通知')).not.toBeInTheDocument();
+
+  await userEvent.click(screen.getByRole('button', { name: /保存通知配置/ }));
+  await waitFor(() => expect(prefsSaves).toBe(1));
+  expect(settingsUpdates).toBe(0);
+});
+
+it('starts the WeCom preference off and saves only the WeCom switch', async () => {
+  const saved: { prefs?: { items: NotifyPrefItem[] }; settings?: { items: SettingItem[] } } = {};
+  useAuthStore.getState().setCurrentWorkspace({ id: 1, name: 'O', description: '' }, 'ADMIN');
+  useCommonSettingsHandlers([
+    http.get('/api/platform/im-channels', () => HttpResponse.json(apiOk([{ provider: 'WECOM', selected: true, enabled: false }]))),
+    http.get('/api/settings/NOTIFY', () => HttpResponse.json(apiOk([{ key: 'wecom_enabled', valueJson: 'true', secret: false }]))),
+    http.get('/api/notifications/prefs', () => HttpResponse.json(apiOk([{ type: 'WORKITEM_ASSIGNED', inApp: true, wecom: false }]))),
+    http.put('/api/notifications/prefs', async ({ request }) => { saved.prefs = await request.json() as { items: NotifyPrefItem[] }; return HttpResponse.json(apiOk(null)); }),
+    http.put('/api/settings/NOTIFY', async ({ request }) => { saved.settings = await request.json() as { items: SettingItem[] }; return HttpResponse.json(apiOk(null)); }),
+  ]);
+  renderPage();
+  await userEvent.click(await screen.findByRole('tab', { name: '通知配置' }));
+
+  expect(await screen.findByLabelText('启用企业微信通知')).toBeInTheDocument();
+  expect(screen.queryByLabelText('启用飞书通知')).not.toBeInTheDocument();
+  expect(screen.queryByLabelText('启用钉钉通知')).not.toBeInTheDocument();
+  const preference = screen.getByRole('switch', { name: '工单指派：企业微信' });
+  expect(preference).not.toBeChecked();
+
+  await userEvent.click(preference);
+  await userEvent.click(screen.getByRole('button', { name: /保存通知配置/ }));
+
+  await waitFor(() => expect(saved.prefs?.items[0]).toEqual({ type: 'WORKITEM_ASSIGNED', inApp: true, wecom: true, dingtalk: false, feishu: false }));
+  expect(saved.settings?.items).toEqual([{ key: 'wecom_enabled', valueJson: 'true', secret: false }]);
 });

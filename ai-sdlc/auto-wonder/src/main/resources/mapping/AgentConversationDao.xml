@@ -55,6 +55,22 @@
         WHERE tenant_id = #{tenantId} AND id = #{id}
     </select>
 
+    <update id="bindClarificationOwnerIfAbsent">
+        UPDATE agent_conversation
+        SET owner_user_id = #{ownerUserId}, version = version + 1
+        WHERE tenant_id = #{tenantId} AND id = #{id}
+          AND channel = 'WORKITEM_CLARIFICATION'
+          AND owner_user_id IS NULL
+    </update>
+
+    <select id="findClarificationOwnerForUpdate" resultType="java.lang.Long">
+        SELECT owner_user_id
+        FROM agent_conversation
+        WHERE tenant_id = #{tenantId} AND id = #{id}
+          AND channel = 'WORKITEM_CLARIFICATION'
+        FOR UPDATE
+    </select>
+
     <update id="updateCliSessionRef">
         UPDATE agent_conversation
         SET cli_session_ref = #{cliSessionRef}, version = version + 1

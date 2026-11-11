@@ -180,18 +180,34 @@ function mockClarifyEndpoints() {
   ];
 }
 
+function stubMobileMatchMedia() {
+  vi.stubGlobal('matchMedia', (query: string) => ({
+    matches: query.includes('767.98px'),
+    media: query,
+    onchange: null,
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  }));
+}
+
 function renderPage(id = '1') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
-    <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={[`/workitems/${id}`]}>
-        <Routes>
-          <Route path="/workitems/:id" element={<WorkitemDetailPage />} />
-          <Route path="/workitems" element={<div>工单列表</div>} />
-        </Routes>
-      </MemoryRouter>
-    </QueryClientProvider>,
-  );
+  return {
+    queryClient,
+    ...render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={[`/workitems/${id}`]}>
+          <Routes>
+            <Route path="/workitems/:id" element={<WorkitemDetailPage />} />
+            <Route path="/workitems" element={<div>工单列表</div>} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    ),
+  };
 }
 
 // jsdom 没有 PointerEvent 构造器，fireEvent.pointer* 会丢失坐标，用 MouseEvent 派生 pointer 事件
@@ -216,6 +232,51 @@ describe('WorkitemDetailPage', () => {
     // Title appears in both breadcrumb and heading — use role to target the heading
     expect(await screen.findByRole('heading', { name: '跨境支付重构' })).toBeInTheDocument();
     expect(screen.getByText('开发中')).toBeInTheDocument();
+  });
+
+  it('switches between comments and progress tabs on mobile', async () => {
+    server.use(...setupHandlers());
+    stubMobileMatchMedia();
+    renderPage();
+
+    expect(await screen.findByRole('tab', { name: '评论' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: '进度与澄清' })).toBeInTheDocument();
+    expect(await screen.findByTestId('workitem-comment-input')).toBeInTheDocument();
+    expect(screen.queryByTestId('workitem-right-panel')).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('tab', { name: '进度与澄清' }));
+    expect(screen.getByTestId('workitem-right-panel')).toBeInTheDocument();
+    expect(screen.queryByTestId('workitem-comment-input')).not.toBeInTheDocument();
+  });
+
+  it('keeps the error page when the first load already fails with 502', async () => {
+    server.use(
+      http.get('/api/workitems/1', () => HttpResponse.json(
+        { success: false, code: '502', message: 'Bad Gateway', traceId: null }, { status: 502 },
+      )),
+      ...setupHandlers(),
+    );
+    renderPage();
+
+    expect(await screen.findByText('加载失败')).toBeInTheDocument();
+  });
+
+  // 需求：502 后台刷新失败不能把已加载的页面整页换成错误页。
+  it('keeps the loaded workitem when a background refresh fails with 502', async () => {
+    server.use(...setupHandlers());
+    const { queryClient } = renderPage();
+    expect(await screen.findByRole('heading', { name: '跨境支付重构' })).toBeInTheDocument();
+
+    server.use(http.get('/api/workitems/1', () => HttpResponse.json(
+      { success: false, code: '502', message: 'Bad Gateway', traceId: null }, { status: 502 },
+    )));
+    void queryClient.invalidateQueries({ queryKey: ['workitem', '1'] });
+
+    await waitFor(() => expect(
+      queryClient.getQueryCache().findAll({ queryKey: ['workitem', '1'], exact: true })[0]?.state.status,
+    ).toBe('error'));
+    expect(screen.getByRole('heading', { name: '跨境支付重构' })).toBeInTheDocument();
+    expect(screen.queryByText('加载失败')).not.toBeInTheDocument();
   });
 
   it('renders the detail page when the workitem contentMd is null', async () => {
@@ -1721,6 +1782,8 @@ describe('WorkitemDetailPage clarify URL persistence (工单 53035)', () => {
     expect(box).toHaveStyle('position: relative');
     expect(screen.getByTestId('resize-handle-vertical')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '全屏' })).toBeInTheDocument();
+    // 澄清头部要能看出正在澄清哪个需求：页面把工单标题一路透传到面板。
+    expect(screen.getByTestId('clarification-workitem-title')).toHaveTextContent('跨境支付重构');
   });
 
   it('keeps the progress panel when the URL carries no clarify params', async () => {

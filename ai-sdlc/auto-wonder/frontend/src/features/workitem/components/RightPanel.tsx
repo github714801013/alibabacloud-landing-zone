@@ -24,12 +24,15 @@ import type {
 import { useExecutionControl } from '../hooks';
 import { AI_CLARIFICATION_ENABLED } from '../featureFlags';
 import { useAccessCommand } from '@/shared/auth/useAccessCommand';
+import { useIsMobile } from '@/shared/ui/useIsMobile';
 import type { ClarifyContext, ClarifyPanelMode } from '../clarifyView';
 
 const CLARIFY_MIN_HEIGHT = 280;
 
 interface RightPanelProps {
   workitemId: string;
+  /** 工单标题：透传给澄清面板，显示在「返回」与数字人名之间。 */
+  workitemTitle?: string;
   timeline?: TimelineItem[];
   participants: Participant[];
   participantsLoading?: boolean;
@@ -61,6 +64,7 @@ interface RightPanelProps {
 
 export function RightPanel({
   workitemId,
+  workitemTitle,
   timeline = [],
   participants,
   participantsLoading,
@@ -82,6 +86,7 @@ export function RightPanel({
   onClarifyContextChange,
 }: RightPanelProps) {
   const { t } = useTranslation('workitem');
+  const isMobile = useIsMobile();
   const [mode, setMode] = useState<ClarifyPanelMode>(initialMode ?? 'progress');
   const [clarifyHeight, setClarifyHeight] = useState<number | null>(null);
   const [clarifyFullscreen, setClarifyFullscreen] = useState(initialFullscreen ?? false);
@@ -142,6 +147,8 @@ export function RightPanel({
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [clarifyFullscreen, exitFullscreen]);
 
+  // 手机端澄清会话固定全屏：用户不再需要手动切换，避免窄栏里再挤一个全屏按钮。
+  const effectiveFullscreen = isMobile || clarifyFullscreen;
   const clarifyMaxHeight =
     clarifyBoxRef.current?.parentElement?.getBoundingClientRect().height || window.innerHeight;
   const currentHeight = clarifyHeight ?? clarifyBoxRef.current?.getBoundingClientRect().height ?? 0;
@@ -151,7 +158,7 @@ export function RightPanel({
       <div
         ref={clarifyBoxRef}
         data-testid="clarify-resize-box"
-        style={clarifyFullscreen ? {
+        style={effectiveFullscreen ? {
           position: 'fixed',
           inset: 0,
           zIndex: 1000,
@@ -171,7 +178,7 @@ export function RightPanel({
           backgroundColor: CLARIFICATION_THEME.surface,
         }}
       >
-        {!clarifyFullscreen && (
+        {!effectiveFullscreen && (
           <ResizeHandle
             direction="vertical"
             value={currentHeight}
@@ -187,11 +194,12 @@ export function RightPanel({
         <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
           <WorkitemClarificationPanel
             workitemId={workitemId}
+            workitemTitle={workitemTitle}
             artifacts={clarificationArtifacts ?? artifacts}
-            fullscreen={clarifyFullscreen}
+            fullscreen={effectiveFullscreen}
             headerPrefix={(
               <Button
-                size={clarifyFullscreen ? 'middle' : 'small'}
+                size={effectiveFullscreen ? 'middle' : 'small'}
                 icon={<ArrowLeftOutlined />}
                 aria-label={t('detail.back')}
                 style={{ flexShrink: 0 }}
@@ -200,7 +208,7 @@ export function RightPanel({
                 {t('detail.back')}
               </Button>
             )}
-            headerSuffix={clarifyFullscreen ? (
+            headerSuffix={isMobile ? null : clarifyFullscreen ? (
               <Tooltip title={t('detail.exitFullscreenHint')}>
                 <Button
                   size="middle"
@@ -225,6 +233,8 @@ export function RightPanel({
             initialConversationId={clarifyContext?.conversationId ?? null}
             onContextChange={onClarifyContextChange}
             onAgentConfirmed={() => {
+              // 手机端本来就是全屏，不需要再写 URL 全屏态
+              if (isMobile) return;
               // 用户已主动退出过全屏，本次会话内不再自动全屏
               if (userExitedFullscreenRef.current) return;
               setClarifyFullscreen(true);

@@ -11,6 +11,7 @@ public enum WorkitemEventType {
     CREATE("工单已创建"),
     STATUS_CHANGE("工单状态已变更"),
     ASSIGN("交付负责人已变更"),
+    SDLC_SWITCH("交付流程已切换"),
     EDIT("工单内容已更新"),
     DELETE("工单已删除"),
     RESTORE("工单已从回收站恢复"),

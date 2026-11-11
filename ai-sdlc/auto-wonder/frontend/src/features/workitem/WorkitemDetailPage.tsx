@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { RecoveryControls } from './components/RecoveryControls';
 import { DispatchRequests } from './components/DispatchRequests';
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { Empty, List, Modal, Spin, Result, Button, Space, Tag, Typography } from 'antd';
+import { Empty, List, Modal, Spin, Result, Button, Space, Tag, Tabs, Typography } from 'antd';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useTemplateDetail } from '@/features/statemachine/hooks';
@@ -46,6 +46,7 @@ import { allows } from '@/shared/auth/access';
 import { useAuthStore } from '@/shared/auth/store';
 import { CLARIFICATION_THEME } from './clarification/theme';
 import type { Artifact, CommentInteraction, Participant, TimelineItem } from '@/shared/types/workitem';
+import { useIsMobile } from '@/shared/ui/useIsMobile';
 
 const CLARIFY_MIN_WIDTH = 320;
 
@@ -79,6 +80,10 @@ export function WorkitemDetailPage() {
   const [tagsOpen, setTagsOpen] = useState(false);
   const leftScrollRef = useRef<HTMLDivElement>(null);
   const [searchParams, setSearchParams] = useSearchParams();
+  const isMobile = useIsMobile();
+  const [mobileView, setMobileView] = useState<'comments' | 'progress'>(
+    () => readClarifyView(searchParams).mode === 'clarify' ? 'progress' : 'comments',
+  );
   // Router 导航可以延后提交。同帧的全屏/会话上报必须累积到尚未提交的 URL，
   // 否则后一次上报会用旧 searchParams 覆盖前一次变更。
   const clarifySearchRef = useRef({ committed: searchParams, pending: searchParams });
@@ -88,6 +93,14 @@ export function WorkitemDetailPage() {
   // 澄清视图状态挂在 URL 上：刷新后仍停在原工单的原澄清会话并恢复全屏态（工单 53035）
   const clarifyView = readClarifyView(searchParams);
   const panelMode = clarifyView.mode;
+  useEffect(() => {
+    if (isMobile && panelMode === 'clarify') setMobileView('progress');
+  }, [isMobile, panelMode]);
+  const handleMobileViewChange = (next: 'comments' | 'progress') => {
+    setMobileView(next);
+    // 切回评论页签时退出澄清态，否则 URL 里的 clarify 会立刻把页签拽回进度。
+    if (next === 'comments' && panelMode === 'clarify') updateClarifyView({ mode: 'progress' });
+  };
   const [clarifyWidth, setClarifyWidth] = useState<number | null>(null);
   const rightPanelRef = useRef<HTMLDivElement>(null);
   const [timelinePage, setTimelinePage] = useState({ id, page: 0 });
@@ -173,7 +186,9 @@ export function WorkitemDetailPage() {
 
   if (!id) return <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}><Result status="404" title={t('detail.invalidId')} extra={<Button onClick={() => navigate(-1)}>{t('detail.back')}</Button>} /></div>;
   if (isLoading) return <Spin size="large" style={{ display: 'block', margin: '100px auto' }} />;
-  if (isError) return (
+  // 轮询后台刷新失败时 react-query 会保留已加载数据（isError=true 但 data 还在）。
+  // 只有一次都没加载成功才整页替换成错误页，否则页面会从有数据被抹成 502（需求：502 保留数据）。
+  if (isError && !workitem) return (
     <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}>
       {owningWorkspace ? (
         <OtherWorkspacePrompt
@@ -259,14 +274,26 @@ export function WorkitemDetailPage() {
   };
 
   return (
-    <div className="aw-split-page" style={{ display: 'flex', gap: 0, height: '100%', overflow: 'hidden' }}>
+    <div className="aw-split-page" style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', gap: 0, height: '100%', overflow: 'hidden' }}>
+      {isMobile && (
+        <Tabs
+          data-testid="workitem-mobile-tabs"
+          activeKey={mobileView}
+          onChange={(key) => handleMobileViewChange(key as 'comments' | 'progress')}
+          items={[
+            { key: 'comments', label: t('detail.commentsTab') },
+            { key: 'progress', label: t('detail.progressTab') },
+          ]}
+          style={{ flexShrink: 0, padding: '0 12px', marginBottom: 0 }}
+        />
+      )}
       {/* Left Panel */}
-      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      {(!isMobile || mobileView === 'comments') && <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         <div
           data-testid="workitem-scroll-region"
           style={{ position: 'relative', flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex' }}
         >
-          <div ref={leftScrollRef} data-testid="workitem-left-scroll" style={{ flex: 1, minWidth: 0, minHeight: 0, padding: 24, paddingRight: 38, paddingBottom: 12, overflowY: 'auto' }}>
+          <div ref={leftScrollRef} data-testid="workitem-left-scroll" style={{ flex: 1, minWidth: 0, minHeight: 0, padding: isMobile ? 16 : 24, paddingRight: isMobile ? 16 : 38, paddingBottom: 12, overflowY: 'auto' }}>
           <WorkitemHeader
             title={workitem.title}
             workitemId={workitem.id}
@@ -357,7 +384,7 @@ export function WorkitemDetailPage() {
           </div>
           <ScrollToEdgeButton containerRef={leftScrollRef} />
         </div>
-        <div data-testid="workitem-sticky-comment" style={{ flexShrink: 0, padding: '0 24px 16px', borderTop: '1px solid var(--aw-border)' }}>
+        <div data-testid="workitem-sticky-comment" style={{ flexShrink: 0, padding: isMobile ? '0 16px calc(12px + env(safe-area-inset-bottom))' : '0 24px 16px', borderTop: '1px solid var(--aw-border)' }}>
           <CommentInput
             key={id}
             workitemId={id}
@@ -365,18 +392,20 @@ export function WorkitemDetailPage() {
             participants={participants}
           />
         </div>
-      </div>
+      </div>}
 
       {/* Right Panel */}
-      <div
+      {(!isMobile || mobileView === 'progress') && <div
         ref={rightPanelRef}
         data-testid="workitem-right-panel"
         style={{
-          width: clarifyWidth != null ? `${clarifyWidth}px` : 'clamp(340px, 28vw, 420px)',
+          width: isMobile ? '100%' : clarifyWidth != null ? `${clarifyWidth}px` : 'clamp(340px, 28vw, 420px)',
+          flex: isMobile ? 1 : undefined,
           flexShrink: 0,
-          padding: 12,
+          minHeight: 0,
+          padding: isMobile ? 10 : 12,
           background: CLARIFICATION_THEME.surface,
-          borderLeft: `1px solid ${CLARIFICATION_THEME.hairline}`,
+          borderLeft: isMobile ? undefined : `1px solid ${CLARIFICATION_THEME.hairline}`,
           overflowY: 'auto',
           position: 'relative',
           display: panelMode === 'clarify' ? 'flex' : 'block',
@@ -397,6 +426,7 @@ export function WorkitemDetailPage() {
         <RightPanel
           key={id}
           workitemId={id}
+          workitemTitle={workitem.title}
           timeline={latestTimelineData ?? EMPTY_TIMELINE}
           participants={participants}
           participantsLoading={participantsLoading}
@@ -421,7 +451,7 @@ export function WorkitemDetailPage() {
           onFullscreenChange={(fullscreen) => updateClarifyView({ fullscreen })}
           onClarifyContextChange={handleClarifyContextChange}
         />
-      </div>
+      </div>}
 
       <ClarifyReminderModal
         open={clarifyReminderOpen}
@@ -433,6 +463,8 @@ export function WorkitemDetailPage() {
         open={deliveryOpen}
         workitemId={id}
         hasSdlc={hasSdlc}
+        currentAgentId={workitem.assigneeType === 'AGENT' ? workitem.assigneeRef : null}
+        currentSdlcId={workitem.sdlcId}
         onClose={() => setDeliveryOpen(false)}
       />
       <AssignHumanModal

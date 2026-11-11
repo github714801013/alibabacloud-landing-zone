@@ -17,11 +17,11 @@ class Socket {
   readyState = 0;
   frames: Record<string, unknown>[] = [];
   onopen?: () => void;
-  onclose?: () => void;
+  onclose?: (event: { code?: number; reason?: string }) => void;
   onmessage?: (event: { data: string }) => void;
   constructor() { Socket.instances.push(this); }
   send(data: string) { this.frames.push(JSON.parse(data)); }
-  close() { this.readyState = 3; this.onclose?.(); }
+  close() { this.readyState = 3; this.onclose?.({ code: 1006 }); }
   open() { this.readyState = 1; this.onopen?.(); }
 }
 const fresh = `header.${btoa(JSON.stringify({ exp: 4_000_000_000 }))}.signature`;

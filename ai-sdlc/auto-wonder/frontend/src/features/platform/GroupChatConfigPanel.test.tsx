@@ -289,4 +289,59 @@ describe('GroupChatConfigPanel', () => {
 
     expect(await screen.findByText('平台群聊接入: 未知')).toBeInTheDocument();
   });
+
+  it('saves the WeCom BotID and Secret without a robot code', async () => {
+    let saved: Record<string, unknown> | null = null;
+    mockConfig('WECOM', config({
+      provider: 'WECOM', appKey: 'wecom-bot', robotCode: null, connectionStatus: 'CONNECTING', ready: false,
+    }));
+    server.use(http.put('/api/platform/im-channels/WECOM/group-chat', async ({ request }) => {
+      saved = await request.json() as Record<string, unknown>;
+      return HttpResponse.json(ok(config({ provider: 'WECOM', version: 5 })));
+    }));
+    renderPanel('WECOM');
+
+    await waitFor(() => expect(screen.getByLabelText('群聊 BotID')).toHaveValue('wecom-bot'));
+    expect(screen.getByText('连接状态：连接中')).toBeInTheDocument();
+    expect(screen.getByText('连接未建立（连接中）')).toBeInTheDocument();
+    expect(screen.queryByLabelText('群聊 RobotCode')).not.toBeInTheDocument();
+
+    await userEvent.type(screen.getByLabelText('群聊 Secret'), 'wecom-secret');
+    await userEvent.click(screen.getByRole('button', { name: '保存群聊机器人' }));
+
+    await waitFor(() => expect(saved).toEqual({
+      enabled: true,
+      version: 4,
+      appKey: 'wecom-bot',
+      appSecret: 'wecom-secret',
+    }));
+  });
+
+  it('keeps unsaved drafts when the connection poll refreshes the config', async () => {
+    let calls = 0;
+    server.use(http.get('/api/platform/im-channels/WECOM/group-chat', () => {
+      calls += 1;
+      return HttpResponse.json(ok(config({
+        provider: 'WECOM',
+        appKey: 'wecom-bot',
+        version: 4,
+        connectionStatus: calls > 1 ? 'CONNECTED' : 'CONNECTING',
+      })));
+    }));
+    renderPanel('WECOM');
+
+    await waitFor(
+      () => expect(screen.getByLabelText('群聊 BotID')).toHaveValue('wecom-bot'),
+      { timeout: 5000 },
+    );
+    expect(await screen.findByText('连接状态：连接中')).toBeInTheDocument();
+    await userEvent.clear(screen.getByLabelText('群聊 BotID'));
+    await userEvent.type(screen.getByLabelText('群聊 BotID'), 'draft-bot');
+
+    await waitFor(
+      () => expect(screen.getByText('连接状态：已连接')).toBeInTheDocument(),
+      { timeout: 8000 },
+    );
+    expect(screen.getByLabelText('群聊 BotID')).toHaveValue('draft-bot');
+  });
 });

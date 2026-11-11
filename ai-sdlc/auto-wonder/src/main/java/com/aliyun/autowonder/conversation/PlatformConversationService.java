@@ -30,6 +30,7 @@ import java.util.stream.Collectors;
 public class PlatformConversationService {
     @org.springframework.beans.factory.annotation.Autowired
     private PlatformConversationImageService imageService;
+    private ConversationAdmissionService admissionService;
 
     private static final String CHANNEL = PlatformConversationChannel.CHANNEL;
     private static final String STATUS_ACTIVE = "ACTIVE";
@@ -75,6 +76,11 @@ public class PlatformConversationService {
         this.executorRouter = executorRouter;
     }
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setAdmissionService(ConversationAdmissionService admissionService) {
+        this.admissionService = admissionService;
+    }
+
     /**
      * 新建会话，调用者即不可变更的 Owner。
      * Chief 没有可用的在线版本时直接拒绝，避免建出一个发不出消息的空会话。
@@ -96,11 +102,20 @@ public class PlatformConversationService {
         conv.setTitle(normalizedTitle);
         conv.setTitleSource(normalizedTitle == null ? null : TITLE_SOURCE_USER);
         conv.setAgentVersionId(agent.getOnlineVersionId());
-        conv.setExecutorId(executorRouter.selectPlatform(tenantId, agent.getId(),
-                agent.getOnlineVersionId(), null));
+        Long executorId = admissionService == null ? null
+                : admissionService.selectNewConversation(tenantId, agent.getId(),
+                        agent.getOnlineVersionId(), true);
+        if (executorId == null) {
+            executorId = executorRouter.selectPlatform(tenantId, agent.getId(),
+                    agent.getOnlineVersionId(), null);
+        }
+        conv.setExecutorId(executorId);
         conv.setStatus(STATUS_ACTIVE);
         conv.setLastTurnAt(new Date());
         convDao.insert(conv);
+        if (executorId != null && admissionService != null) {
+            admissionService.recordBinding(tenantId, agent.getId(), executorId);
+        }
 
         return toVO(conv, ownerUserId);
     }
@@ -276,8 +291,12 @@ public class PlatformConversationService {
                 agent.getOnlineVersionId(), conv.getExecutorId(), true)) {
             throw new IllegalStateException("RUNTIME_OFFLINE");
         }
-        if (executorId != null && !executorId.equals(conv.getExecutorId())) {
+        Long previousExecutorId = conv.getExecutorId();
+        if (executorId != null && !executorId.equals(previousExecutorId)) {
             convDao.updateExecutor(tenantId, conversationId, executorId);
+            if (admissionService != null) {
+                admissionService.bindOrTransfer(tenantId, conv.getAgentId(), previousExecutorId, executorId);
+            }
         }
         // uk_external_msg 是 (tenant_id, external_msg_id)，幂等键必须自带会话身份：
         // 只拼客户端给的 clientMessageId 时，同租户两个会话复用同一个 id 就会撞键，

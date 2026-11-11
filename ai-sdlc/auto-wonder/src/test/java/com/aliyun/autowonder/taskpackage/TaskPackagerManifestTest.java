@@ -76,6 +76,31 @@ class TaskPackagerManifestTest {
     }
 
     @Test
+    void executorMcpBaseUrlInTheContextOverridesTheGlobalEndpoint() throws Exception {
+        ObjectStorage storage = mock(ObjectStorage.class);
+        final byte[][] captured = new byte[1][];
+        when(storage.put(anyString(), anyString(), any(byte[].class))).thenAnswer(inv -> {
+            captured[0] = inv.getArgument(2);
+            return new StoredObject("oss://bucket/key.zip", "md5abc", captured[0].length);
+        });
+        when(storage.presignGet(anyString(), anyInt())).thenReturn("https://oss/dl");
+
+        PackageContext ctx = new PackageContext();
+        ctx.setTenantId(100L);
+        ctx.setWorkitemId(500L);
+        ctx.setDispatchId(300L);
+        ctx.setWorkitemTitle("t");
+        ctx.setWorkitemContentMd("body");
+        ctx.setMcpBaseUrl("http://192.168.254.3:7001");
+
+        new TaskPackager(storage, "task-bucket", () -> "https://private.example.com/api/mcp/").build(ctx);
+
+        JSONObject autowonder = readEntry(captured[0], "skills.json")
+                .getJSONArray("mcpServers").getJSONObject(0);
+        assertEquals("http://192.168.254.3:7001/api/mcp", autowonder.getString("url"));
+    }
+
+    @Test
     void writesConfiguredAutowonderMcpEndpoint() throws Exception {
         ObjectStorage storage = mock(ObjectStorage.class);
         final byte[][] captured = new byte[1][];

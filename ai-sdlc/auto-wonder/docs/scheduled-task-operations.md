@@ -596,6 +596,18 @@ scheduled_zero_gate \
 
 探测失败、元数据权限不足、结构矛盾，或共享来源字段缺失但已有 Scheduled 数据，会判为 `INCONSISTENT` 并使启动失败。不能用开关绕过。
 
+### OceanBase MySQL 模式元数据兼容
+
+V037 是运行时兼容能力探测代号，社区对应的迁移基线是 V041。首次安装的完整 schema 已包含该结构，不应为消除能力误判而重复导入全库 schema 或执行 V041。
+
+OceanBase CE 4.3.5.6 MySQL 模式的 `information_schema` 存在已验证的展示差异，探测器在元数据读取层做以下限定归一化：
+
+- `bigint(20)`、`int(11)`、`tinyint(4)` 等整数显示宽度不改变类型语义；无符号属性仍严格比较，字符长度和 decimal 精度不受影响。
+- 仅对 `datetime(3)` 字段，把默认值 `CURRENT_TIMESTAMP` 归一为 `CURRENT_TIMESTAMP(3)`；字段精度、其他默认值及 `ON UPDATE CURRENT_TIMESTAMP(3)` 仍须满足原契约。
+- 仅对 `dispatch.normalized_idempotency_key`，当类型为 `varchar(137)`、可空、`EXTRA=STORED GENERATED` 且生成表达式符合现有批准表达式时，允许 `COLUMN_DEFAULT` 重复投影同一生成表达式。比较按 SQL token 归一化展示，保留字符串内的大小写、空白、括号和转义；反引号标识符必须准确对应批准列名，内部的运算分组不删除，只接受已验证的 MySQL/OceanBase 表达式形式。默认值不一致、表达式错误或物理定义不符仍禁止能力开放。
+
+这不改变数据库结构、来源隔离或索引契约，也不宣称兼容所有 OceanBase 版本。未知格式、权限不足和查询失败仍遵守既有 fail-closed 判定；不能用环境开关或伪造接口响应绕过。`clusterReady` 仍由发布流程确认全部 serving 节点升级完成，不能由单节点根据 schema 自动推断。修复部署后必须核验冻结快照为 `V037_READY`，并用登录态能力接口及前端入口验证，而不是只检查健康端点。
+
 ## 指标、阈值与回退触发器
 
 节点启动日志为 `V037 schema capability: mode=..., mapper_mode=..., scheduled_available=..., missing_count=...`。兼容性指标包括：

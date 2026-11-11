@@ -270,6 +270,39 @@ describe('WorkitemClarificationPanel ACP 交互接线', () => {
     await waitFor(() => expect(detailCalls).toBeGreaterThan(callsBeforeReply));
   });
 
+  // 线上重复提交：提交成功但卡片要等 resolved 回声才撤下，期间按钮若恢复可点，
+  // 用户会以为没提交成功再点一次，产生第二个相同 POST。
+  it('提交成功后立即撤下卡片，不再等 resolved 回声', async () => {
+    let replyCalls = 0;
+    await renderPanel({
+      acpInteractionSupported: true,
+      processingStatus: 'PROCESSING',
+      processingTurnId: 3,
+      pendingElicitations: [{
+        requestId: 'req-1', turnId: 3, mode: 'form', message: '选一个',
+        requestedSchema: SELECT_SCHEMA, status: 'PENDING', gmtCreate: '',
+      }],
+      turns: [{ id: 3, direction: 'INBOUND', content: '请给方案', status: 'PROCESSING' }],
+    });
+    server.use(
+      http.post(
+        '/api/workitems/:workitemId/clarification-conversations/:conversationId/elicitations/:requestId/reply',
+        () => {
+          replyCalls += 1;
+          return ok(null);
+        },
+      ),
+    );
+
+    await screen.findByTestId('elicitation-wizard-req-1');
+    fireEvent.click(screen.getByTestId('elicitation-option-q0-0'));
+    fireEvent.click(screen.getByTestId('elicitation-submit-req-1'));
+
+    await waitFor(() => expect(replyCalls).toBe(1));
+    // 详情接口仍返回旧的 pending 数据（回声未到），但服务端已结算，卡片必须立即撤下
+    await waitFor(() => expect(screen.queryByTestId('elicitation-wizard-req-1')).toBeNull());
+  });
+
   // F14：跳过 = decline，Qoder 收到后 end_turn 正常收尾。
   it('declines the card when the user skips it', async () => {
     let replyBody: unknown = null;
@@ -352,6 +385,38 @@ describe('WorkitemClarificationPanel ACP 交互接线', () => {
 
     expect(await screen.findByText('还有必答题目没有作答，请补充后再提交。')).toBeInTheDocument();
     expect(screen.getByTestId('elicitation-wizard-req-1')).toBeInTheDocument();
+  });
+
+  // 业务失败（如回答权限被拒）必须原样展示后端文案，不能被通用文案吞掉。
+  it('shows the backend message for a business reply failure', async () => {
+    await renderPanel({
+      acpInteractionSupported: true,
+      processingStatus: 'PROCESSING',
+      processingTurnId: 3,
+      pendingElicitations: [{
+        requestId: 'req-1', turnId: 3, mode: 'form', message: '选一个',
+        requestedSchema: SELECT_SCHEMA, status: 'PENDING', gmtCreate: '',
+      }],
+      turns: [{ id: 3, direction: 'INBOUND', content: '请给方案', status: 'PROCESSING' }],
+    });
+    server.use(
+      http.post(
+        '/api/workitems/:workitemId/clarification-conversations/:conversationId/elicitations/:requestId/reply',
+        () => HttpResponse.json(
+          {
+            success: false, code: '10403',
+            message: '只有原消息发送者或当前工单负责人可以回答这个问题。',
+            traceId: null, data: null,
+          },
+          { status: 403 },
+        ),
+      ),
+    );
+
+    fireEvent.click(await screen.findByTestId('elicitation-skip-req-1'));
+
+    expect(await screen.findByText('只有原消息发送者或当前工单负责人可以回答这个问题。')).toBeInTheDocument();
+    expect(screen.getByTestId('elicitation-skip-req-1')).toBeEnabled();
   });
 
   // 线上 bug：轮次取消把卡片结算成 CANCELED，但该 resolved 事件不落库，前端时间线仍当作 pending，

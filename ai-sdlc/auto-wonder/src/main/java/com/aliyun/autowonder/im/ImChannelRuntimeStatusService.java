@@ -121,8 +121,9 @@ public class ImChannelRuntimeStatusService {
     }
 
     private boolean isReady(PlatformImChannelConfigDO config) {
+        boolean requiresRobotCode = "DINGTALK".equals(config.getProvider());
         if (!hasText(config.getAppKey()) || !hasText(config.getCredentialRef())
-                || (!"FEISHU".equals(config.getProvider()) && !hasText(config.getRobotCode()))) {
+                || (requiresRobotCode && !hasText(config.getRobotCode()))) {
             return false;
         }
         try {

@@ -125,11 +125,13 @@ it('updates cached settings and password names without resetting drafts or refet
     expect(quota).toEqual({ maxCalls: 30000, maxTokens: null, concurrencyLimit: 1 });
     expect(body).toEqual({ items: [{ key: 'default_model', valueJson: '原始模型', secret: false }, { key: 'request_timeout_seconds', valueJson: '', secret: false }, { key: 'api_key', valueJson: 'synthetic-原文', secret: true }] });
 });
-it.each(['DINGTALK', 'FEISHU'])('keeps %s notification/system drafts and canonical preference keys across switches', async (provider) => {
+it.each(['DINGTALK', 'FEISHU', 'WECOM'])('keeps %s notification/system drafts and canonical preference keys across switches', async (provider) => {
     const user = localeUser();
     let reads = 0;
     let body!: { items: import('./api').NotifyPrefItem[] };
-    const key = provider === 'FEISHU' ? 'feishu' : 'dingtalk';
+    const key = provider === 'FEISHU' ? 'feishu' : provider === 'WECOM' ? 'wecom' : 'dingtalk';
+    const enabledLabel = provider === 'FEISHU' ? '启用飞书通知' : provider === 'WECOM' ? '启用企业微信通知' : '启用钉钉通知';
+    const enabledLabelEn = provider === 'FEISHU' ? 'Enable Feishu notifications' : provider === 'WECOM' ? 'Enable WeCom notifications' : 'Enable DingTalk notifications';
     server.use(http.get('/api/ai-usage/quota', () => ok({})), http.get('/api/ai-usage', () => ok([])), http.get('/api/settings/AI', () => ok([])), http.get('/api/platform/im-channels', () => ok([{ provider, selected: true, enabled: false }])), http.get('/api/notifications/prefs', () => ok([])), http.get('/api/settings/NOTIFY', () => {
         reads++;
         return ok([{ key: `${key}_enabled`, valueJson: 'true' }]);
@@ -142,11 +144,11 @@ it.each(['DINGTALK', 'FEISHU'])('keeps %s notification/system drafts and canonic
     }));
     mount(<SettingsPage />);
     await user.click(screen.getByRole('tab', { name: '通知配置' }));
-    const enabled = await screen.findByLabelText(provider === 'FEISHU' ? '启用飞书通知' : '启用钉钉通知');
+    const enabled = await screen.findByLabelText(enabledLabel);
     await user.clear(enabled);
     await user.type(enabled, 'false');
     await locale('en-US');
-    expect(screen.getByLabelText(provider === 'FEISHU' ? 'Enable Feishu notifications' : 'Enable DingTalk notifications')).toBe(enabled);
+    expect(screen.getByLabelText(enabledLabelEn)).toBe(enabled);
     expect(enabled).toHaveValue('false');
     const toggle = screen.getByRole('switch', { name: 'Work item assigned: In-app' });
     await user.click(toggle);
@@ -156,7 +158,7 @@ it.each(['DINGTALK', 'FEISHU'])('keeps %s notification/system drafts and canonic
     expect(reads).toBe(1);
     await user.click(screen.getByRole('button', { name: '保存通知配置' }));
     await waitFor(() => expect(body).toBeDefined());
-    expect(body.items[0]).toEqual({ type: 'WORKITEM_ASSIGNED', inApp: false, dingtalk: false, feishu: false });
+    expect(body.items[0]).toEqual({ type: 'WORKITEM_ASSIGNED', inApp: false, dingtalk: false, feishu: false, wecom: false });
     await user.click(screen.getByRole('tab', { name: '系统配置' }));
     const bucket = await screen.findByLabelText('产物 Bucket');
     await user.type(bucket, '-draft');

@@ -1,14 +1,20 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { message } from 'antd';
+import { Form, Modal, message } from 'antd';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { http, HttpResponse } from 'msw';
 import { server } from '@/test/mocks/server';
 import { useAuthStore } from '@/shared/auth/store';
+import { i18n } from '@/shared/i18n';
 import { ApiError } from '@/shared/types/common';
 import { StartDeliveryModal } from './StartDeliveryModal';
-import { writeClarificationPrefill } from '../clarification/prefill';
+import {
+  readClarificationPrefill,
+  readDeliveryPrefill,
+  writeClarificationPrefill,
+  writeDeliveryPrefill,
+} from '../clarification/prefill';
 
 const { mutateAsync } = vi.hoisted(() => ({ mutateAsync: vi.fn() }));
 
@@ -34,6 +40,7 @@ describe('StartDeliveryModal', () => {
   beforeEach(() => {
     window.localStorage.clear();
     mutateAsync.mockReset();
+    Modal.destroyAll();
   });
 
   it('keeps invalid delivery confirmation inline without assignment or closing', async () => {
@@ -76,8 +83,8 @@ describe('StartDeliveryModal', () => {
     expect(requestedAgentUrls.some((url) => url.includes('status=ONLINE'))).toBe(false);
   });
 
-  it('prefills from clarification localStorage for a fresh delivery', async () => {
-    writeClarificationPrefill('10000', { squadId: 1, agentId: 77 });
+  it('prefills from delivery localStorage for a fresh delivery', async () => {
+    writeDeliveryPrefill('10000', { squadId: 1, agentId: 77 });
     server.use(
       http.get('/api/squads', () =>
         HttpResponse.json({
@@ -101,10 +108,39 @@ describe('StartDeliveryModal', () => {
 
     renderModal(false, '10000');
     expect(await screen.findByText('交付小队')).toBeInTheDocument();
+    expect(await screen.findByText('Agent-77 (AW_FS_DEV)')).toBeInTheDocument();
+  });
+
+  it('ignores clarification localStorage for a fresh delivery', async () => {
+    writeClarificationPrefill('10000', { squadId: 1, agentId: 77 });
+    server.use(
+      http.get('/api/squads', () =>
+        HttpResponse.json({
+          success: true,
+          code: '0',
+          message: '',
+          traceId: null,
+          data: { list: [{ id: 1, name: '交付小队', description: '', memberCount: 1, gmtCreate: '' }], total: 1, pageNum: 1, pageSize: 100 },
+        }),
+      ),
+      http.get('/api/squads/:squadId/members', () =>
+        HttpResponse.json({
+          success: true,
+          code: '0',
+          message: '',
+          traceId: null,
+          data: [{ agentId: 77, agentName: 'Agent-77', roleCode: 'AW_FS_DEV' }],
+        }),
+      ),
+    );
+
+    renderModal(false, '10000');
+    expect(await screen.findByText('选择交付小队')).toBeInTheDocument();
+    expect(screen.queryByText('交付小队')).not.toBeInTheDocument();
   });
 
   it('does not prefill when reassigning an existing delivery', async () => {
-    writeClarificationPrefill('10000', { squadId: 1, agentId: 77 });
+    writeDeliveryPrefill('10000', { squadId: 1, agentId: 77 });
     server.use(
       http.get('/api/squads', () =>
         HttpResponse.json({
@@ -200,6 +236,30 @@ describe('StartDeliveryModal', () => {
     });
     expect(success).toHaveBeenCalledWith('已启动交付');
     expect(onClose).toHaveBeenCalled();
+    success.mockRestore();
+  });
+
+  it('clears only the delivery memory after a successful start', async () => {
+    useAuthStore.getState().setCurrentWorkspace({ id: 1, name: 'O', description: '' }, 'READ_WRITE');
+    mutateAsync.mockResolvedValue({ id: 10000 });
+    const success = vi.spyOn(message, 'success').mockImplementation(
+      () => undefined as unknown as ReturnType<typeof message.success>,
+    );
+    server.use(...squadHandlers);
+    writeDeliveryPrefill('10000', { squadId: 1, agentId: 77 });
+    writeClarificationPrefill('10000', { squadId: 9, agentId: 42 });
+
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <StartDeliveryModal open workitemId={10000} onClose={() => {}} />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByText('Agent-77 (AW_FS_DEV)')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: /启\s*动\s*交\s*付/ }));
+
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalled());
+    expect(readDeliveryPrefill('10000')).toBeNull();
+    expect(readClarificationPrefill('10000')).toMatchObject({ squadId: 9, agentId: 42 });
     success.mockRestore();
   });
 
@@ -340,6 +400,179 @@ describe('StartDeliveryModal', () => {
     success.mockRestore();
   });
 
+  function mockDeliveryDefaults(options: {
+    space: { squadId: number | null; agentId: number | null; valid?: boolean };
+    clarify?: { squadId: number | null; agentId: number | null };
+  }) {
+    server.use(
+      http.get('/api/workspaces/current/ai-defaults', () => HttpResponse.json({
+        success: true, code: '0', message: '', traceId: null,
+        data: {
+          owner: false,
+          clarify: {
+            defaultSquadId: options.clarify?.squadId ?? null,
+            defaultAgentId: options.clarify?.agentId ?? null,
+            autoSendFirstPrompt: true,
+            valid: true,
+          },
+          delivery: {
+            defaultSquadId: options.space.squadId,
+            defaultAgentId: options.space.agentId,
+            valid: options.space.valid ?? true,
+          },
+        },
+      })),
+      http.get('/api/squads', () =>
+        HttpResponse.json({
+          success: true, code: '0', message: '', traceId: null,
+          data: {
+            list: [
+              { id: 1, name: '交付小队', description: '', memberCount: 2, gmtCreate: '' },
+              { id: 2, name: '本地小队', description: '', memberCount: 1, gmtCreate: '' },
+              { id: 9, name: '澄清小队', description: '', memberCount: 1, gmtCreate: '' },
+            ],
+            total: 3,
+            pageNum: 1,
+            pageSize: 100,
+          },
+        })),
+      http.get('/api/squads/:squadId/members', ({ params }) => {
+        const id = String(params.squadId);
+        const members = id === '2'
+          ? [{ agentId: 88, agentName: 'Agent-88', roleCode: 'AW_FS_DEV', agentKind: 'STANDARD' }]
+          : id === '9'
+            ? [{ agentId: 42, agentName: 'Agent-42', roleCode: 'AW_FS_DEV', agentKind: 'STANDARD' }]
+            : [
+              { agentId: 77, agentName: 'Agent-77', roleCode: 'AW_FS_DEV', agentKind: 'STANDARD' },
+              { agentId: 9, agentName: 'Chief of Staff', roleCode: 'chief_of_staff', agentKind: 'PLATFORM' },
+            ];
+        return HttpResponse.json({ success: true, code: '0', message: '', traceId: null, data: members });
+      }),
+    );
+  }
+
+  it('prefills the delivery defaults independently from clarification defaults', async () => {
+    mockDeliveryDefaults({
+      space: { squadId: 1, agentId: 77 },
+      clarify: { squadId: 9, agentId: 42 },
+    });
+
+    renderModal();
+
+    expect(await screen.findByText('交付小队')).toBeInTheDocument();
+    expect(await screen.findByText('Agent-77 (AW_FS_DEV)')).toBeInTheDocument();
+    expect(screen.queryByText('澄清小队')).not.toBeInTheDocument();
+  });
+
+  it('applies the delivery default even when a clarification memory exists', async () => {
+    writeClarificationPrefill('10000', { squadId: 9, agentId: 42 });
+    mockDeliveryDefaults({ space: { squadId: 1, agentId: 77 } });
+
+    renderModal();
+
+    expect(await screen.findByText('交付小队')).toBeInTheDocument();
+    expect(await screen.findByText('Agent-77 (AW_FS_DEV)')).toBeInTheDocument();
+    expect(screen.queryByText('澄清小队')).not.toBeInTheDocument();
+  });
+
+  it('uses the delivery memory before the delivery default', async () => {
+    writeDeliveryPrefill('10000', { squadId: 2, agentId: 88 });
+    mockDeliveryDefaults({ space: { squadId: 1, agentId: 77 } });
+
+    renderModal();
+
+    expect(await screen.findByText('本地小队')).toBeInTheDocument();
+    expect(await screen.findByText('Agent-88 (AW_FS_DEV)')).toBeInTheDocument();
+    expect(screen.queryByText('交付小队')).not.toBeInTheDocument();
+  });
+
+  it('uses the local delivery override before the space delivery default', async () => {
+    window.localStorage.setItem('aw:delivery-defaults:local', JSON.stringify({
+      defaultSquadId: 2,
+      defaultAgentId: 88,
+    }));
+    mockDeliveryDefaults({ space: { squadId: 1, agentId: 77 } });
+
+    renderModal();
+
+    expect(await screen.findByText('本地小队')).toBeInTheDocument();
+    expect(await screen.findByText('Agent-88 (AW_FS_DEV)')).toBeInTheDocument();
+    expect(screen.queryByText('交付小队')).not.toBeInTheDocument();
+  });
+
+  it('skips a delivery default the server marked invalid without blocking the modal', async () => {
+    mockDeliveryDefaults({ space: { squadId: 1, agentId: 99, valid: false } });
+
+    renderModal();
+
+    expect(await screen.findByText('选择交付小队')).toBeInTheDocument();
+    expect(screen.queryByText('交付小队')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /启\s*动\s*交\s*付/ })).toBeInTheDocument();
+  });
+
+  it('falls back to the space delivery default when the local pair is invalid', async () => {
+    window.localStorage.setItem('aw:delivery-defaults:local', JSON.stringify({
+      defaultSquadId: 2,
+      defaultAgentId: 99,
+    }));
+    mockDeliveryDefaults({ space: { squadId: 1, agentId: 77 } });
+
+    renderModal();
+
+    expect(await screen.findByText('交付小队')).toBeInTheDocument();
+    expect(await screen.findByText('Agent-77 (AW_FS_DEV)')).toBeInTheDocument();
+    expect(screen.queryByText('本地小队')).not.toBeInTheDocument();
+  });
+
+  it('ignores stale local delivery defaults for the space owner', async () => {
+    window.localStorage.setItem('aw:delivery-defaults:local', JSON.stringify({
+      defaultSquadId: 2,
+      defaultAgentId: 88,
+    }));
+    mockDeliveryDefaults({ space: { squadId: 1, agentId: 77 } });
+    server.use(
+      http.get('/api/workspaces/current/ai-defaults', () => HttpResponse.json({
+        success: true, code: '0', message: '', traceId: null,
+        data: {
+          owner: true,
+          clarify: {
+            defaultSquadId: null, defaultAgentId: null, autoSendFirstPrompt: false, valid: true,
+          },
+          delivery: { defaultSquadId: 1, defaultAgentId: 77, valid: true },
+        },
+      })),
+    );
+
+    renderModal();
+
+    expect(await screen.findByText('交付小队')).toBeInTheDocument();
+    expect(await screen.findByText('Agent-77 (AW_FS_DEV)')).toBeInTheDocument();
+    expect(screen.queryByText('本地小队')).not.toBeInTheDocument();
+  });
+
+  it('does not use clarification defaults when delivery defaults are unset', async () => {
+    mockDeliveryDefaults({
+      space: { squadId: null, agentId: null },
+      clarify: { squadId: 1, agentId: 77 },
+    });
+
+    renderModal();
+
+    expect(await screen.findByText('选择交付小队')).toBeInTheDocument();
+    expect(screen.queryByText('交付小队')).not.toBeInTheDocument();
+  });
+
+  it('writes the picked pair into the delivery memory without touching clarification memory', async () => {
+    writeClarificationPrefill('10000', { squadId: 9, agentId: 42 });
+    server.use(...squadHandlers);
+
+    renderModal();
+    await pickSquadAndAgent();
+
+    expect(readDeliveryPrefill('10000')).toMatchObject({ squadId: 1, agentId: 77 });
+    expect(readClarificationPrefill('10000')).toMatchObject({ squadId: 9, agentId: 42 });
+  });
+
   it('allocates a fresh restart token per modal session for explicit new rounds', async () => {
     useAuthStore.getState().setCurrentWorkspace({ id: 1, name: 'O', description: '' }, 'READ_WRITE');
     mutateAsync.mockResolvedValue({ id: 10000 });
@@ -361,5 +594,200 @@ describe('StartDeliveryModal', () => {
 
     expect(tokens[0]).toEqual(expect.any(String));
     expect(tokens[1]).not.toBe(tokens[0]);
+  });
+
+  const sdlcSquadHandlers = [
+    http.get('/api/squads', () =>
+      HttpResponse.json({
+        success: true, code: '0', message: '', traceId: null,
+        data: { list: [{ id: 1, name: 'AW交付组', description: '', memberCount: 2, gmtCreate: '' }], total: 1, pageNum: 1, pageSize: 100 },
+      }),
+    ),
+    http.get('/api/squads/:squadId/members', () =>
+      HttpResponse.json({
+        success: true, code: '0', message: '', traceId: null,
+        data: [
+          { agentId: 77, agentName: 'Agent-77', roleCode: 'AW_FS_DEV', sdlcId: 30004, sdlcName: '标准普通开发' },
+          { agentId: 88, agentName: 'Agent-88', roleCode: 'AW_FS_DEV', sdlcId: 30003, sdlcName: '需求澄清流程' },
+        ],
+      }),
+    ),
+  ];
+
+  function renderReassign(close = () => {}) {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <StartDeliveryModal
+          open
+          workitemId={10000}
+          hasSdlc
+          currentAgentId={88}
+          currentSdlcId={30003}
+          onClose={close}
+        />
+      </QueryClientProvider>,
+    );
+  }
+
+  it('shows the target flow and first-step restart hint for another agent', async () => {
+    server.use(...sdlcSquadHandlers);
+    renderReassign();
+    await pickSquadAndAgent();
+
+    expect(await screen.findByText('将切换到「标准普通开发」并从首步重新开始交付')).toBeInTheDocument();
+    expect(screen.queryByLabelText('SDLC 流程')).not.toBeInTheDocument();
+  });
+
+  it('localizes the switch hint without remounting the modal', async () => {
+    server.use(...sdlcSquadHandlers);
+    renderReassign();
+    await pickSquadAndAgent();
+
+    await act(async () => { await i18n.changeLanguage('en-US'); });
+    try {
+      expect(await screen.findByText('Switches to "标准普通开发" and restarts delivery from its first step')).toBeInTheDocument();
+    } finally {
+      await act(async () => { await i18n.changeLanguage('zh-CN'); });
+    }
+  });
+
+  it('requires confirmation before switching to a different flow', async () => {
+    useAuthStore.getState().setCurrentWorkspace({ id: 1, name: 'O', description: '' }, 'READ_WRITE');
+    mutateAsync.mockResolvedValue({ id: 10000 });
+    const success = vi.spyOn(message, 'success').mockImplementation(
+      () => undefined as unknown as ReturnType<typeof message.success>,
+    );
+    server.use(...sdlcSquadHandlers);
+    renderReassign();
+    await pickSquadAndAgent();
+    expect(await screen.findByText('将切换到「标准普通开发」并从首步重新开始交付')).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: /重\s*新\s*指\s*派/ }));
+    const confirmTitle = (await screen.findAllByText('切换交付流程？'))[0];
+    const confirmDialog = confirmTitle.closest('.ant-modal') as HTMLElement;
+    await userEvent.click(within(confirmDialog).getByRole('button', { name: /^取\s*消$/ }));
+    await waitFor(() => expect(screen.queryAllByText('切换交付流程？')).toHaveLength(0));
+    expect(mutateAsync).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByRole('button', { name: /重\s*新\s*指\s*派/ }));
+    await screen.findAllByText('切换交付流程？');
+    await userEvent.click(screen.getByRole('button', { name: /确\s*认\s*切\s*换/ }));
+
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(1));
+    const body = mutateAsync.mock.calls[0][0];
+    expect(body).toMatchObject({ assigneeRef: 77, squadId: 1 });
+    expect(body).not.toHaveProperty('sdlcId');
+    success.mockRestore();
+  });
+
+  it('reports the new flow in the success message after a switch', async () => {
+    useAuthStore.getState().setCurrentWorkspace({ id: 1, name: 'O', description: '' }, 'READ_WRITE');
+    mutateAsync.mockResolvedValue({ id: 10000 });
+    const success = vi.spyOn(message, 'success').mockImplementation(
+      () => undefined as unknown as ReturnType<typeof message.success>,
+    );
+    server.use(...sdlcSquadHandlers);
+    renderReassign();
+    await pickSquadAndAgent();
+
+    await userEvent.click(screen.getByRole('button', { name: /重\s*新\s*指\s*派/ }));
+    await screen.findAllByText('切换交付流程？');
+    await userEvent.click(screen.getByRole('button', { name: /确\s*认\s*切\s*换/ }));
+
+    await waitFor(() => expect(success).toHaveBeenCalledWith('已重新指派，正在按新流程重启交付'));
+    success.mockRestore();
+  });
+
+  it('treats the same agent as an unchanged flow without confirmation', async () => {
+    useAuthStore.getState().setCurrentWorkspace({ id: 1, name: 'O', description: '' }, 'READ_WRITE');
+    mutateAsync.mockResolvedValue({ id: 10000 });
+    const success = vi.spyOn(message, 'success').mockImplementation(
+      () => undefined as unknown as ReturnType<typeof message.success>,
+    );
+    server.use(...sdlcSquadHandlers);
+    renderReassign();
+    await userEvent.click(screen.getByLabelText('小队'));
+    await userEvent.click(await screen.findByText('AW交付组'));
+    await userEvent.click(await screen.findByLabelText('首步执行 Agent'));
+    await userEvent.click(await screen.findByText('Agent-88 (AW_FS_DEV)'));
+
+    expect(await screen.findByText('同一数字人，流程不变')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: /重\s*新\s*指\s*派/ }));
+
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(1));
+    expect(screen.queryAllByText('切换交付流程？')).toHaveLength(0);
+    success.mockRestore();
+  });
+
+  it('explains the default-flow fallback when the selected member has no flow', async () => {
+    server.use(
+      http.get('/api/squads', () =>
+        HttpResponse.json({
+          success: true, code: '0', message: '', traceId: null,
+          data: { list: [{ id: 1, name: 'AW交付组', description: '', memberCount: 1, gmtCreate: '' }], total: 1, pageNum: 1, pageSize: 100 },
+        }),
+      ),
+      http.get('/api/squads/:squadId/members', () =>
+        HttpResponse.json({
+          success: true, code: '0', message: '', traceId: null,
+          data: [{ agentId: 77, agentName: 'Agent-77', roleCode: 'AW_FS_DEV' }],
+        }),
+      ),
+    );
+    renderReassign();
+    await pickSquadAndAgent();
+
+    expect(await screen.findByText('目标数字人未配置交付流程，将按平台默认流程处理；无默认流程时沿用当前流程')).toBeInTheDocument();
+    expect(screen.queryByText(/将切换到/)).not.toBeInTheDocument();
+  });
+
+  it('does not show reassign hints for a first delivery', async () => {
+    server.use(...sdlcSquadHandlers);
+    renderModal();
+    await pickSquadAndAgent();
+
+    expect(screen.queryByText(/将切换到/)).not.toBeInTheDocument();
+    expect(screen.queryByText('同一数字人，流程不变')).not.toBeInTheDocument();
+  });
+
+  it('keeps submission working without a flow name when members fail to load', async () => {
+    useAuthStore.getState().setCurrentWorkspace({ id: 1, name: 'O', description: '' }, 'READ_WRITE');
+    mutateAsync.mockResolvedValue({ id: 10000 });
+    let memberRequests = 0;
+    server.use(
+      http.get('/api/squads', () =>
+        HttpResponse.json({
+          success: true, code: '0', message: '', traceId: null,
+          data: { list: [{ id: 1, name: 'AW交付组', description: '', memberCount: 1, gmtCreate: '' }], total: 1, pageNum: 1, pageSize: 100 },
+        }),
+      ),
+      http.get('/api/squads/:squadId/members', () => {
+        memberRequests += 1;
+        return HttpResponse.json({ success: false, code: '50000', message: 'boom', traceId: null, data: null }, { status: 500 });
+      }),
+    );
+    const useForm = Form.useForm;
+    let form: ReturnType<typeof Form.useForm>[0];
+    const formSpy = vi.spyOn(Form, 'useForm').mockImplementation((instance) => {
+      const result = useForm(instance);
+      form = result[0];
+      return result;
+    });
+    renderReassign();
+
+    await screen.findByLabelText('小队');
+    await act(async () => { form!.setFieldsValue({ squadId: 1, agentId: 77 }); });
+    await waitFor(() => expect(memberRequests).toBe(1));
+    expect(screen.queryByText(/将切换到/)).not.toBeInTheDocument();
+    const submit = screen.getByRole('button', { name: /重\s*新\s*指\s*派/ });
+    expect(submit).toBeEnabled();
+
+    await userEvent.click(submit);
+
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ assigneeRef: 77, squadId: 1 }),
+    ));
+    formSpy.mockRestore();
   });
 });

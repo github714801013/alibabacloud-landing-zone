@@ -5,8 +5,8 @@ import com.aliyun.autowonder.common.error.AlreadyLoggedException;
 import com.aliyun.autowonder.common.error.BizException;
 import com.aliyun.autowonder.common.error.ErrorCode;
 import com.aliyun.autowonder.im.dto.UserImIdentityVO;
+import com.aliyun.autowonder.im.notification.ImNotificationFormatter;
 import com.aliyun.autowonder.user.UserSettingService;
-import com.aliyun.autowonder.common.i18n.SystemMessages;
 import java.util.Locale;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -200,14 +200,12 @@ public class UserImIdentityService {
                 brand = PlatformBrandingService.DEFAULT_PLATFORM_NAME;
             }
             Locale locale = userSettingService == null ? Locale.CHINA : userSettingService.recipientLocale(userId);
-            String title = SystemMessages.render("im.test.success_title", new Object[]{brand},
-                    brand + " 协作通知测试成功", locale);
+            String title = ImNotificationFormatter.testTitle(brand, locale);
             providerRegistry.require(normalizedProvider).send(new ImSendCommand(
                     normalizedProvider,
                     identity.getExternalUserId(),
                     title,
-                    SystemMessages.render("im.test.success_body", new Object[]{title},
-                            "## " + title + "\n\n你的 IM 协作通知配置可正常使用。", locale)));
+                    ImNotificationFormatter.testMarkdown(title, locale)));
             log.info("IM notification test delivered provider={} userId={} recipientFingerprint={}",
                     normalizedProvider, userId, recipientFingerprint);
         } catch (AlreadyLoggedException e) {

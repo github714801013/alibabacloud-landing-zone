@@ -219,6 +219,8 @@ class ImNotificationWorkerSchedulerIsolationTest {
                     .thenReturn(new ImNotificationMessageContext(
                             "测试工作空间", "待处理", "https://test.example.com", 7L));
             when(provider.provider()).thenReturn("DINGTALK");
+            when(provider.canDeliverNow()).thenReturn(true);
+            when(channelConfigService.selectedProvider()).thenReturn("DINGTALK");
             worker = new ImNotificationWorker(
                     queue,
                     new ImNotificationFormatter(),

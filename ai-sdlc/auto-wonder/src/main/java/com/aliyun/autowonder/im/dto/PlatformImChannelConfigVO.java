@@ -17,4 +17,5 @@ public class PlatformImChannelConfigVO {
     private String baseUrl;
     private boolean secretConfigured;
     private boolean ready;
+    private String connectionStatus;
 }

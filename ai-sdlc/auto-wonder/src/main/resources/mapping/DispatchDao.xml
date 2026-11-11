@@ -444,7 +444,6 @@
     <update id="returnDispatchedToPending">
         UPDATE dispatch
         SET status = 'PENDING',
-            executor_id = NULL,
             package_oss_ref = NULL,
             version = version + 1,
             modifier_id = #{modifierId}
@@ -459,7 +458,6 @@
     <update id="returnPackagingToPending">
         UPDATE dispatch
         SET status = 'PENDING',
-            executor_id = NULL,
             package_oss_ref = NULL,
             version = version + 1,
             modifier_id = #{modifierId}
@@ -473,7 +471,6 @@
     <update id="returnOwnedActiveToPending">
         UPDATE dispatch
         SET status = 'PENDING',
-            executor_id = NULL,
             package_oss_ref = NULL,
             result_summary = NULL,
             error = NULL,

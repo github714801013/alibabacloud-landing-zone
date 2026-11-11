@@ -13,6 +13,7 @@ interface Props {
 export function GroupIdGuide({ provider }: Props) {
   const { t } = useTranslation('integration');
   const feishu = provider === 'FEISHU';
+  const wecom = provider === 'WECOM';
   return (
     <Alert
       type="info"
@@ -26,7 +27,7 @@ export function GroupIdGuide({ provider }: Props) {
           <span>{t('groupIdGuideStepInfo', { command: GROUP_INFO_COMMAND })}</span>
           <span>{t('groupIdGuideStepCopy')}</span>
           <span style={{ marginTop: 4 }}>
-            {feishu ? t('groupIdGuideFeishu') : t('groupIdGuideDingTalk')}
+            {feishu ? t('groupIdGuideFeishu') : wecom ? t('groupIdGuideWecom') : t('groupIdGuideDingTalk')}
           </span>
           <span>{t('groupIdGuideUnresponsive')}</span>
         </div>

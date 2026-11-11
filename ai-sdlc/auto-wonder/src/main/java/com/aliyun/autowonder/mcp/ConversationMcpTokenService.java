@@ -8,6 +8,7 @@ import com.aliyun.autowonder.conversation.AgentConversationDO;
 import com.aliyun.autowonder.conversation.AgentConversationDao;
 import com.aliyun.autowonder.conversation.PlatformConversationChannel;
 import com.aliyun.autowonder.conversation.PlatformIntelligenceChannelSink;
+import com.aliyun.autowonder.integration.wecom.WecomDelegationGuard;
 import com.aliyun.autowonder.squad.workflow.SquadWorkflowChannelSink;
 import io.jsonwebtoken.JwtException;
 import org.slf4j.Logger;
@@ -38,6 +39,8 @@ public class ConversationMcpTokenService {
     private final UserDao userDao;
     @Autowired(required = false)
     private ConversationCredentialAuditService executionAudit;
+    @Autowired(required = false)
+    private WecomDelegationGuard wecomDelegation;
 
     public ConversationMcpTokenService(JwtService jwtService, AgentConversationDao conversationDao) {
         this(jwtService, conversationDao, null, null);
@@ -115,6 +118,10 @@ public class ConversationMcpTokenService {
                         || !Objects.equals(current.getConversationId(), claims.conversationId())) {
                     throw new IllegalArgumentException("legacy clarification turn is unavailable");
                 }
+            }
+            if (wecomDelegation != null) {
+                // 企微群令牌只代表绑定创建人；成员资格、绑定与原路由在每次调用时复核。
+                wecomDelegation.requireCurrent(conversation, claims.userId());
             }
             return new McpAccessTokenService.Principal(
                     claims.tenantId(), claims.userId(), claims.conversationId(),

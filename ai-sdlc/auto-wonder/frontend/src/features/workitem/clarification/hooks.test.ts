@@ -20,6 +20,7 @@ import {
   isClarificationNonRetryableError,
   CLARIFICATION_PROCESSING_POLL_MS,
   CLARIFICATION_QUERY_MAX_RETRY,
+  MAX_STREAMED_EVENTS,
   type StreamedEvent,
 } from './hooks';
 import { ApiError, ErrorCodes } from '@/shared/types/common';
@@ -354,6 +355,43 @@ describe('useClarificationEvents', () => {
 
     expect(result.current.streamedEvents).toHaveLength(1);
     expect(result.current.streamedEvents[0].payload?.content).toBe('first');
+  });
+
+  it('caps accumulated streamed events to the latest window', () => {
+    const { result } = renderHook(() => useClarificationEvents('100', 1, 10), { wrapper });
+    act(() => {
+      for (let seq = 1; seq <= MAX_STREAMED_EVENTS + 1; seq += 1) {
+        emitTurnEvent(capturedCallback!, makeEvent(10, seq, 'text', `chunk-${seq}`));
+      }
+    });
+    expect(result.current.streamedEvents).toHaveLength(MAX_STREAMED_EVENTS);
+    expect(result.current.streamedEvents[0].eventSeq).toBe(2);
+    expect(result.current.streamedEvents[MAX_STREAMED_EVENTS - 1].eventSeq).toBe(MAX_STREAMED_EVENTS + 1);
+  });
+
+  it('keeps every event when the count equals the window', () => {
+    const { result } = renderHook(() => useClarificationEvents('100', 1, 10), { wrapper });
+    act(() => {
+      for (let seq = 1; seq <= MAX_STREAMED_EVENTS; seq += 1) {
+        emitTurnEvent(capturedCallback!, makeEvent(10, seq, 'text', `chunk-${seq}`));
+      }
+    });
+    expect(result.current.streamedEvents).toHaveLength(MAX_STREAMED_EVENTS);
+    expect(result.current.streamedEvents[0].eventSeq).toBe(1);
+  });
+
+  it('resetStreamedEvents clears the overflowed window', () => {
+    const { result } = renderHook(() => useClarificationEvents('100', 1, 10), { wrapper });
+    act(() => {
+      for (let seq = 1; seq <= MAX_STREAMED_EVENTS + 1; seq += 1) {
+        emitTurnEvent(capturedCallback!, makeEvent(10, seq, 'text', `chunk-${seq}`));
+      }
+    });
+    act(() => {
+      result.current.resetStreamedEvents();
+    });
+    expect(result.current.streamedEvents).toHaveLength(0);
+    expect(result.current.streamedText).toBe('');
   });
 
   it('keeps different attempts with the same sequence in realtime', () => {

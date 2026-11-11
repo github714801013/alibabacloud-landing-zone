@@ -8,6 +8,7 @@ import com.aliyun.autowonder.common.error.ErrorCode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -59,9 +60,16 @@ public class ConversationElicitationService {
     /** 用 setter 注入：ConversationTurnEventService 也持有本服务，构造器注入会成环。 */
     private ConversationBrowserEventPublisher browserEventPublisher;
     private ConversationAnswerDeliveryService answerDeliveryService;
+    private ClarificationAnswerActorPolicy answerActorPolicy;
+    private ApplicationEventPublisher events;
     private long expiryCursor;
     @Autowired(required = false)
     public void setAnswerDeliveryService(ConversationAnswerDeliveryService service) { this.answerDeliveryService=service; }
+
+    @Autowired(required = false)
+    public void setAnswerActorPolicy(ClarificationAnswerActorPolicy answerActorPolicy) {
+        this.answerActorPolicy = answerActorPolicy;
+    }
 
     public ConversationElicitationService(AgentConversationElicitationDao elicitationDao,
             AgentConversationDao convDao, ConversationTransport transport,
@@ -77,6 +85,11 @@ public class ConversationElicitationService {
     public void setBrowserEventPublisher(
             ConversationBrowserEventPublisher browserEventPublisher) {
         this.browserEventPublisher = browserEventPublisher;
+    }
+
+    @Autowired(required = false)
+    public void setApplicationEventPublisher(ApplicationEventPublisher events) {
+        this.events = events;
     }
 
     /**
@@ -133,10 +146,12 @@ public class ConversationElicitationService {
         JSONObject requestedSchema = data.getJSONObject("requestedSchema");
         record.setSchemaJson(requestedSchema == null ? null : requestedSchema.toJSONString());
         record.setStatus(STATUS_PENDING);
+        AgentConversationDO conv = convDao.findById(tenantId, conversationId);
+        Long submittedUserId = null;
         {
             AgentConversationTurnDO turn = turnDao.findByConversationTurnForUpdate(tenantId, conversationId, turnId);
+            if (turn != null) submittedUserId = turn.getSubmittedUserId();
             if (AgentConversationService.questionExpiryStop(turn) != null) record.setStatus(STATUS_CANCELED);
-            AgentConversationDO conv = convDao.findById(tenantId, conversationId);
             if (turn != null && turn.getDispatchAttempt() != null && turn.getDispatchAttempt() > 0
                     && conv != null && conv.getExecutorId() != null) {
                 if (data.getIntValue("answerProtocolVersion") == 1) record.setAnswerProtocolVersion(1);
@@ -146,6 +161,14 @@ public class ConversationElicitationService {
         }
         // 幂等靠 uk_conv_request 的 INSERT IGNORE，不在热路径上多一次查询。
         int inserted = elicitationDao.insertIfAbsent(record);
+        if (inserted == 1 && STATUS_PENDING.equals(record.getStatus())
+                && conv != null && events != null
+                && WorkitemClarificationConversationService.CHANNEL.equals(conv.getChannel())
+                && WorkitemClarificationConversationService.BIZ_REF_TYPE.equals(conv.getBizRefType())
+                && conv.getBizRefId() != null) {
+            events.publishEvent(new WorkitemClarificationQuestionOpened(tenantId, conv.getBizRefId(),
+                    conversationId, conv.getAgentId(), turnId, submittedUserId, requestId, record.getMessage()));
+        }
         if (STATUS_CANCELED.equals(record.getStatus())) {
             boolean settled = inserted == 1 || elicitationDao.settleIfPending(tenantId, conversationId,
                     requestId, STATUS_CANCELED, null) == 1;
@@ -192,9 +215,11 @@ public class ConversationElicitationService {
         }
         AgentConversationTurnDO origin = turnDao.findByConversationTurn(tenantId, conversationId, record.getTurnId());
         if (origin != null && origin.getSubmittedUserId() != null
-                && !origin.getSubmittedUserId().equals(respondingUserId)) {
+                && !origin.getSubmittedUserId().equals(respondingUserId)
+                && (answerActorPolicy == null
+                        || !answerActorPolicy.mayAnswer(tenantId, conversationId, respondingUserId))) {
             throw BizException.keyed(ErrorCode.NO_PERMISSION, "conversation.actor_reply_forbidden", null,
-                    "only the original message sender may answer this question");
+                    "only the original message sender or the current work item owner may answer this question");
         }
         if (Integer.valueOf(1).equals(record.getAnswerProtocolVersion()) && answerDeliveryService != null) {
             String normalized = normalizeReply(record.getSchemaJson(), action, answerJson);
@@ -501,4 +526,8 @@ public class ConversationElicitationService {
         }
         return message.substring(0, MAX_MESSAGE_LENGTH);
     }
+
+    /** 工单需求澄清对话中出现待人工回答的问题，通知监听器据此推送待决策提醒。 */
+    public record WorkitemClarificationQuestionOpened(long tenantId, long workitemId, long conversationId,
+            Long agentId, long turnId, Long submittedUserId, String requestId, String message) {}
 }

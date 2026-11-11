@@ -101,6 +101,7 @@ public class NotificationController {
             vo.setInApp(p.getInApp() != null && p.getInApp() == 1);
             vo.setDingtalk("DINGTALK".equals(imConfigs.selectedProvider()) && Integer.valueOf(1).equals(p.getDingtalk()));
             vo.setFeishu("FEISHU".equals(imConfigs.selectedProvider()) && Integer.valueOf(1).equals(p.getFeishu()));
+            vo.setWecom("WECOM".equals(imConfigs.selectedProvider()) && Integer.valueOf(1).equals(p.getWecom()));
             result.add(vo);
         }
         return Result.ok(result);
@@ -116,6 +117,7 @@ public class NotificationController {
         for (UpdatePrefRequest.PrefItem item : req.getItems()) {
             if (item.isDingtalk()) imConfigs.requireSelected("DINGTALK");
             if (item.isFeishu()) imConfigs.requireSelected("FEISHU");
+            if (item.isWecom()) imConfigs.requireSelected("WECOM");
         }
         for (UpdatePrefRequest.PrefItem item : req.getItems()) {
             NotifyPrefDO existing = prefDao.findByUserAndType(tenantId, userId, item.getType());
@@ -127,9 +129,11 @@ public class NotificationController {
                 pref.setInApp(item.isInApp() ? 1 : 0);
                 pref.setDingtalk(item.isDingtalk() ? 1 : 0);
                 pref.setFeishu(item.isFeishu() ? 1 : 0);
+                pref.setWecom(item.isWecom() ? 1 : 0);
                 prefDao.insert(pref);
             } else {
-                prefDao.update(existing.getId(), item.isInApp() ? 1 : 0, item.isDingtalk() ? 1 : 0, item.isFeishu() ? 1 : 0);
+                prefDao.update(existing.getId(), item.isInApp() ? 1 : 0, item.isDingtalk() ? 1 : 0,
+                        item.isFeishu() ? 1 : 0, item.isWecom() ? 1 : 0);
             }
         }
         return Result.ok(null);

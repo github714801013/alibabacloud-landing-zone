@@ -30,6 +30,7 @@ function mockChannelList(channels: unknown[]) {
     http.get('/api/platform/im-channels', () => HttpResponse.json({ ...emptyResult, data: channels })),
     http.get('/api/integrations/dingtalk/bindings', () => HttpResponse.json(emptyResult)),
     http.get('/api/integrations/feishu/bindings', () => HttpResponse.json(emptyResult)),
+    http.get('/api/integrations/wecom/bindings', () => HttpResponse.json(emptyResult)),
     http.get('/api/agents', () => HttpResponse.json(emptyResult)),
     http.get('/api/integrations/channels/group-config', () => HttpResponse.json({
       ...emptyResult,
@@ -55,18 +56,22 @@ function mockGroupConfig(overrides: Record<string, unknown>) {
 }
 
 describe('ChannelIntegrationPage', () => {
-  it.each(['DINGTALK', 'FEISHU'])('only exposes the platform-selected %s channel', async (provider) => {
+  it.each([
+    ['DINGTALK', '钉钉', /新建绑定/],
+    ['FEISHU', '飞书', /新建飞书绑定/],
+    ['WECOM', '企业微信', /新建企业微信绑定/],
+  ] as const)('only exposes the platform-selected %s channel', async (provider, label, newButton) => {
     mockChannelList([{ provider, selected: true, enabled: true }]);
     mockSelection(provider);
     renderPage();
-    const label = provider === 'FEISHU' ? '飞书' : '钉钉';
-    const other = provider === 'FEISHU' ? '钉钉' : '飞书';
     expect(await screen.findByText(`${label}机器人绑定`)).toBeInTheDocument();
-    expect(screen.queryByText(`${other}机器人绑定`)).not.toBeInTheDocument();
+    for (const [otherProvider, otherLabel] of [['DINGTALK', '钉钉'], ['FEISHU', '飞书'], ['WECOM', '企业微信']]) {
+      if (otherProvider !== provider) {
+        expect(screen.queryByText(`${otherLabel}机器人绑定`)).not.toBeInTheDocument();
+      }
+    }
     expect(screen.queryByRole('tab')).not.toBeInTheDocument();
-    expect(
-      await screen.findByRole('button', { name: provider === 'FEISHU' ? /新建飞书绑定/ : /新建绑定/ }),
-    ).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: newButton })).toBeInTheDocument();
   });
 
   it('prefers the persisted selection over a stale channel list', async () => {

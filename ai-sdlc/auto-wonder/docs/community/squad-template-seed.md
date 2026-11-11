@@ -2,7 +2,7 @@
 
 ## Scope
 
-Community installations seed four system `squad_template` rows from
+Community installations seed six system `squad_template` rows from
 `docs/autowonder-community-templates.sql`:
 
 1. `独立开发者` with one developer.
@@ -10,11 +10,20 @@ Community installations seed four system `squad_template` rows from
 3. `标准研发交付小队` with developer, reviewer, and tester.
 4. `全链路研发协作小队` with requirement clarification, project management,
    development, review, testing, conflict resolution, and DBA roles.
+5. `标准自动化交付` with development, code review, test-and-deployment,
+   requirement clarification, and project management roles.
+6. `快速交付` with a fast full-stack developer and a fast deployment engineer.
 
-The first three templates are community-safe exports of the verified development
-templates. The seven-role template is based on the verified AutoWonder
-self-iteration team but contains no project, organization, internal domain,
-database endpoint, credential, or source-system identity.
+The squad composition of the first four templates — agent counts and role codes —
+is unchanged. Their development, code-review, and testing roles carry the
+harness-configuration Skill's agent content and SDLC verbatim, so a flow defined
+in more than one place has a single authority; the remaining roles (requirement
+clarification, project management, conflict resolution, DBA) keep the community
+exports. Templates 5 and 6 are exported from the same Skill, and the two roles
+whose harness definition carries no SDLC reuse the requirement-clarification and
+project-management SDLCs from template 4. No template contains a project,
+organization, internal domain, database endpoint, credential, or source-system
+identity.
 
 ## Data Contract
 
@@ -27,9 +36,12 @@ database endpoint, credential, or source-system identity.
   clarification, project management, conflict resolution, and DBA are invoked
   only when needed and return control to a human where their risk boundary
   requires it.
-- External integrations use only `{{SOURCE_REPOSITORY}}`, `{{CODE_PLATFORM}}`,
-  `{{DEPLOYMENT_PLATFORM}}`, `{{DATABASE_HOST}}`, `{{DATABASE_NAME}}`, and
-  `{{DATABASE_USER_ENV}}` placeholders.
+- External integrations use only `{{SOURCE_REPOSITORY}}`,
+  `{{COLLABORATION_PLATFORM}}`, `{{DEFAULT_BRANCH}}`, `{{DEPLOYMENT_PLATFORM}}`,
+  `{{DATABASE_HOST}}`, `{{DATABASE_NAME}}`, `{{DATABASE_PASSWORD_ENV}}`,
+  `{{DATABASE_PORT}}`, `{{DATABASE_USER}}`, and `{{PROJECT_NAME}}` placeholders.
+  The harness Skill's flows name the repository, branch, and review request in
+  prose instead, so the seed no longer parameterises a code platform.
 - Template application retains the existing behavior of granting generated
   agents write access to the organization's repositories.
 
@@ -49,15 +61,15 @@ them for the JSON parser. The seed removes `NO_BACKSLASH_ESCAPES` only in its ow
 session and restores the previous mode; deployment must not change global
 `sql_mode` to import the templates.
 
-The database phase completes only after the schema postcheck and all four named
+The database phase completes only after the schema postcheck and all six named
 system templates are present, active, and valid JSON. Missing artifacts, checksum
 failure, SQL failure, invalid content, or leaked environment-specific data stops
 the phase without marking it initialized.
 
 ## Verification
 
-Automated contracts parse all four payloads, assert agent counts of 1, 2, 3, and
-7, validate unique role codes and non-empty SDLC steps, reject internal or secret
-values, and verify build, transfer, import order, resume behavior, and database
-postconditions. Full backend, frontend, and deployment Skill gates run before
+Automated contracts parse all six payloads, assert agent counts of 1, 2, 3, 7, 5,
+and 2, validate unique role codes and non-empty SDLC steps, reject internal or
+secret values, and verify build, transfer, import order, resume behavior, and
+database postconditions. Full backend, frontend, and deployment Skill gates run before
 Community and GitHub branches are pushed.

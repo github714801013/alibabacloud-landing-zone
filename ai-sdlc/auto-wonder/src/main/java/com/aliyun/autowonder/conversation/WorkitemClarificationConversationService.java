@@ -39,6 +39,13 @@ public class WorkitemClarificationConversationService {
     private final ConversationExecutorRouter executorRouter;
     private final ClarificationAttachmentService attachmentService;
 
+    private ConversationAdmissionService admissionService;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setAdmissionService(ConversationAdmissionService admissionService) {
+        this.admissionService = admissionService;
+    }
+
     public WorkitemClarificationConversationService(AgentConversationDao convDao,
             AgentConversationTurnDao turnDao, AgentConversationService conversationService,
             AgentDao agentDao,
@@ -198,8 +205,12 @@ public class WorkitemClarificationConversationService {
         if (agent == null) {
             throw new KeyedIllegalArgumentException("conversation.agent_not_found", null, "agent not found");
         }
-        Long executorId = executorRouter.select(tenantId, agentId,
-                requireOnlineVersion(agent), null);
+        Long onlineVersionId = requireOnlineVersion(agent);
+        Long executorId = admissionService == null ? null
+                : admissionService.selectNewConversation(tenantId, agentId, onlineVersionId, false);
+        if (executorId == null) {
+            executorId = executorRouter.select(tenantId, agentId, onlineVersionId, null);
+        }
 
         AgentConversationDO conv = new AgentConversationDO();
         conv.setTenantId(tenantId);
@@ -213,6 +224,9 @@ public class WorkitemClarificationConversationService {
         conv.setStatus("ACTIVE");
         conv.setLastTurnAt(new Date());
         convDao.insert(conv);
+        if (executorId != null && admissionService != null) {
+            admissionService.recordBinding(tenantId, agentId, executorId);
+        }
 
         return toVO(conv, List.of());
     }
@@ -221,7 +235,7 @@ public class WorkitemClarificationConversationService {
     public void submitTurn(Long tenantId, Long workitemId, Long conversationId, Long userId,
             String content, String clientMessageId, List<Long> attachmentIds) {
         if (userId == null || userId <= 0) {
-            throw new BizException(ErrorCode.PARAM_INVALID);
+            throw new BizException(ErrorCode.UNAUTHORIZED);
         }
         AgentConversationDO conv = convDao.findById(tenantId, conversationId);
         if (conv == null) {
@@ -263,14 +277,28 @@ public class WorkitemClarificationConversationService {
             return;
         }
         AgentDO agent = agentDao.findById(conv.getAgentId());
-        Long executorId = executorRouter.select(tenantId, conv.getAgentId(),
-                requireOnlineVersion(agent), conv.getExecutorId());
-        if (executorId == null && !executorRouter.canQueueOnOwner(tenantId, conv.getAgentId(),
-                requireOnlineVersion(agent), conv.getExecutorId(), false)) {
-            throw new BizException(ErrorCode.CLARIFICATION_EXECUTOR_OFFLINE);
+        Long executorId;
+        if (conv.getExecutorId() != null) {
+            // 会话硬绑自身执行器：在线但无剩余容量时入队，离线明确报错，不回落其他机器。
+            executorId = executorRouter.selectStrict(tenantId, conv.getAgentId(),
+                    requireOnlineVersion(agent), conv.getExecutorId());
+            if (executorId == null && !executorRouter.canQueueOnOwner(tenantId, conv.getAgentId(),
+                    requireOnlineVersion(agent), conv.getExecutorId(), false)) {
+                throw new BizException(ErrorCode.CLARIFICATION_EXECUTOR_OFFLINE);
+            }
+        } else {
+            executorId = executorRouter.select(tenantId, conv.getAgentId(),
+                    requireOnlineVersion(agent), null);
+            if (executorId == null) {
+                throw new BizException(ErrorCode.CLARIFICATION_EXECUTOR_OFFLINE);
+            }
         }
         if (executorId != null && !executorId.equals(conv.getExecutorId())) {
+            boolean firstBinding = conv.getExecutorId() == null;
             convDao.updateExecutor(tenantId, conversationId, executorId);
+            if (firstBinding && admissionService != null) {
+                admissionService.recordBinding(tenantId, conv.getAgentId(), executorId);
+            }
         }
         List<Long> bindableIds = attachmentService.requireBindableIds(
                 tenantId, conversationId, userId, attachmentIds);

@@ -6,6 +6,7 @@ import com.aliyun.autowonder.agent.AgentSkillDao;
 import com.aliyun.autowonder.agent.ChiefEffectiveConfigResolver;
 import com.aliyun.autowonder.agent.PlatformAgentSeeder;
 import com.aliyun.autowonder.dispatch.PackageContextAssembler;
+import com.aliyun.autowonder.integration.wecom.WecomDelegationGuard;
 import com.aliyun.autowonder.mcp.ConversationMcpTokenService;
 import com.aliyun.autowonder.skill.SkillDao;
 import com.aliyun.autowonder.security.crypto.SecretCrypto;
@@ -28,6 +29,8 @@ public class ConversationCapabilityService {
     private final ConversationMcpTokenService tokenService;
     private final SecretCrypto secretCrypto;
     private final AgentConversationTurnDao turnDao;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private WecomDelegationGuard wecomDelegation;
     private final ChiefEffectiveConfigResolver chiefConfig;
     @org.springframework.beans.factory.annotation.Autowired
     private com.aliyun.autowonder.prd.PrdBrowserService prdBrowsers;
@@ -90,7 +93,20 @@ public class ConversationCapabilityService {
                     com.aliyun.autowonder.common.error.ErrorCode.NO_PERMISSION,
                     "conversation.actor_unknown", null, "conversation turn sender is unavailable; send a new message");
         }
-        long principalId = actorScoped ? turn.getSubmittedUserId() : resolvePrincipal(conversation, agent);
+        long principalId;
+        if (wecomDelegation != null && "WECOM".equals(conversation.getChannel())) {
+            // 企微群没有逐轮真人身份，只认绑定创建人的显式委托；不回退到数字人创建者。
+            var delegation = wecomDelegation.prepare(conversation, turnId);
+            if (delegation == null) {
+                throw com.aliyun.autowonder.common.error.BizException.keyed(
+                        com.aliyun.autowonder.common.error.ErrorCode.NO_PERMISSION,
+                        "integration.wecom_delegation_invalid", new Object[0],
+                        "企业微信群委托已失效，请重新绑定或授权");
+            }
+            principalId = delegation.principalId();
+        } else {
+            principalId = actorScoped ? turn.getSubmittedUserId() : resolvePrincipal(conversation, agent);
+        }
         // 小队工作流与后台一次性调用只做纯文本判断：不给仓库、不给技能，避免 Chief 用
         // 全量能力包去调用与本次判断无关的工具。
         boolean restricted = SquadWorkflowChannelSink.CHANNEL.equals(conversation.getChannel())
@@ -133,7 +149,8 @@ public class ConversationCapabilityService {
     /**
      * 平台管家会话的 MCP 身份只能是会话 Owner 本人。此前这里回退到 Agent 的创建者/修改者，
      * 结果是所有人共用最后一个改过 Chief 的人的身份，写操作与审计全部记在他名下。
-     * Owner 缺失时宁可整轮失败，也不能退回旧行为；IM 渠道保留旧规则，网页澄清必须走持久化回合。
+     * Owner 缺失时宁可整轮失败，也不能退回旧行为；IM 渠道保留旧规则，
+     * 网页澄清必须走持久化回合。
      */
     private long resolvePrincipal(AgentConversationDO conversation, AgentDO agent) {
         if (PlatformConversationChannel.CHANNEL.equals(conversation.getChannel())

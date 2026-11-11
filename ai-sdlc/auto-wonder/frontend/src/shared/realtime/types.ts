@@ -14,3 +14,12 @@ export interface Subscription {
 }
 
 export type ConnectionState = 'connecting' | 'connected' | 'disconnected' | 'reconnecting';
+
+export interface RealtimeClientLike {
+  readonly state: ConnectionState;
+  onStateChange(listener: (s: ConnectionState) => void): () => void;
+  connect(token: string): void;
+  rebind(token: string): void;
+  disconnect(clearSubscriptions?: boolean): void;
+  subscribe(channel: string, handler: EventHandler): Subscription;
+}

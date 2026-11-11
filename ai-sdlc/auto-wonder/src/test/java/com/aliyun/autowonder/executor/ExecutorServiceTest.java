@@ -45,7 +45,8 @@ class ExecutorServiceTest {
         when(presenceManager.presenceStates(anyCollection())).thenReturn(Map.of());
         // read() 未打桩 → 返回 null → options.models() 回退到 FALLBACK_MODELS（含 auto / qmodel_38max）
         launchConfigService = new ExecutorLaunchConfigService(executorDao,
-                new ExecutorLaunchOptionsService(mock(ProviderModelCatalogService.class)));
+                new ExecutorLaunchOptionsService(mock(ProviderModelCatalogService.class)),
+                mock(com.aliyun.autowonder.workspace.WorkspaceService.class));
         service = new ExecutorService(executorDao, tokenService,
                 redisManager, presenceManager, sessionRegistry, launchConfigService);
     }

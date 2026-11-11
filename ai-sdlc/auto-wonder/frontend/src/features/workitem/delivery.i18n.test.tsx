@@ -20,7 +20,7 @@ import { DeliveryProgress, formatDuration } from './components/DeliveryProgress'
 import { RecoveryControls } from './components/RecoveryControls';
 import { StartDeliveryModal } from './components/StartDeliveryModal';
 import { RuntimeTraceDrawer } from './components/RuntimeTraceDrawer';
-import { writeClarificationPrefill } from './clarification/prefill';
+import { writeDeliveryPrefill } from './clarification/prefill';
 import type { DeliveryProgress as Progress } from '@/shared/types/workitem';
 const authored = 'Agent <strong>Alice</strong>';
 const ok = (data: unknown) => HttpResponse.json({ success: true, code: '0', message: '', data });
@@ -118,7 +118,7 @@ it('refreshes visible validation and preserves canonical assignment across async
   expect(await screen.findByText('Choose a squad.')).toBeInTheDocument();
   expect(screen.getByText('Choose an agent.')).toBeInTheDocument();
   cleanup();
-  writeClarificationPrefill(42, { squadId: 1, agentId: 77 });
+  writeDeliveryPrefill(42, { squadId: 1, agentId: 77 });
   route(<StartDeliveryModal open workitemId={42} onClose={() => {}} />);
   await screen.findByText(`${authored} (AW_FS_DEV)`);
   const agentField = screen.getByLabelText('Agent for the first step');

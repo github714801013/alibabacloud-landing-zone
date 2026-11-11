@@ -1,6 +1,16 @@
 import { useAuthStore } from '@/shared/auth/store';
 import { getRealtimeAccessToken } from '@/shared/api/client';
-import type { RealtimeEvent, EventHandler, Subscription, ConnectionState } from './types';
+import type {
+  RealtimeEvent,
+  EventHandler,
+  Subscription,
+  ConnectionState,
+  RealtimeClientLike,
+} from './types';
+import { isAuthFailureClose } from './sharedWorkerProtocol';
+import { SharedWorkerClient } from './sharedWorkerClient';
+import { isServerSubscriptionChannel } from './channels';
+import { refreshRealtimeSession } from '@/shared/auth/sessionRefresh';
 
 function normalizeWsProtocol(protocol: string): string {
   if (protocol === 'https:') return 'wss:';
@@ -35,7 +45,7 @@ export function buildRealtimeUrl(base = getConfiguredRealtimeBase()): string {
   return wsUrl.toString();
 }
 
-export class RealtimeClient {
+export class RealtimeClient implements RealtimeClientLike {
   private url: string;
   private ws: WebSocket | null = null;
   private token: string | null = null;
@@ -46,6 +56,7 @@ export class RealtimeClient {
   private maxReconnectDelay = 30000;
   private _state: ConnectionState = 'disconnected';
   private stateListeners = new Set<(s: ConnectionState) => void>();
+  private authRefreshInFlight = false;
 
   private generation = 0;
 
@@ -90,6 +101,11 @@ export class RealtimeClient {
     this.ws = null;
   }
 
+  rebind(token: string) {
+    // 官方 connect 已包含 token 变化时的断开重连；同 token 且已连接时为幂等。
+    this.connect(token);
+  }
+
   subscribe(channel: string, handler: EventHandler): Subscription {
     const isNewChannel = !this.subscribers.has(channel);
     if (!this.subscribers.has(channel)) {
@@ -97,7 +113,7 @@ export class RealtimeClient {
     }
     this.subscribers.get(channel)!.add(handler);
 
-    if (isNewChannel && this.isServerSubscriptionChannel(channel)) {
+    if (isNewChannel && isServerSubscriptionChannel(channel)) {
       this.sendServerSubscribe(channel);
     }
 
@@ -110,20 +126,13 @@ export class RealtimeClient {
           set.delete(handler);
           if (set.size === 0) {
             this.subscribers.delete(channel);
-            if (this.isServerSubscriptionChannel(channel)) {
+            if (isServerSubscriptionChannel(channel)) {
               this.sendServerUnsubscribe(channel);
             }
           }
         }
       },
     };
-  }
-
-  private isServerSubscriptionChannel(channel: string): boolean {
-    return channel.startsWith('conversation:')
-      || channel.startsWith('scheduled-run:')
-      || channel.startsWith('dispatch:')
-      || channel.startsWith('notification:');
   }
 
   private sendServerSubscribe(channel: string) {
@@ -188,9 +197,10 @@ export class RealtimeClient {
       } catch { /* malformed message, skip */ }
     };
 
-    socket.onclose = () => {
+    socket.onclose = (event: CloseEvent) => {
       if (generation !== this.generation) return;
       if (this._state === 'disconnected') return;
+      if (isAuthFailureClose(event.code, event.reason)) void this.refreshAuth();
       this.scheduleReconnect();
     };
 
@@ -198,6 +208,22 @@ export class RealtimeClient {
       if (generation !== this.generation) return;
       socket.close();
     };
+  }
+
+  // 服务端因 token 过期拒绝鉴权时刷新一次并改绑，避免拿着旧 token 无限重连。
+  private async refreshAuth() {
+    if (this.authRefreshInFlight) return;
+    this.authRefreshInFlight = true;
+    try {
+      const result = await refreshRealtimeSession();
+      if (result.kind === 'refreshed') {
+        this.rebind(result.token);
+      } else if (result.kind === 'expired') {
+        this.disconnect();
+      }
+    } finally {
+      this.authRefreshInFlight = false;
+    }
   }
 
   private scheduleReconnect() {
@@ -210,11 +236,11 @@ export class RealtimeClient {
   }
 }
 
-let _instance: RealtimeClient | null = null;
+let _instance: RealtimeClientLike | null = null;
 
-export function getRealtimeClient(): RealtimeClient {
+export function getRealtimeClient(): RealtimeClientLike {
   if (!_instance) {
-    _instance = new RealtimeClient(buildRealtimeUrl(), getRealtimeAccessToken);
+    _instance = createRealtimeClient();
     useAuthStore.subscribe((state, previous) => {
       if (state.accessToken === previous.accessToken && state.currentWorkspace?.id === previous.currentWorkspace?.id && state.user?.id === previous.user?.id) return;
       // No subscription survives logout or a workspace/identity switch.
@@ -227,4 +253,28 @@ export function getRealtimeClient(): RealtimeClient {
     });
   }
   return _instance;
+}
+
+// 仅在界面已请求过实时客户端时同步，避免登录页等无实时消费的场景新建连接。
+export function syncRealtimeAuth(token: string) {
+  _instance?.rebind(token);
+}
+
+export function disconnectRealtime() {
+  _instance?.disconnect();
+}
+
+function createRealtimeClient(): RealtimeClientLike {
+  if (typeof SharedWorker === 'undefined') {
+    return new RealtimeClient(buildRealtimeUrl(), getRealtimeAccessToken);
+  }
+  try {
+    return new SharedWorkerClient({
+      buildUrl: () => buildRealtimeUrl(),
+      createFallback: () => new RealtimeClient(buildRealtimeUrl(), getRealtimeAccessToken),
+    });
+  } catch {
+    // worker 构造失败时保留每标签页一条连接的现有行为。
+    return new RealtimeClient(buildRealtimeUrl(), getRealtimeAccessToken);
+  }
 }

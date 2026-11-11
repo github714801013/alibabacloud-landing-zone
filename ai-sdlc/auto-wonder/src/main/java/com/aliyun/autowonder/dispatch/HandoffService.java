@@ -30,6 +30,9 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.ArrayList;
+import java.util.List;
+
 @Service
 public class HandoffService {
 
@@ -204,22 +207,20 @@ public class HandoffService {
 
     private HandoffResult handleHumanHandoff(long tenantId, long workitemId, long dispatchId, String to, WorkitemDO w,
             String fallbackReason, boolean allowTenantOwnerFallback) {
-        Long resolved = resolveConcreteHuman(to);
+        List<Long> candidates = humanCandidates(tenantId, to, w, allowTenantOwnerFallback);
+        Long resolved = null;
+        for (Long candidate : candidates) {
+            if (isActiveWorkspaceMember(tenantId, candidate)) {
+                resolved = candidate;
+                break;
+            }
+        }
         if (resolved == null) {
-            resolved = w.getAssignOperatorId();
-        }
-        if (resolved == null && allowTenantOwnerFallback) {
-            resolved = resolveTenantAdminUserId(tenantId);
-        }
-        if (resolved == null || resolved <= 0) {
-            log.info("handoff human target unresolved and no fallback tenantId={} workitemId={} to={}",
-                    tenantId, workitemId, to);
-            return HandoffResult.rejected("TARGET_UNRESOLVED", "no agent or human fallback resolved");
-        }
-        UserDO user = userDao.findById(resolved);
-        WorkspaceMemberDO member = workspaceMemberDao.findByWorkspaceAndUser(tenantId, resolved);
-        if (user == null || !Integer.valueOf(0).equals(user.getStatus())
-                || member == null || !Integer.valueOf(0).equals(member.getStatus())) {
+            if (candidates.isEmpty()) {
+                log.info("handoff human target unresolved and no fallback tenantId={} workitemId={} to={}",
+                        tenantId, workitemId, to);
+                return HandoffResult.rejected("TARGET_UNRESOLVED", "no agent or human fallback resolved");
+            }
             return HandoffResult.rejected("TARGET_NOT_WORKSPACE_MEMBER", "human target is not an active workspace member");
         }
         if ("HUMAN".equalsIgnoreCase(w.getAssigneeType()) && resolved.equals(w.getAssigneeRef())) {
@@ -245,6 +246,39 @@ public class HandoffService {
         }
         log.info("handoff to HUMAN workitemId={} target={} resolvedUserId={}", workitemId, to, resolved);
         return HandoffResult.human(resolved, fallbackReason);
+    }
+
+    /**
+     * 转真人候选顺序：tasks 负责人（显式 to 命中任务负责人时优先，否则取首个任务负责人）
+     * → 工单经办人 → 空间拥有人（允许时）。tasks 为空时沿用显式 to → 经办人 → 拥有人。
+     */
+    private List<Long> humanCandidates(long tenantId, String to, WorkitemDO w, boolean allowTenantOwnerFallback) {
+        List<Long> candidates = new ArrayList<>();
+        List<Long> taskOwners = WorkitemTaskOwners.orderedOwnerIds(w.getContentMd());
+        Long explicit = resolveConcreteHuman(to);
+        if (!taskOwners.isEmpty()) {
+            candidates.add(explicit != null && taskOwners.contains(explicit) ? explicit : taskOwners.get(0));
+        } else if (explicit != null) {
+            candidates.add(explicit);
+        }
+        if (w.getAssignOperatorId() != null) {
+            candidates.add(w.getAssignOperatorId());
+        }
+        if (allowTenantOwnerFallback) {
+            Long ownerId = resolveTenantAdminUserId(tenantId);
+            if (ownerId != null) {
+                candidates.add(ownerId);
+            }
+        }
+        candidates.removeIf(id -> id <= 0);
+        return candidates;
+    }
+
+    private boolean isActiveWorkspaceMember(long tenantId, long userId) {
+        UserDO user = userDao.findById(userId);
+        WorkspaceMemberDO member = workspaceMemberDao.findByWorkspaceAndUser(tenantId, userId);
+        return user != null && Integer.valueOf(0).equals(user.getStatus())
+                && member != null && Integer.valueOf(0).equals(member.getStatus());
     }
 
     private WorkitemEventDO writeAssignEvent(long tenantId, long workitemId, Long fromRef, Long toRef,

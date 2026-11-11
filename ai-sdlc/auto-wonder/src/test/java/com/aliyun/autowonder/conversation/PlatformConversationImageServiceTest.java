@@ -28,4 +28,27 @@ class PlatformConversationImageServiceTest {
         assertThrows(BizException.class,()->service.attach(null,1L,7L,100L,List.of(image.id(),image.id())));
         assertThrows(BizException.class,()->service.upload(1L,7L,100L,new MockMultipartFile("file","bad.png","image/png","<html>".getBytes())));
     }
+
+    @Test void scopedImagesSupportWecomConversationKeys() {
+        ObjectStorage storage=mock(ObjectStorage.class); Map<String,byte[]> objects=new HashMap<>();
+        when(storage.put(anyString(),anyString(),any())).thenAnswer(i->{String ref=i.getArgument(0)+"/"+i.getArgument(1);byte[] data=i.getArgument(2);objects.put(ref,data);return new StoredObject(ref,"md5",data.length);});
+        when(storage.get(anyString())).thenAnswer(i->objects.get(i.getArgument(0)));
+        when(storage.presignGet(anyString(),eq(3600))).thenReturn("https://oss.example/signed-image");
+        OssProperties properties=new OssProperties();properties.setArtifactBucket("artifacts");
+        var service=new PlatformConversationImageService(storage,properties);
+        byte[] png={(byte)137,80,78,71,13,10,26,10};
+        var image=service.upload(1L,"wecom/5:chat-1",png,"wecom-image");
+        assertEquals("image/png",image.contentType());
+        var gif=service.upload(1L,"wecom/5:chat-1","GIF89a".getBytes(java.nio.charset.StandardCharsets.US_ASCII),"wecom-image");
+        assertEquals("image/gif",gif.contentType());
+        String context=service.attach(null,1L,"wecom/5:chat-1",List.of(image.id()));
+        assertTrue(context.contains("conversationImageScope"));
+        assertFalse(context.contains("signed-image"));
+        String prompt=service.runtimeContext(context,1L);
+        assertTrue(prompt.contains("signed-image"));
+        assertTrue(prompt.contains("image-reading tool"));
+        assertThrows(BizException.class,()->service.runtimeContext(context,2L));
+        assertThrows(BizException.class,()->service.upload(1L,"wecom/5:chat-1",new byte[0],"empty"));
+        assertThrows(BizException.class,()->service.upload(1L,"wecom/5:chat-1","<html>".getBytes(),"bad"));
+    }
 }

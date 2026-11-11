@@ -7,6 +7,7 @@ export function conversationNotice(entry: unknown, field: 'content' | 'error', t
   if (!args || typeof args !== 'object' || Array.isArray(args)) return null;
   const values = args as Record<string, unknown>;
   if (code === 'QUESTION_EXPIRED' && Object.keys(values).length === 0) return t('clarification.ownedNotice.questionExpired');
+  if (code === 'EXECUTOR_BUSY' && Object.keys(values).length === 0) return t('clarification.ownedNotice.executorBusy');
   if (field === 'content' && Object.keys(values).length === 0) {
     if (code === 'CANCELED') return t('clarification.ownedNotice.canceled');
     if (code === 'EMPTY_OUTPUT') return t('clarification.ownedNotice.emptyOutput');

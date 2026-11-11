@@ -64,6 +64,7 @@ import com.aliyun.autowonder.memory.dto.CreateMemoryRequest;
 import com.aliyun.autowonder.memory.dto.MemoryVO;
 import com.aliyun.autowonder.memory.dto.UpdateMemoryRequest;
 import com.aliyun.autowonder.workspace.WorkspaceService;
+import com.aliyun.autowonder.workspace.dto.MemberVO;
 import com.aliyun.autowonder.workspace.dto.WorkspaceVO;
 import com.aliyun.autowonder.repo.RepoService;
 import com.aliyun.autowonder.repo.dto.CreateRelationRequest;
@@ -97,6 +98,7 @@ import com.aliyun.autowonder.workitem.dto.CreateWorkitemRequest;
 import com.aliyun.autowonder.workitem.dto.WorkitemVO;
 import org.springframework.stereotype.Service;
 
+import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -137,6 +139,11 @@ public class McpToolService {
     private static final String ADD_WORKITEM_COMMENT = "autowonder.add_workitem_comment";
     private static final String LIST_WORKITEM_COMMENTS = "autowonder.list_workitem_comments";
     private static final String START_WORKITEM_CLARIFICATION = "autowonder.start_workitem_clarification";
+    private static final String ADD_WORKITEM_WATCHER = "autowonder.add_workitem_watcher";
+    private static final String REMOVE_WORKITEM_WATCHER = "autowonder.remove_workitem_watcher";
+    private static final String LIST_WORKITEM_WATCHERS = "autowonder.list_workitem_watchers";
+    private static final String BATCH_ADD_WORKITEM_WATCHERS = "autowonder.batch_add_workitem_watchers";
+    private static final String BATCH_REMOVE_WORKITEM_WATCHERS = "autowonder.batch_remove_workitem_watchers";
     private static final String UPLOAD_WORKITEM_DOCUMENT = "autowonder.upload_workitem_document";
     private static final String WORKITEM_CLI_UPLOAD_TOKEN = "autowonder.workitem_cli_upload_token";
     private static final String WORKITEM_CLI_DOWNLOAD_TOKEN = "autowonder.workitem_cli_download_token";
@@ -198,6 +205,7 @@ public class McpToolService {
     private static final String DEPRECATE_MEMORY = "autowonder.deprecate_memory";
     private static final String DELETE_MEMORY = "autowonder.delete_memory";
     private static final String LIST_REPOS = "autowonder.list_repos";
+    private static final String LIST_WORKSPACE_MEMBERS = "autowonder.list_workspace_members";
     private static final String GET_REPO = "autowonder.get_repo";
     private static final String LIST_REPO_RELATIONS = "autowonder.list_repo_relations";
     private static final String CREATE_REPO_RELATION = "autowonder.create_repo_relation";
@@ -279,6 +287,24 @@ public class McpToolService {
                     + "autowonder.get_executor_launch_options for the live list with labels and defaults. An id "
                     + "you pass explicitly that the catalog no longer offers is rejected with an error instead of "
                     + "being silently replaced, and the persisted value is returned in the response.";
+
+    /** Extra command-line arguments an operator typed on the executor page; appended after the platform's own flags. */
+    private static final String EXECUTOR_EXTRA_ARGS_DESCRIPTION =
+            "Optional. Extra arguments appended to the generated launch command after the platform's own flags. "
+                    + "Split on shell rules (whitespace, quotes group, backslash escapes) and quoted per shell. An "
+                    + "argument that repeats a platform flag (--model, --memory-mode, --context-window, ...) replaces "
+                    + "it: the platform's own occurrence is dropped, so the command never carries both. That is "
+                    + "deliberate, so an operator can use a value the platform UI does not offer. The connection "
+                    + "flags --ws-url, --token and --executor-id are rejected, because overriding them would send "
+                    + "the real token to another endpoint. Omit this argument "
+                    + "to clear it, because this write is a full replace.";
+    /** Verbatim shell text an operator typed on the executor page; placed before the runtime command. */
+    private static final String EXECUTOR_PREFIX_COMMAND_DESCRIPTION =
+            "Optional. Verbatim shell text placed before the generated runtime command, so an operator can set "
+                    + "environment variables or run setup steps. It is not parsed, rewritten, or given a separator; "
+                    + "for Windows it runs inside the encoded PowerShell script. Setting or changing it requires "
+                    + "workspace ADMIN, because the generated command is run by an admin. Omit this argument to "
+                    + "clear it, because this write is a full replace.";
     private static final Set<String> TRANSITION_SCHEDULED_TASK_ACTIONS = Set.of(
             "enable", "pause", "archive", "run-now", "pause-run", "resume-run", "cancel-run");
     private static final Set<String> SCHEDULED_TASK_LIST_STATUSES = Set.of(
@@ -338,6 +364,16 @@ public class McpToolService {
                             workspaceTool(WorkspaceAccessLevel.READ_ONLY)),
                     Map.entry(START_WORKITEM_CLARIFICATION,
                             workspaceTool(WorkspaceAccessLevel.READ_WRITE)),
+                    Map.entry(ADD_WORKITEM_WATCHER,
+                            workspaceTool(WorkspaceAccessLevel.ADMIN)),
+                    Map.entry(REMOVE_WORKITEM_WATCHER,
+                            workspaceTool(WorkspaceAccessLevel.ADMIN)),
+                    Map.entry(LIST_WORKITEM_WATCHERS,
+                            workspaceTool(WorkspaceAccessLevel.READ_ONLY)),
+                    Map.entry(BATCH_ADD_WORKITEM_WATCHERS,
+                            workspaceTool(WorkspaceAccessLevel.ADMIN)),
+                    Map.entry(BATCH_REMOVE_WORKITEM_WATCHERS,
+                            workspaceTool(WorkspaceAccessLevel.ADMIN)),
                     Map.entry(UPLOAD_WORKITEM_DOCUMENT,
                             workspaceTool(WorkspaceAccessLevel.READ_WRITE)),
                     Map.entry(WORKITEM_CLI_UPLOAD_TOKEN,
@@ -459,6 +495,8 @@ public class McpToolService {
                     Map.entry(DELETE_MEMORY,
                             workspaceTool(WorkspaceAccessLevel.READ_WRITE)),
                     Map.entry(LIST_REPOS,
+                            workspaceTool(WorkspaceAccessLevel.READ_ONLY)),
+                    Map.entry(LIST_WORKSPACE_MEMBERS,
                             workspaceTool(WorkspaceAccessLevel.READ_ONLY)),
                     Map.entry(GET_REPO,
                             workspaceTool(WorkspaceAccessLevel.READ_ONLY)),
@@ -582,6 +620,11 @@ public class McpToolService {
                     Map.entry(ADD_WORKITEM_COMMENT, WorkspaceDomain.WORKITEM),
                     Map.entry(LIST_WORKITEM_COMMENTS, WorkspaceDomain.WORKITEM),
                     Map.entry(START_WORKITEM_CLARIFICATION, WorkspaceDomain.WORKITEM),
+                    Map.entry(ADD_WORKITEM_WATCHER, WorkspaceDomain.WORKITEM),
+                    Map.entry(REMOVE_WORKITEM_WATCHER, WorkspaceDomain.WORKITEM),
+                    Map.entry(LIST_WORKITEM_WATCHERS, WorkspaceDomain.WORKITEM),
+                    Map.entry(BATCH_ADD_WORKITEM_WATCHERS, WorkspaceDomain.WORKITEM),
+                    Map.entry(BATCH_REMOVE_WORKITEM_WATCHERS, WorkspaceDomain.WORKITEM),
                     Map.entry(UPLOAD_WORKITEM_DOCUMENT, WorkspaceDomain.ARTIFACT),
                     Map.entry(WORKITEM_CLI_UPLOAD_TOKEN, WorkspaceDomain.ARTIFACT),
                     Map.entry(WORKITEM_CLI_DOWNLOAD_TOKEN, WorkspaceDomain.ARTIFACT),
@@ -699,7 +742,8 @@ public class McpToolService {
                     Map.entry(APPLY_WORKSPACE_CONFIGURATION, WorkspaceDomain.CONVERSATION),
                     Map.entry(GET_WORKSPACE_CONFIGURATION, WorkspaceDomain.CONVERSATION),
                     Map.entry(RESUME_WORKSPACE_CONFIGURATION, WorkspaceDomain.CONVERSATION),
-                    Map.entry(CHECK_WORKSPACE_READINESS, WorkspaceDomain.CONVERSATION));
+                    Map.entry(CHECK_WORKSPACE_READINESS, WorkspaceDomain.CONVERSATION),
+                    Map.entry(LIST_WORKSPACE_MEMBERS, WorkspaceDomain.WORKSPACE));
 
     static {
         TOOL_ACCESS.forEach((tool, access) -> {
@@ -727,6 +771,8 @@ public class McpToolService {
     private com.aliyun.autowonder.workitem.WorkitemDao taskDataOwners;
     @org.springframework.beans.factory.annotation.Autowired
     private com.aliyun.autowonder.workitem.WorkitemWatcherService workitemWatchers;
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.aliyun.autowonder.workitem.WorkitemWatcherManagementService watcherManagement;
     private final GuidanceService guidanceService;
     private final SkillService skillService;
     private final SkillPackageService skillPackageService;
@@ -856,6 +902,9 @@ public class McpToolService {
                         + "workType must be one of REQ (requirement), BUG (defect), or TASK (task). "
                         + "When assigneeType is omitted the workitem is assigned to the creator (HUMAN), "
                         + "priority defaults to 2, no SDLC is bound, and no scheduling is triggered. "
+                        + "The workspace owner may pass creatorId to create on behalf of another active human member "
+                        + "with READ_WRITE (or ADMIN) access and no WORKITEM read-only restriction; "
+                        + "the default assignee then follows that creator unless assigneeType is given explicitly. "
                         + "To assign to a digital worker, pass assigneeType=AGENT with assigneeRef=<agentId>; "
                         + "the SDLC is resolved automatically by the server (agent default first, then workitem-type match); "
                         + "do NOT ask the user to choose an SDLC and only pass sdlcId when the user explicitly names one. "
@@ -893,6 +942,11 @@ public class McpToolService {
                                                 + "key decisions and boundaries, acceptance criteria, constraints/dependencies/risks, "
                                                 + "and expected deliverables. If these are unclear, ask the user before creating the workitem."),
                                 prop("priority", "integer", "Optional. Priority value; defaults to 2 when omitted."),
+                                prop("creatorId", "integer", "Optional. Create this workitem on behalf of another user. "
+                                        + "Only the workspace owner may set it; the target must be an active human member "
+                                        + "with READ_WRITE (or ADMIN) access and no WORKITEM read-only restriction. "
+                                        + "When omitted the caller is the creator; when set without assigneeType, "
+                                        + "the workitem is assigned to this creator."),
                                 prop("assigneeType", "string", "Optional. Assignee type: HUMAN or AGENT. "
                                         + "When omitted the workitem is assigned to the creator and no SDLC is bound and no scheduling is triggered."),
                                 prop("assigneeRef", "integer", "Optional. Assignee reference id: "
@@ -1064,6 +1118,49 @@ public class McpToolService {
                                         "Optional idempotency key; reuse it only for an identical retry."),
                                 arrayProp("attachmentIds", Map.of("type", "integer"),
                                         "Optional ids of clarification attachments uploaded to this conversation."))),
+                tool(ADD_WORKITEM_WATCHER, "Workspace ADMIN adds another real user as a watcher of a workitem. "
+                                + "The target must be an active member of this workspace with a normal account, and the "
+                                + "workitem must belong to this workspace. Adding an existing watcher is idempotent. "
+                                + "Returns the target user's watch state and the total watcher count.",
+                        schema(required("id", "userId"),
+                                prop("id", "integer", "Required. Native positive integer workitem id to watch."),
+                                prop("userId", "integer", "Required. Native positive integer target user id added as watcher."))),
+                tool(REMOVE_WORKITEM_WATCHER, "Workspace ADMIN removes a watcher from a workitem. "
+                                + "The target must be an active member of this workspace with a normal account, "
+                                + "the same rule as add. Removing a non-existent watch is idempotent and returns "
+                                + "the unwatched state.",
+                        schema(required("id", "userId"),
+                                prop("id", "integer", "Required. Native positive integer workitem id to unwatch."),
+                                prop("userId", "integer", "Required. Native positive integer target user id removed from watchers."))),
+                tool(LIST_WORKITEM_WATCHERS, "List the valid watchers of an AutoWonder workitem in this workspace. "
+                                + "Users who lost workspace access are excluded from the result.",
+                        schema(required("id"), prop("id", "integer", "Required. Native positive integer workitem id."))),
+                tool(BATCH_ADD_WORKITEM_WATCHERS, "Workspace ADMIN adds multiple real users as watchers of a "
+                                + "workitem in one batch. The whole batch is pre-checked first (workitem belongs to "
+                                + "this workspace; every target is an active member with a normal account) and only "
+                                + "then applied atomically in one transaction; any failure rolls back the entire "
+                                + "batch. Duplicate ids are deduplicated; an empty, missing or oversized (more than 100 "
+                                + "entries) userIds list is rejected. The result describes this batch only; batch add and "
+                                + "batch remove are two separate transactions, never a joint one.",
+                        schema(required("id", "userIds"),
+                                prop("id", "integer", "Required. Workitem id; must belong to this workspace."),
+                                arrayProp("userIds", Map.of("type", "integer"),
+                                        "Required. Non-empty array of at most 100 native JSON integers, each "
+                                                + "1..9223372036854775807; decimals, numeric strings, booleans, null, "
+                                                + "objects or nested arrays are rejected as invalid parameters; duplicates "
+                                                + "are processed once."))),
+                tool(BATCH_REMOVE_WORKITEM_WATCHERS, "Workspace ADMIN removes multiple watchers from a workitem in "
+                                + "one batch. Same all-or-nothing pre-check and single-transaction semantics as "
+                                + "batch_add_workitem_watchers. A target that is not an active member of this "
+                                + "workspace is rejected, consistent with the single-user remove endpoint; skipping "
+                                + "the call is the caller's job when the id set is already empty.",
+                        schema(required("id", "userIds"),
+                                prop("id", "integer", "Required. Workitem id; must belong to this workspace."),
+                                arrayProp("userIds", Map.of("type", "integer"),
+                                        "Required. Non-empty array of at most 100 native JSON integers to remove, each "
+                                                + "1..9223372036854775807; decimals, numeric strings, booleans, null, "
+                                                + "objects or nested arrays are rejected as invalid parameters; "
+                                                + "duplicates processed once."))),
                 tool(UPLOAD_WORKITEM_DOCUMENT, "DEPRECATED: Do not send file content or Base64 through MCP. "
                                 + "Use the AutoWonder CLI for every requirement/design attachment regardless of size. "
                                 + "Mint an upload token with autowonder.workitem_cli_upload_token and run the command it returns, e.g.: "
@@ -1432,6 +1529,8 @@ public class McpToolService {
                 tool(LIST_REPOS, "List repositories registered in AutoWonder. Use this to discover repo ids before reading or maintaining the Repo Map.",
                         schema(prop("page", "integer", "Optional page number, 1-based; defaults to 1."),
                                 prop("size", "integer", "Optional page size; defaults to 100 and is capped at 100."))),
+                tool(LIST_WORKSPACE_MEMBERS, "List workspace members with their user ids. Use this to resolve a Jira login name to the AutoWonder userId required by assign_workitem and add_workitem_comment. The optional keyword matches username, nickname or email.",
+                        schema(prop("keyword", "string", "Optional case-insensitive filter on username, nickname or email."))),
                 tool(GET_REPO, "Get one repository registered in AutoWonder by id.",
                         schema(required("id"), prop("id", "integer", "Required. Repository id."))),
                 tool(LIST_REPO_RELATIONS, "Read the AutoWonder Repo Map. Pass repoId to return every inbound and outbound relation touching one repository; omit it to return all relations in the workspace.",
@@ -1701,7 +1800,9 @@ public class McpToolService {
                                                 + "default."),
                                 enumProp("contextWindow", ExecutorLaunchOptionsService.contextWindowValues(),
                                         "Optional. Context window to persist; defaults to the chosen model's "
-                                                + "default."))),
+                                                + "default."),
+                                prop("extraArgs", "string", EXECUTOR_EXTRA_ARGS_DESCRIPTION),
+                                prop("prefixCommand", "string", EXECUTOR_PREFIX_COMMAND_DESCRIPTION))),
                 tool(GET_EXECUTOR_TOKEN, "Reveal an executor's plaintext connection token, the same value the page's "
                         + "eye icon shows. Requires workspace ADMIN. Treat it as a secret: anyone holding it can "
                         + "connect an executor as this digital worker.",
@@ -1750,7 +1851,9 @@ public class McpToolService {
                                 enumProp("reasoningEffort", ExecutorLaunchOptionsService.reasoningEffortValues(),
                                         "Optional. Reasoning effort; ignored for non-Qoder executors."),
                                 enumProp("contextWindow", ExecutorLaunchOptionsService.contextWindowValues(),
-                                        "Optional. Context window; ignored for non-Qoder executors."))),
+                                        "Optional. Context window; ignored for non-Qoder executors."),
+                                prop("extraArgs", "string", EXECUTOR_EXTRA_ARGS_DESCRIPTION),
+                                prop("prefixCommand", "string", EXECUTOR_PREFIX_COMMAND_DESCRIPTION))),
                 tool(BUILD_EXECUTOR_LAUNCH_COMMAND, "Build the startup command for an existing executor, identical to "
                         + "what the executor page copies to the clipboard. The token, client kind, MCP address, "
                         + "runtime version and every launch value are resolved server-side from the executor's "
@@ -2265,8 +2368,11 @@ public class McpToolService {
                             return value;
                         });
             } else {
+                // 例外（D3）：会话凭证放行个人记忆，官方仅 LONG_LIVED/owner；查询仍按令牌的 workspaceId/userId 限定。
                 result = (context.credentialType() == McpAccessTokenService.CredentialType.LONG_LIVED
-                        || isPlatformOwnerCredential(principal)) && isMemoryTool(name) ? invokePersonalMemory(context, name, safeArgs)
+                        || isPlatformOwnerCredential(principal)
+                        || context.credentialType() == McpAccessTokenService.CredentialType.CONVERSATION)
+                        && isMemoryTool(name) ? invokePersonalMemory(context, name, safeArgs)
                         : invoke(context, name, safeArgs);
                 auditMutation(context, name, safeArgs, result, null, false);
             }
@@ -2676,6 +2782,21 @@ public class McpToolService {
                         optionalPositiveLongList(safeArgs, "attachmentIds"));
                 yield launched;
             }
+            // 关注人代管的五个工具统一只接受原始值上的正原生整数：128.9 不得经全局 lng 截断成 128
+            // 后操作错误的工单或错误的人；批量分支另把原始 userIds 直接透传共享服务严格校验，
+            // 不经 toBean 的 Jackson 强转（否则 77.9 会被截断成 77、"77" 会被转成 77 并实际写入）
+            case ADD_WORKITEM_WATCHER -> watcherManagement.addWatcher(requiredNativeLong(safeArgs, "id"),
+                    context.workspaceId(), requiredNativeLong(safeArgs, "userId"), context.userId());
+            case REMOVE_WORKITEM_WATCHER -> watcherManagement.removeWatcher(requiredNativeLong(safeArgs, "id"),
+                    context.workspaceId(), requiredNativeLong(safeArgs, "userId"), context.userId());
+            case LIST_WORKITEM_WATCHERS -> workitemWatchers.listWatchers(requiredNativeLong(safeArgs, "id"),
+                    context.workspaceId());
+            case BATCH_ADD_WORKITEM_WATCHERS -> watcherManagement.batchAddWatchers(
+                    requiredNativeLong(safeArgs, "id"),
+                    context.workspaceId(), safeArgs.get("userIds"), context.userId());
+            case BATCH_REMOVE_WORKITEM_WATCHERS -> watcherManagement.batchRemoveWatchers(
+                    requiredNativeLong(safeArgs, "id"),
+                    context.workspaceId(), safeArgs.get("userIds"), context.userId());
             case UPLOAD_WORKITEM_DOCUMENT -> {
                 long id = requiredLong(safeArgs, "id");
                 if (scheduledTaskDocumentSource(safeArgs)) {
@@ -3031,6 +3152,26 @@ public class McpToolService {
             }
             case LIST_REPOS -> repoService.list(context.workspaceId(), integer(safeArgs, "page", 1),
                     integer(safeArgs, "size", 100));
+            case LIST_WORKSPACE_MEMBERS -> {
+                String keyword = str(safeArgs, "keyword");
+                String needle = keyword == null || keyword.isBlank()
+                        ? null : keyword.trim().toLowerCase(Locale.ROOT);
+                List<Map<String, Object>> items = new ArrayList<>();
+                for (MemberVO member : workspaceService.listMembers(context.workspaceId())) {
+                    if (needle != null && !matchesMemberKeyword(member, needle)) {
+                        continue;
+                    }
+                    // 只投影解析所需的五个字段，不暴露 accessLevel、joinedAt 等成员属性
+                    Map<String, Object> item = new LinkedHashMap<>();
+                    item.put("userId", member.getUserId());
+                    item.put("username", member.getUsername());
+                    item.put("nickname", member.getNickname());
+                    item.put("email", member.getEmail());
+                    item.put("owner", member.isOwner());
+                    items.add(item);
+                }
+                yield items;
+            }
             case GET_REPO -> repoService.get(requiredLong(safeArgs, "id"), context.workspaceId());
             case LIST_REPO_RELATIONS -> {
                 Long repoId = lng(safeArgs, "repoId");
@@ -3309,6 +3450,8 @@ public class McpToolService {
         request.setModel(str(args, "model"));
         request.setReasoningEffort(str(args, "reasoningEffort"));
         request.setContextWindow(str(args, "contextWindow"));
+        request.setExtraArgs(str(args, "extraArgs"));
+        request.setPrefixCommand(str(args, "prefixCommand"));
         IssuedExecutorVO issued = requireExecutorDependency(executorService)
                 .create(agentId, request, context.workspaceId(), context.userId());
         // 令牌等同机器凭据：非管理员凭据不下发，由管理员经 get_executor_token 单独获取。
@@ -3366,8 +3509,11 @@ public class McpToolService {
         request.setReasoningEffort(str(args, "reasoningEffort"));
         request.setContextWindow(str(args, "contextWindow"));
         request.setRuntimeVersion(str(args, "runtimeVersion"));
+        request.setExtraArgs(str(args, "extraArgs"));
+        request.setPrefixCommand(str(args, "prefixCommand"));
         if (request.getModelUpgradePolicy() != null && java.util.Collections.disjoint(args.keySet(),
-                Set.of("clientKind", "memoryMode", "maxConcurrentDispatches", "model", "reasoningEffort", "contextWindow", "runtimeVersion"))) {
+                Set.of("clientKind", "memoryMode", "maxConcurrentDispatches", "model", "reasoningEffort", "contextWindow",
+                        "runtimeVersion", "extraArgs", "prefixCommand"))) {
             return requireExecutorDependency(executorLaunchConfigService).updateModelUpgradePolicy(
                     requiredLong(args, "id"), context.workspaceId(), request, context.userId());
         }
@@ -4337,6 +4483,9 @@ public class McpToolService {
                     prop("executorOnline", "boolean",
                             "Whether the routed executor is online at the time of this call."),
                     prop("turnSubmitted", "boolean", "Whether this call submitted the first message."));
+            case ADD_WORKITEM_WATCHER, REMOVE_WORKITEM_WATCHER -> watchStateSchema();
+            case LIST_WORKITEM_WATCHERS -> listOutputSchema(watcherParticipantSchema());
+            case BATCH_ADD_WORKITEM_WATCHERS, BATCH_REMOVE_WORKITEM_WATCHERS -> watchBatchResultSchema();
             case UPLOAD_WORKITEM_DOCUMENT -> artifactSchema();
             case WORKITEM_CLI_UPLOAD_TOKEN -> schema(
                     prop("token", "string", "The awupload_ token; pass it to the CLI via AUTOWONDER_UPLOAD_TOKEN or --token."),
@@ -4422,6 +4571,7 @@ public class McpToolService {
             case CREATE_REPO, UPDATE_REPO -> repoSchema();
             case DELETE_REPO -> schema(prop("deleted", "boolean", "Whether the repository was deleted."));
             case LIST_REPOS -> listOutputSchema(repoSchema());
+            case LIST_WORKSPACE_MEMBERS -> listOutputSchema(workspaceMemberSchema());
             case LIST_REPO_RELATIONS -> listOutputSchema(repoRelationSchema());
             case CREATE_REPO_RELATION -> repoRelationSchema();
             case DELETE_REPO_RELATION -> schema(prop("deleted", "boolean", "Whether the repo relation was deleted."));
@@ -4553,6 +4703,34 @@ public class McpToolService {
                 prop("authorRef", "integer", "Author reference id."),
                 prop("contentMd", "string", "Markdown comment content."),
                 timestampProp("gmtCreate", "Creation time."));
+    }
+
+    private Map<String, Object> watchStateSchema() {
+        return schema(required("workitemId", "watched", "watcherCount"),
+                prop("workitemId", "integer", "Workitem id."),
+                prop("watched", "boolean", "Whether the target user watches this workitem after the operation."),
+                prop("watcherCount", "integer", "Total valid watchers after the operation."));
+    }
+
+    private Map<String, Object> watcherParticipantSchema() {
+        return schema(required("userId", "targetType", "role", "roleName"),
+                prop("userId", "integer", "Watcher user id."),
+                prop("targetType", "string", "Always HUMAN: watchers are real users only."),
+                nullableProp("name", "string", "Display name of the watcher."),
+                prop("displayId", "string", "Display id, the user id as text."),
+                prop("role", "string", "Role key, e.g. HUMAN."),
+                prop("roleName", "string", "Localized role label for watchers."),
+                prop("isAgent", "boolean", "Always false for real users."),
+                nullableProp("status", "string", "Account status snapshot of the watcher."));
+    }
+
+    private Map<String, Object> watchBatchResultSchema() {
+        return schema(required("workitemId", "userIds", "watched", "watcherCount"),
+                prop("workitemId", "integer", "Workitem id."),
+                primitiveArrayProp("userIds", "integer",
+                        "Deduplicated target ids processed in this batch."),
+                prop("watched", "boolean", "Target watch state of this operation: true for batch add, false for batch remove."),
+                prop("watcherCount", "integer", "Valid watcher total after this batch; per-batch result, not a joint transaction across batches."));
     }
 
     private Map<String, Object> artifactSchema() {
@@ -5019,6 +5197,24 @@ public class McpToolService {
                 nullableProp("defaultBranch", "string", "Default branch."),
                 nullableProp("description", "string", "Repository description."),
                 prop("scanStatus", "string", "Repository scan status."));
+    }
+
+    private Map<String, Object> workspaceMemberSchema() {
+        return schema(prop("userId", "integer", "AutoWonder user id."),
+                nullableProp("username", "string", "Login name."),
+                nullableProp("nickname", "string", "Display name."),
+                nullableProp("email", "string", "Email address."),
+                prop("owner", "boolean", "Whether the member owns the workspace."));
+    }
+
+    private boolean matchesMemberKeyword(MemberVO member, String needle) {
+        return containsKeyword(member.getUsername(), needle)
+                || containsKeyword(member.getNickname(), needle)
+                || containsKeyword(member.getEmail(), needle);
+    }
+
+    private boolean containsKeyword(String value, String needle) {
+        return value != null && value.toLowerCase(Locale.ROOT).contains(needle);
     }
 
     private Map<String, Object> repoRelationSchema() {
@@ -5538,6 +5734,35 @@ public class McpToolService {
                             context.workspaceId(), workitem.getId(), failure);
         }
         return workitem;
+    }
+
+    /**
+     * 关注人代管工具专用（含单人与批量）的 id 严格取值：只接受原始值中的正原生整数（Integer/Long
+     * 与数值恰在 long 范围内的正 BigInteger），小数、数字字符串、布尔、null、对象、越界与非正数一律
+     * 按 MCP_TOOL_ARGUMENT_INVALID（27003）拒绝——不走全局 lng 的 Number.longValue 截断，防止
+     * 128.9→128 后操作错误的工单或错误的人。其他旧接口与全局解析保持不变。
+     */
+    private long requiredNativeLong(Map<String, Object> args, String key) {
+        Object value = args.get(key);
+        long id;
+        if (value instanceof Integer intValue) {
+            id = intValue;
+        } else if (value instanceof Long longValue) {
+            id = longValue;
+        } else if (value instanceof BigInteger bigValue) {
+            try {
+                // longValueExact：越界抛 ArithmeticException，绝不截断或回绕
+                id = bigValue.longValueExact();
+            } catch (ArithmeticException overflow) {
+                throw new BizException(ErrorCode.MCP_TOOL_ARGUMENT_INVALID);
+            }
+        } else {
+            throw new BizException(ErrorCode.MCP_TOOL_ARGUMENT_INVALID);
+        }
+        if (id <= 0) {
+            throw new BizException(ErrorCode.MCP_TOOL_ARGUMENT_INVALID);
+        }
+        return id;
     }
 
     private int integer(Map<String, Object> args, String key, int defaultValue) {

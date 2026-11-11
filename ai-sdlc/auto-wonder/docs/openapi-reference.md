@@ -318,6 +318,13 @@ dispatch / conversation Token 仍锁定在自身工作空间：省略 `workspace
 | GET | `/api/workitems/{id}/unified-timeline` | READ_ONLY | 统一时间线 (评论+事件) |
 | GET | `/api/workitems/{id}/delivery-progress` | READ_ONLY | 交付进度 |
 | GET | `/api/workitems/{id}/participants` | READ_ONLY | 参与者列表 |
+| POST | `/api/workitems/{id}/watch` | READ_ONLY | 自助关注（个人订阅，不授予权限） |
+| DELETE | `/api/workitems/{id}/watch` | READ_ONLY | 自助取消关注 |
+| GET | `/api/workitems/{id}/watchers` | READ_ONLY | 关注人列表（仅展示本空间有效成员） |
+| POST | `/api/workitems/{id}/watchers/{userId}` | ADMIN | 代管添加关注人（管理员） |
+| DELETE | `/api/workitems/{id}/watchers/{userId}` | ADMIN | 代管移除关注人（管理员） |
+| POST | `/api/workitems/{id}/watchers/batch-add` | ADMIN | 批量代管添加关注人 |
+| POST | `/api/workitems/{id}/watchers/batch-remove` | ADMIN | 批量代管移除关注人 |
 | POST | `/api/workitems/{id}/external-sync` | READ_WRITE | 同步到外部系统 |
 
 ### POST /api/workitems
@@ -355,6 +362,41 @@ dispatch / conversation Token 仍锁定在自身工作空间：省略 `workspace
 ```json
 { "contentMd": "评论内容 markdown" }
 ```
+
+### 关注人代管（管理员接口）
+
+- `POST /api/workitems/{id}/watchers/{userId}`：将用户 `userId` 添加为工单 `id` 的关注人。
+- `DELETE /api/workitems/{id}/watchers/{userId}`：移除用户 `userId` 在工单 `id` 上的关注关系。
+- 无请求体；操作者取当前登录身份，不接受传入的操作人参数。
+- 权限：调用者须为当前工作空间 ADMIN（平台管理员按平台既有口径放行）；目标用户必须是当前工作空间状态正常的有效成员，停用/注销/已离开的目标一律拒绝。
+- 幂等：重复添加不会新增关系；取消不存在的关注返回未关注状态；两者都不报"已存在/不存在"类冲突。
+- 返回关注状态对象：
+```json
+{ "workitemId": 128, "watched": true, "watcherCount": 2 }
+// watched 为目标用户操作后的关注态；watcherCount 为该工单当前有效关注人总数
+```
+- 错误：等级不足→访问被拒（文案按"管理工单关注人"渲染）；目标非本空间有效成员或已停用→`11001`；工单不属于当前工作空间→`13003`（不区分"不存在/无权查看"，避免跨空间探测）。
+- 自助关注兼容：`POST/DELETE /api/workitems/{id}/watch` 行为与语义保持原样，仅作用于当前登录用户本人；关注人通知规则不因代管入口改变。
+- 对应 MCP 工具见 [工作项关注人管理](mcp/workitem-watchers.md)。
+
+### 关注人批量代管（管理员接口）
+
+- `POST /api/workitems/{id}/watchers/batch-add` / `POST /api/workitems/{id}/watchers/batch-remove`，请求体：
+```json
+{ "userIds": [77, 78] }
+```
+- 参数要求：`userIds` 必须是非空 JSON 数组且不超过 100 个元素（去重前计数），逐元素为 `1..9223372036854775807` 的原生整数——小数（不截断）、数字字符串（不解析）、布尔、null、对象、嵌套数组、越界一律按参数不合法拒绝且零写入；批内重复 id 去重后各处理一次。空、缺失或超限列表按参数不合法拒绝——差集为空时调用方应跳过本接口，而不是发送空批（空批也不能绕过工单归属检查）。
+- 整批预检：调用者须为当前空间 ADMIN（平台管理员按既有口径）；工单必须属于当前空间；全部目标都必须是本空间状态正常的有效成员（含停用账号拒绝）。**所有校验全部通过后才开始任何写入**。
+- 批内原子：整批在单一事务内执行，任何一条失败则整批回滚，不会出现部分提交；批量添加与批量取消是两笔独立事务，失败时不会自动回滚先前已成功的批次。
+- 返回关注批次结果对象（只描述当前一批）：
+```json
+{ "workitemId": 128, "userIds": [77, 78], "watched": true, "watcherCount": 2 }
+// userIds 为去重后本批已处理的 id；watched 为本操作目标态（添加 true / 取消 false）；
+// watcherCount 为本批完成后该工单的有效关注人总数
+```
+- 取消语义：批量取消同样要求每个目标为本空间有效成员，未在册目标拒绝（`11001`），与单人接口权限边界一致。
+- 错误：等级不足→访问被拒（文案按"管理工单关注人"渲染）；参数非法→参数不合法；目标非有效成员→`11001`；工单跨空间/不存在→`13003`。
+- 单人接口 `POST/DELETE /api/workitems/{id}/watchers/{userId}` 继续可用，语义不变。
 
 ---
 

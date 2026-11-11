@@ -31,6 +31,7 @@ public class ImReplyDeliveryService {
 
     static final String CHANNEL_DINGTALK = "DINGTALK";
     static final String CHANNEL_FEISHU = "FEISHU";
+    static final String CHANNEL_WECOM = "WECOM";
 
     static final int LEASE_SECONDS = 120;
     static final int SCAN_BATCH_SIZE = 50;
@@ -43,6 +44,8 @@ public class ImReplyDeliveryService {
 
     static final String ERROR_DINGTALK_LEASE_EXPIRED =
             "钉钉回复发送结果未知（租约过期），未自动重发";
+    static final String ERROR_WECOM_LEASE_EXPIRED =
+            "企业微信回复发送结果未知（租约过期），未自动重发";
     static final String ERROR_FEISHU_LEASE_EXPIRED =
             "飞书回复发送结果未知（租约过期且已超出重试窗口）";
     static final String ERROR_MISSING_SOURCE = "缺少原入站消息，回复未投递";
@@ -105,6 +108,10 @@ public class ImReplyDeliveryService {
             cancel(turn.getId(), ERROR_NO_SINK);
             return;
         }
+        if (!sink.canDeliverNow()) {
+            // 单连接渠道只允许连接持有者领取；其他实例保留待投递状态，避免耗尽重试次数。
+            return;
+        }
         AgentConversationTurnDO claimed = claim(turn, conv.getChannel());
         if (claimed == null) {
             return;
@@ -148,9 +155,11 @@ public class ImReplyDeliveryService {
         if (availableAt == null || availableAt.getTime() > System.currentTimeMillis()) {
             return null;
         }
-        if (CHANNEL_DINGTALK.equals(channel)) {
-            // DingTalk has no idempotency key: an expired lease must never be resent blindly.
-            if (turnDao.expireUnconfirmedDelivery(turn.getId(), ERROR_DINGTALK_LEASE_EXPIRED) == 1) {
+        if (CHANNEL_DINGTALK.equals(channel) || CHANNEL_WECOM.equals(channel)) {
+            // 钉钉与企业微信都没有幂等键：过期租约绝不能盲目重发。
+            String error = CHANNEL_WECOM.equals(channel)
+                    ? ERROR_WECOM_LEASE_EXPIRED : ERROR_DINGTALK_LEASE_EXPIRED;
+            if (turnDao.expireUnconfirmedDelivery(turn.getId(), error) == 1) {
                 log.warn("IM reply delivery marked UNKNOWN outTurnId={} channel={} reason=lease_expired",
                         turn.getId(), channel);
             }
@@ -219,7 +228,7 @@ public class ImReplyDeliveryService {
     }
 
     private int maxAttempts(String channel) {
-        return CHANNEL_DINGTALK.equals(channel) ? MAX_DELIVERY_ATTEMPTS : FEISHU_MAX_ATTEMPTS;
+        return CHANNEL_FEISHU.equals(channel) ? FEISHU_MAX_ATTEMPTS : MAX_DELIVERY_ATTEMPTS;
     }
 
     private Date nextAttemptAt(int attempt) {

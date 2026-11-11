@@ -1,5 +1,6 @@
 import { apiClient } from '@/shared/api/client';
 import type { WorkspaceAccessLevel, WorkspaceDomain } from '@/shared/types/common';
+import type { PromptTemplateCatalog } from './clarificationPromptTemplates';
 
 // --- System Settings ---
 
@@ -22,6 +23,38 @@ export async function listSettingsByGroup(group: string): Promise<SettingVO[]> {
 
 export async function updateSettings(group: string, items: SettingItem[]): Promise<void> {
   await apiClient.put(`/api/settings/${group}`, { items });
+}
+
+// --- AI Collaboration Defaults ---
+
+export interface AiCollaborationDefaultsVO {
+  owner: boolean;
+  clarify: {
+    defaultSquadId: number | null;
+    defaultAgentId: number | null;
+    autoSendFirstPrompt: boolean;
+    promptTemplates?: PromptTemplateCatalog | null;
+    valid: boolean;
+  };
+  delivery: {
+    defaultSquadId: number | null;
+    defaultAgentId: number | null;
+    valid: boolean;
+  };
+}
+
+export interface AiCollaborationDefaultItem {
+  key: string;
+  value: string;
+}
+
+export async function getAiCollaborationDefaults(): Promise<AiCollaborationDefaultsVO> {
+  const resp = await apiClient.get<AiCollaborationDefaultsVO>('/api/workspaces/current/ai-defaults');
+  return resp.data;
+}
+
+export async function updateAiCollaborationDefaults(items: AiCollaborationDefaultItem[]): Promise<void> {
+  await apiClient.put('/api/workspaces/current/ai-defaults', { items });
 }
 
 // --- AI Usage / Quota ---
@@ -68,6 +101,7 @@ export interface NotifyPrefVO {
   inApp: boolean;
   dingtalk: boolean;
   feishu?: boolean;
+  wecom?: boolean;
 }
 
 export interface NotifyPrefItem {
@@ -75,6 +109,7 @@ export interface NotifyPrefItem {
   inApp: boolean;
   dingtalk: boolean;
   feishu?: boolean;
+  wecom?: boolean;
 }
 
 export async function listNotifyPrefs(): Promise<NotifyPrefVO[]> {

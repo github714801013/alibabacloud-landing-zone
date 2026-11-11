@@ -1,7 +1,7 @@
 import { apiClient } from '@/shared/api/client';
 
 export interface UserImIdentity {
-  provider: 'DINGTALK' | string;
+  provider: 'DINGTALK' | 'FEISHU' | 'WECOM' | string;
   externalUserId: string;
   configured: boolean;
   platformReady: boolean;
@@ -35,6 +35,26 @@ export async function updateMyFeishuIdentity(params: UpdateDingTalkIdentityParam
 
 export async function sendMyFeishuIdentityTest(): Promise<void> {
   await apiClient.post<void>('/api/users/me/im-identities/feishu/test');
+}
+
+export interface ImTestStatus {
+  deliveryKey: string | null;
+  status: 'QUEUED' | 'SENT' | 'FAILED' | 'UNKNOWN' | 'NONE' | string;
+}
+
+export async function updateMyWecomIdentity(params: UpdateDingTalkIdentityParams): Promise<UserImIdentity> {
+  const resp = await apiClient.put<UserImIdentity>('/api/users/me/im-identities/wecom', params);
+  return resp.data;
+}
+
+export async function sendMyWecomIdentityTest(): Promise<ImTestStatus> {
+  const resp = await apiClient.post<ImTestStatus>('/api/users/me/im-identities/wecom/test');
+  return resp.data;
+}
+
+export async function getMyWecomIdentityTest(): Promise<ImTestStatus> {
+  const resp = await apiClient.get<ImTestStatus>('/api/users/me/im-identities/wecom/test');
+  return resp.data;
 }
 
 export interface ChangePasswordParams {

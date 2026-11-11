@@ -158,6 +158,22 @@ class ImChannelRuntimeStatusServiceTest {
         assertEquals(0L, status.unknownCount());
     }
 
+    @Test
+    void wecomRequiresOnlyBotIdAndSecret() {
+        PlatformImChannelConfigDO config = config("WECOM", 1);
+        config.setRobotCode(null);
+        when(configDao.findByProviderAndPurpose("WECOM", "GROUP_CHAT")).thenReturn(config);
+        when(secretCrypto.decrypt("kms://ref")).thenReturn("{\"v\":1,\"appSecret\":\"s\"}");
+        when(configDao.selectedProvider()).thenReturn("WECOM");
+
+        assertEquals(ImChannelRuntimeStatusService.Status.ACTIVE,
+                service.status("WECOM").status());
+
+        config.setAppKey(null);
+        assertEquals(ImChannelRuntimeStatusService.Status.ERROR,
+                service.status("WECOM").status());
+    }
+
     private static PlatformImChannelConfigDO config(String provider, int enabled) {
         PlatformImChannelConfigDO config = new PlatformImChannelConfigDO();
         config.setProvider(provider);

@@ -21,6 +21,7 @@ public class GroupChatConfigVO {
     private long routeVersion;
     private long selectionGeneration;
     private String status;
+    private String connectionStatus;
     private long drainingCount;
     private long failedCount;
     private long unknownCount;

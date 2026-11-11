@@ -12,6 +12,8 @@ EXPECTED_COUNTS = {
     "pair": ("开发+评审双人组", 2),
     "delivery": ("标准研发交付小队", 3),
     "full_cycle": ("全链路研发协作小队", 7),
+    "standard_auto": ("标准自动化交付", 5),
+    "fast_delivery": ("快速交付", 2),
 }
 FULL_CYCLE_ROLES = {
     "REQ_CLARIFIER",
@@ -24,8 +26,6 @@ FULL_CYCLE_ROLES = {
 }
 PLACEHOLDERS = {
     "SOURCE_REPOSITORY",
-    "CODE_PLATFORM",
-    "CODE_PLATFORM_MR_CREATE_URL",
     "COLLABORATION_PLATFORM",
     "DEFAULT_BRANCH",
     "DEPLOYMENT_PLATFORM",
@@ -35,7 +35,6 @@ PLACEHOLDERS = {
     "DATABASE_PORT",
     "DATABASE_USER",
     "PROJECT_NAME",
-    "PROJECT_TECH_STACK",
 }
 
 
@@ -59,7 +58,7 @@ class SquadTemplateSeedTest(unittest.TestCase):
         self.assertIn("NO_BACKSLASH_ESCAPES", self.sql)
         self.assertIn("SET SESSION sql_mode", self.sql)
 
-    def test_contains_exactly_four_valid_payloads(self):
+    def test_contains_exactly_six_valid_payloads(self):
         self.assertEqual(set(EXPECTED_COUNTS), set(self.payloads))
         for key, (name, count) in EXPECTED_COUNTS.items():
             payload = self.payloads[key]
@@ -95,9 +94,9 @@ class SquadTemplateSeedTest(unittest.TestCase):
         self.assertEqual(PLACEHOLDERS, actual)
 
     def test_seed_is_idempotent_and_environment_neutral(self):
-        self.assertEqual(4, self.sql.count("UPDATE squad_template"))
-        self.assertEqual(4, self.sql.count("INSERT INTO squad_template"))
-        self.assertEqual(4, self.sql.count("WHERE NOT EXISTS"))
+        self.assertEqual(6, self.sql.count("UPDATE squad_template"))
+        self.assertEqual(6, self.sql.count("INSERT INTO squad_template"))
+        self.assertEqual(6, self.sql.count("WHERE NOT EXISTS"))
         self.assertNotRegex(self.sql, r"INSERT INTO squad_template\s*\(\s*id\b")
 
         payload_text = json.dumps(self.payloads, ensure_ascii=False).lower()

@@ -1,11 +1,13 @@
 package com.aliyun.autowonder.executor;
 
+import com.aliyun.autowonder.access.WorkspaceAccessLevel;
 import com.aliyun.autowonder.common.error.BizException;
 import com.aliyun.autowonder.common.error.ErrorCode;
 import com.aliyun.autowonder.executor.dto.CreateExecutorRequest;
 import com.aliyun.autowonder.executor.dto.ExecutorLaunchConfigVO;
 import com.aliyun.autowonder.executor.dto.SelectOptionVO;
 import com.aliyun.autowonder.executor.dto.UpdateExecutorLaunchConfigRequest;
+import com.aliyun.autowonder.workspace.WorkspaceService;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.DeserializationFeature;
@@ -14,6 +16,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.util.List;
 
 /**
@@ -26,6 +30,7 @@ import java.util.List;
 public class ExecutorLaunchConfigService {
 
     public static final int DEFAULT_MAX_CONCURRENT_DISPATCHES = 5;
+    public static final int MAX_PREFIX_COMMAND_LENGTH = 4000;
 
     private static final Logger log = LoggerFactory.getLogger(ExecutorLaunchConfigService.class);
     private static final ObjectMapper JSON_MAPPER = new ObjectMapper()
@@ -34,10 +39,27 @@ public class ExecutorLaunchConfigService {
 
     private final ExecutorDao executorDao;
     private final ExecutorLaunchOptionsService options;
+    private final WorkspaceService workspaceService;
 
-    public ExecutorLaunchConfigService(ExecutorDao executorDao, ExecutorLaunchOptionsService options) {
+    public ExecutorLaunchConfigService(ExecutorDao executorDao, ExecutorLaunchOptionsService options,
+            WorkspaceService workspaceService) {
         this.executorDao = executorDao;
         this.options = options;
+        this.workspaceService = workspaceService;
+    }
+
+    /**
+     * 前置命令会随启动命令一起由管理员复制执行，只有工作空间管理员可以设置或修改；
+     * 编辑其他字段时原值写法不变（调用方先比对旧值）。清空始终允许，攻击面只会缩小。
+     */
+    public void requirePrefixCommandAdmin(long tenantId, long userId, String prefixCommand) {
+        if (prefixCommand == null) {
+            return;
+        }
+        if (!workspaceService.activeAccessLevel(tenantId, userId).allows(WorkspaceAccessLevel.ADMIN)) {
+            throw BizException.keyed(ErrorCode.NO_PERMISSION, "executor.launch.prefix_admin_required",
+                    null, "prefix command requires workspace ADMIN");
+        }
     }
 
     /**
@@ -78,6 +100,10 @@ public class ExecutorLaunchConfigService {
         String kindToPersist = resolveRecoveryClientKind(executor.getClientKind(), req.getClientKind());
         LaunchConfig stored = resolveUpdatedConfig(tenantId, executor, req,
                 kindToPersist != null ? kindToPersist : executor.getClientKind());
+        LaunchConfig previous = parse(executor.getLaunchConfig());
+        if (stored.prefixCommand != null && !stored.prefixCommand.equals(previous.prefixCommand)) {
+            requirePrefixCommandAdmin(tenantId, userId, stored.prefixCommand);
+        }
         int rows = kindToPersist != null
                 ? executorDao.updateLaunchConfigWithClientKind(id, tenantId, toJson(stored), kindToPersist,
                         expectedVersion, userId)
@@ -107,7 +133,7 @@ public class ExecutorLaunchConfigService {
         LaunchConfig previous = parse(executor.getLaunchConfig());
         LaunchConfig stored = resolve(tenantId, clientKind,
                 req.getMemoryMode(), req.getModel(),
-                req.getReasoningEffort(), req.getContextWindow(), true);
+                req.getReasoningEffort(), req.getContextWindow(), req.getExtraArgs(), req.getPrefixCommand(), true);
         stored.maxConcurrentDispatches = resolveMaxConcurrentDispatches(req.getMaxConcurrentDispatches() != null
                 ? req.getMaxConcurrentDispatches() : previous.maxConcurrentDispatches);
         stored.modelUpgradePolicy = req.getModelUpgradePolicy() == null
@@ -119,6 +145,8 @@ public class ExecutorLaunchConfigService {
         stored.workspaceRoot = req.getWorkspaceRoot() == null ? previous.workspaceRoot : launchText(req.getWorkspaceRoot(), 4096);
         stored.daemonName = req.getDaemonName() == null ? previous.daemonName : launchText(req.getDaemonName(), 200);
         stored.debug = req.getDebug() == null ? previous.debug : req.getDebug();
+        stored.serverBaseUrl = req.getServerBaseUrl() == null
+                ? previous.serverBaseUrl : normalizeServerBaseUrl(req.getServerBaseUrl());
         return stored;
     }
 
@@ -191,6 +219,8 @@ public class ExecutorLaunchConfigService {
                 explicitModel ? req.getModel() : null,
                 req == null ? null : req.getReasoningEffort(),
                 req == null ? null : req.getContextWindow(),
+                req == null ? null : req.getExtraArgs(),
+                req == null ? null : req.getPrefixCommand(),
                 explicitModel);
         config.maxConcurrentDispatches = resolveMaxConcurrentDispatches(req == null ? null : req.getMaxConcurrentDispatches());
         return config;
@@ -245,10 +275,14 @@ public class ExecutorLaunchConfigService {
      * it is false the caller is asking for a default and the id is demoted to a usable one instead.
      */
     private LaunchConfig resolve(long tenantId, String clientKind, String memoryMode, String model,
-            String reasoningEffort, String contextWindow, boolean requireKnownModel) {
+            String reasoningEffort, String contextWindow, String extraArgs, String prefixCommand,
+            boolean requireKnownModel) {
         String provider = ExecutorLaunchOptionsService.resolveProvider(clientKind);
         LaunchConfig config = new LaunchConfig();
         config.memoryMode = options.resolveMemoryMode(memoryMode);
+        // 扩展参数与前置命令都与客户端类型无关，因此在 Qoder 分支之前就校验并落库。
+        config.extraArgs = ExecutorLaunchExtraArgs.normalize(extraArgs);
+        config.prefixCommand = normalizePrefixCommand(prefixCommand);
         if (!ExecutorLaunchOptionsService.isQoderFamily(provider)) {
             return config;
         }
@@ -263,6 +297,53 @@ public class ExecutorLaunchConfigService {
         config.reasoningEffort = options.resolveReasoningEffort(config.model, reasoningEffort);
         config.contextWindow = options.resolveContextWindow(contextWindow);
         return config;
+    }
+
+    /**
+     * 前置命令是任意 shell 文本，只做长度与 NUL 校验：不解析、不改写、不补分隔符，非空白内容原样落库。
+     */
+    private static String normalizePrefixCommand(String prefixCommand) {
+        if (prefixCommand == null || prefixCommand.isBlank()) {
+            return null;
+        }
+        if (prefixCommand.length() > MAX_PREFIX_COMMAND_LENGTH) {
+            throw new BizException(ErrorCode.EXECUTOR_LAUNCH_CONFIG_PREFIX_COMMAND_INVALID,
+                    "前置命令不能超过 " + MAX_PREFIX_COMMAND_LENGTH + " 个字符");
+        }
+        if (prefixCommand.indexOf('\0') >= 0) {
+            throw new BizException(ErrorCode.EXECUTOR_LAUNCH_CONFIG_PREFIX_COMMAND_INVALID,
+                    "前置命令不能包含 NUL 字符");
+        }
+        return prefixCommand;
+    }
+
+    /**
+     * 执行器级平台服务地址只接受 scheme://host[:port]，路径、查询参数、片段和用户信息一律拒绝；
+     * 空白表示回退全局品牌地址。
+     */
+    private static String normalizeServerBaseUrl(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        String trimmed = value.trim();
+        try {
+            URI uri = new URI(trimmed);
+            String scheme = uri.getScheme();
+            if ((!"http".equalsIgnoreCase(scheme) && !"https".equalsIgnoreCase(scheme))
+                    || uri.getHost() == null || uri.getRawUserInfo() != null
+                    || uri.getRawQuery() != null || uri.getRawFragment() != null
+                    || !uri.getRawPath().isEmpty()) {
+                throw invalidServerBaseUrl();
+            }
+            return trimmed;
+        } catch (URISyntaxException | IllegalArgumentException exception) {
+            throw invalidServerBaseUrl();
+        }
+    }
+
+    private static BizException invalidServerBaseUrl() {
+        return BizException.keyed(ErrorCode.PARAM_INVALID, "executor.config.server_base_url_invalid", null,
+                "平台服务地址必须是 scheme://host[:port] 形式的 http(s) 地址，且不能包含路径、查询参数或片段");
     }
 
     private static BizException incomplete() {
@@ -316,6 +397,9 @@ public class ExecutorLaunchConfigService {
         vo.setWorkspaceRoot(config.workspaceRoot);
         vo.setDaemonName(config.daemonName);
         vo.setDebug(config.debug);
+        vo.setExtraArgs(config.extraArgs);
+        vo.setPrefixCommand(config.prefixCommand);
+        vo.setServerBaseUrl(config.serverBaseUrl);
         vo.setVersion(version);
         return vo;
     }
@@ -390,5 +474,9 @@ public class ExecutorLaunchConfigService {
         public String workspaceRoot;
         public String daemonName;
         public Boolean debug;
+        public String extraArgs;
+        public String prefixCommand;
+        /** 执行器级平台服务地址覆盖；null 表示回退全局品牌地址。 */
+        public String serverBaseUrl;
     }
 }

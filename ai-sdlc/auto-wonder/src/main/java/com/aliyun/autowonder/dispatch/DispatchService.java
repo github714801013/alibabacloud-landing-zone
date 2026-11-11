@@ -38,12 +38,14 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.stereotype.Service;
 
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -132,6 +134,10 @@ public class DispatchService {
         this.environmentVariableRefDao = dao;
     }
 
+    /** 派发绑定机器不可用时的等待窗口，到期派发失败，不换机。 */
+    @Value("${autowonder.dispatch.binding.timeout-ms:1800000}")
+    private long bindingTimeoutMs = 1_800_000L;
+
     private static final Set<String> EXECUTOR_FAILURE_CATEGORIES = Set.of(
             "agent_error.provider_auth_or_access",
             "agent_error.provider_quota_limit",
@@ -145,6 +151,15 @@ public class DispatchService {
             "runtime_recovery");
 
     private static final long MAX_SESSION_RECOVERY_FAILOVERS = 1L;
+
+    /** 执行器准备阶段失败的预留类别；老 runtime 不上报，error 文本特征兜底。 */
+    private static final String PREPARE_FAILURE_CATEGORY = "executor.prepare_repo_failed";
+    private static final List<String> PREPARE_FAILURE_MARKERS = List.of("prepare repos", "materialize repo");
+    /** 重试不会成功的永久性准备失败，直接按普通失败处理。 */
+    private static final List<String> PERMANENT_PREPARE_ERRORS = List.of(
+            "repository not found", "does not appear to be a git repository",
+            "authentication failed", "permission denied", "not authorized",
+            "couldn't find remote ref", "remote branch not found", "could not read username");
 
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     public void setTransactionManager(org.springframework.transaction.PlatformTransactionManager transactionManager) {
@@ -1274,24 +1289,15 @@ public class DispatchService {
                 }
                 DispatchWaitingReason selectionFailure = null;
                 try {
-                    if ("CONTINUOUS".equals(d.getResumeMode()) && preferredExecutorId != null) {
-                        // Do not fall through to a different executor: its local provider session is invalid.
-                        executorId = requiredFeature == null
-                                ? executorSelector.selectStrict(d.getAgentId(), preferredExecutorId)
-                                : executorSelector.selectStrict(d.getAgentId(), preferredExecutorId,
-                                        requiredFeature);
-                    } else if (isInteractionDispatch(d)) {
-                        executorId = requiredFeature == null
-                                ? executorSelector.selectForInteraction(d.getAgentId(), preferredExecutorId)
-                                : executorSelector.selectForInteraction(d.getAgentId(), preferredExecutorId,
-                                        requiredFeature);
-                    } else if (requiredFeature == null) {
-                        executorId = preferredExecutorId == null
-                                ? executorSelector.select(d.getAgentId())
-                                : executorSelector.select(d.getAgentId(), preferredExecutorId);
-                    } else {
-                        executorId = executorSelector.select(d.getAgentId(), preferredExecutorId,
-                                requiredFeature);
+                    BindingSelection selection = selectWithDispatchBinding(
+                            d, preferredExecutorId, requiredFeature);
+                    if (selection == null) {
+                        selection = new BindingSelection(
+                                selectExecutorForDispatch(d, preferredExecutorId, requiredFeature), false);
+                    }
+                    executorId = selection.executorId();
+                    if (selection.waiting()) {
+                        return false;
                     }
                 } catch (ExecutorProtocolCompatibilityException compatibilityFailure) {
                     failAndDrive(d, compatibilityFailure.getMessage());
@@ -1465,7 +1471,104 @@ public class DispatchService {
                 || !Objects.equals(dispatch.getAgentId(), source.getAgentId())) {
             return null;
         }
+        // 血缘只追溯到仍在飞行中的源派发：源已进入终态即视为已交付，后续重试/继续按新派发重新选机。
+        if (isInteractionResumeMode(dispatch) && DispatchStatus.isTerminal(source.getStatus())) {
+            return null;
+        }
         return source.getExecutorId();
+    }
+
+    /** 侧交互与正式交互：血缘严格绑定源执行器。 */
+    private static boolean isInteractionResumeMode(DispatchDO dispatch) {
+        return dispatch != null && ("SIDE_INTERACTION".equals(dispatch.getResumeMode())
+                || "CANONICAL_INTERACTION".equals(dispatch.getResumeMode()));
+    }
+
+    /** 绑定选择结果：waiting=true 表示已写入等待原因（或已失败），调用方直接返回。 */
+    private record BindingSelection(Long executorId, boolean waiting) { }
+
+    /** 工单派发才参与执行器绑定：定时任务的 workitem_id 列存的是 run ID。 */
+    private static boolean bindingEnabled(DispatchDO dispatch) {
+        return dispatch != null && dispatch.executionSourceType() == ExecutionSourceType.WORKITEM
+                && dispatch.getWorkitemId() != null && dispatch.getWorkitemId() > 0;
+    }
+
+    private Long selectExecutorForDispatch(DispatchDO d, Long preferredExecutorId,
+            String requiredFeature) {
+        if ("CONTINUOUS".equals(d.getResumeMode()) && preferredExecutorId != null) {
+            // Do not fall through to a different executor: its local provider session is invalid.
+            return requiredFeature == null
+                    ? executorSelector.selectStrict(d.getAgentId(), preferredExecutorId)
+                    : executorSelector.selectStrict(d.getAgentId(), preferredExecutorId,
+                            requiredFeature);
+        }
+        if (isInteractionDispatch(d)) {
+            return requiredFeature == null
+                    ? executorSelector.selectForInteraction(d.getAgentId(), preferredExecutorId)
+                    : executorSelector.selectForInteraction(d.getAgentId(), preferredExecutorId,
+                            requiredFeature);
+        }
+        if (requiredFeature == null) {
+            return preferredExecutorId == null
+                    ? executorSelector.select(d.getAgentId())
+                    : executorSelector.select(d.getAgentId(), preferredExecutorId);
+        }
+        return executorSelector.select(d.getAgentId(), preferredExecutorId, requiredFeature);
+    }
+
+    /**
+     * 派发级绑定：已选定执行器的派发重试时严格回到同一台，交互续跑严格回到飞行中源派发的执行器；
+     * 不可用则等待，窗口到期派发失败即交付，不换机。无绑定时返回 null 交回既有选机。
+     */
+    private BindingSelection selectWithDispatchBinding(DispatchDO d, Long preferredExecutorId,
+            String requiredFeature) {
+        if (!bindingEnabled(d)) {
+            return null;
+        }
+        Long binding = d.getExecutorId() != null ? d.getExecutorId()
+                : (isInteractionResumeMode(d) ? preferredExecutorId : null);
+        if (binding == null) {
+            return null;
+        }
+        long bound = binding;
+        Long usable = selectBoundExecutor(d, bound, requiredFeature);
+        if (usable != null) {
+            return new BindingSelection(usable, false);
+        }
+        long waited = Math.max(0L, System.currentTimeMillis() - bindingWaitStart(d));
+        if (waited < bindingTimeoutMs) {
+            if (recoveryService != null) {
+                recoveryService.waiting(d, DispatchWaitingReason.DISPATCH_BINDING_WAIT.name());
+            }
+            log.info("dispatch waiting for bound executor dispatchId={} executorId={} waitedMs={}",
+                    d.getId(), bound, waited);
+            return new BindingSelection(null, true);
+        }
+        log.warn("dispatch bound executor unavailable past window dispatchId={} executorId={} waitedMs={}",
+                d.getId(), bound, waited);
+        failAndDrive(d, DispatchWaitingReason.DISPATCH_BINDING_TIMEOUT.error());
+        return new BindingSelection(null, true);
+    }
+
+    /**
+     * 等待窗口起点：派发最近一次进入当前状态的时间，退回待办即重新计时。
+     * 依赖待办行在等待期间不被其他组件更新；若未来新增更新待办行的路径，需改用专用时间戳字段。
+     */
+    private static long bindingWaitStart(DispatchDO dispatch) {
+        return dispatch.getGmtModified() == null
+                ? System.currentTimeMillis() : dispatch.getGmtModified().getTime();
+    }
+
+    private Long selectBoundExecutor(DispatchDO d, long executorId, String requiredFeature) {
+        try {
+            return executorSelector.selectStrict(d.getAgentId(), executorId, requiredFeature,
+                    isInteractionDispatch(d));
+        } catch (ExecutorProtocolCompatibilityException incompatible) {
+            // 缺 runtime 特性时绑定机器暂不可用，按等待处理而不是直接失败。
+            log.info("bound executor lacks required runtime feature dispatchId={} executorId={}",
+                    d.getId(), executorId);
+            return null;
+        }
     }
 
     private DispatchDO requireWorkitemDispatch(long workspaceId, long workitemId, long dispatchId) {
@@ -2094,6 +2197,17 @@ public class DispatchService {
         return failureCategory != null && EXECUTOR_FAILURE_CATEGORIES.contains(failureCategory);
     }
 
+    /** 准备阶段瞬时失败判定：永久性错误不重试；否则类别优先、error 文本特征兜底。 */
+    public static boolean shouldRetryPrepareFailure(String failureCategory, String error) {
+        boolean categoryHit = failureCategory != null && PREPARE_FAILURE_CATEGORY.equals(failureCategory.trim());
+        String normalized = error == null ? "" : error.toLowerCase(Locale.ROOT);
+        if (!categoryHit && (normalized.isBlank()
+                || PREPARE_FAILURE_MARKERS.stream().noneMatch(normalized::contains))) {
+            return false;
+        }
+        return PERMANENT_PREPARE_ERRORS.stream().noneMatch(normalized::contains);
+    }
+
     /**
      * Treat a provider/account failure as executor infrastructure failover, not as an SDLC failure.
      * The same dispatch and step attempt are returned to PENDING so business retry budgets are untouched.
@@ -2149,6 +2263,24 @@ public class DispatchService {
             }
         }
         return false;
+    }
+
+    /** 准备阶段瞬时失败：重新排队或新建 attempt 行自动重试；不消耗业务重试预算、不标记执行器不可用。 */
+    public DispatchRecoveryService.PrepareRetryOutcome onPrepareFailure(long workspaceId, Long executorId,
+            long dispatchId, String error) {
+        DispatchDO current = loadInboundRow(workspaceId, executorId, dispatchId);
+        if (current == null || recoveryService == null
+                || DispatchStatus.isTerminal(current.getStatus())
+                || DispatchStatus.PAUSING.equals(current.getStatus())
+                || DispatchStatus.PAUSED.equals(current.getStatus())
+                || DispatchStatus.PAUSE_FAILED.equals(current.getStatus())) {
+            return DispatchRecoveryService.PrepareRetryOutcome.REJECTED;
+        }
+        DispatchRecoveryService.PrepareRetry retry = recoveryService.retryPrepareFailure(current, error);
+        if (retry.outcome() == DispatchRecoveryService.PrepareRetryOutcome.RETRIED) {
+            recordPrepareRetryEvent(current, executorId, error, retry.attempt(), retry.maxAttempts());
+        }
+        return retry.outcome();
     }
 
     void recordRuntimeRecoveryEvent(DispatchDO source, DispatchDO replacement) {
@@ -2210,6 +2342,31 @@ public class DispatchService {
         if (scheduledTaskNotificationService != null && dispatch.executionSourceType() == ExecutionSourceType.SCHEDULED_TASK_RUN) {
             scheduledTaskNotificationService.runtime(dispatch.getTenantId(), dispatch.getWorkitemId());
         }
+    }
+
+    private void recordPrepareRetryEvent(DispatchDO dispatch, Long executorId, String error,
+            int attempt, int maxAttempts) {
+        DispatchRuntimeEventDO event = new DispatchRuntimeEventDO();
+        event.setTenantId(dispatch.getTenantId());
+        event.setWorkitemId(dispatch.getWorkitemId());
+        event.setDispatchId(dispatch.getId());
+        event.setAgentId(dispatch.getAgentId());
+        event.setEventId("dispatch:" + dispatch.getId() + ":prepare-retry:" + dispatch.getVersion());
+        event.setEventType("dispatch.prepare_retry");
+        event.setStepId(dispatch.getSdlcStepId());
+        event.setMessage(com.aliyun.autowonder.common.i18n.SystemMessages.render(
+                "dispatch.prepare_retry.retrying", new Object[]{attempt, maxAttempts},
+                "Environment preparation failed; retrying automatically (" + attempt + "/" + maxAttempts + ")"));
+        event.setError(truncateCodePoints(error, MAX_PROGRESS_TEXT_CHARS));
+        event.setDetailJson(new JSONObject()
+                .fluentPut("executorId", executorId)
+                .fluentPut("failureScope", "EXECUTOR")
+                .fluentPut("attempt", attempt)
+                .fluentPut("maxAttempts", maxAttempts)
+                .fluentPut("error", error)
+                .fluentPut("retrying", true).toJSONString());
+        event.setEventTime(new java.util.Date());
+        runtimeEventDao.insert(event);
     }
 
     public boolean isInteractionDispatch(DispatchDO dispatch) {
@@ -2342,9 +2499,9 @@ public class DispatchService {
         dispatchDao.touchOwnedActive(workspaceId, executorId, owned);
     }
 
-    /** Re-enqueue the same (workitem, step) at attempt+1 while budget remains; else hand to human. */
+    /** Re-enqueue the same (workitem, step) at the next business attempt while budget remains; else hand to human. */
     void retry(DispatchDO failed, int maxAttempts) {
-        int nextAttempt = failed.getAttempt() + 1;
+        int nextAttempt = nextBusinessAttempt(failed);
         log.info("dispatch retry dispatchId={} attempt={}/{}", failed.getId(), nextAttempt, maxAttempts);
         if (nextAttempt > maxAttempts) {
             // budget exhausted -> human handoff via the fail branch (no retry action returned)
@@ -2367,6 +2524,23 @@ public class DispatchService {
         DispatchDO retryRow = enqueue(failed.getTenantId(), failed.getWorkitemId(),
                 failed.getSdlcStepId(), failed.getAgentId(), nextAttempt, SYSTEM_USER_ID);
         runPending(retryRow.getId());
+    }
+
+    /** 业务重试只统计标准业务键；prepare/continue 等平台链不占业务 attempt 预算。 */
+    private int nextBusinessAttempt(DispatchDO failed) {
+        Integer maxAttempt = null;
+        List<DispatchDO> rows = dispatchDao.listByWorkitem(failed.getTenantId(), failed.getWorkitemId());
+        if (rows != null) {
+            for (DispatchDO row : rows) {
+                if (!Objects.equals(row.getSdlcStepId(), failed.getSdlcStepId())) continue;
+                String key = row.getIdempotencyKey();
+                // 标准业务键是 <workitem>:<step>:<attempt> 或其 WORKITEM: 前缀别名。
+                if (key == null || !key.matches("(?:WORKITEM:)?\\d+:\\d+:\\d+")) continue;
+                int attempt = row.getAttempt() == null ? 0 : row.getAttempt();
+                if (maxAttempt == null || attempt > maxAttempt) maxAttempt = attempt;
+            }
+        }
+        return (maxAttempt == null ? (failed.getAttempt() == null ? 0 : failed.getAttempt()) : maxAttempt) + 1;
     }
 
     /** Executor deadline exceeded: terminate as TIMEOUT and drive the fail branch. */

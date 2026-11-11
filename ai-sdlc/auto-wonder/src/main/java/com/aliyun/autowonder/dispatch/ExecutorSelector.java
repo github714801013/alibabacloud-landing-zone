@@ -137,13 +137,18 @@ public class ExecutorSelector {
     }
 
     public Long selectStrict(long agentId, long executorId, String requiredFeature) {
+        return selectStrict(agentId, executorId, requiredFeature, false);
+    }
+
+    public Long selectStrict(long agentId, long executorId, String requiredFeature,
+            boolean interaction) {
         Set<String> members = redisManager.smembers(execsKey(agentId));
         if (members == null || !members.contains(String.valueOf(executorId))
                 || !isRuntimeAvailable(executorId)) {
             return null;
         }
         requireFeature(executorId, requiredFeature);
-        return hasRemainingCapacity(executorId, false) ? executorId : null;
+        return hasRemainingCapacity(executorId, interaction) ? executorId : null;
     }
 
     /**
@@ -163,6 +168,67 @@ public class ExecutorSelector {
                     || snapshot.get().inventoryError() != null))) return false;
         requireFeature(executorId, requiredFeature);
         return true;
+    }
+
+    /**
+     * 新建会话的候选执行器（本地二次开发）：沿用可用性、容量与协议特性过滤，
+     * 供会话均衡选机在候选集合上做排除与排序，不移动轮询游标。
+     */
+    public List<Long> eligibleExecutors(long agentId, String requiredFeature) {
+        Set<String> members = redisManager.smembers(execsKey(agentId));
+        if (members == null || members.isEmpty()) {
+            return List.of();
+        }
+        List<Long> ids = new ArrayList<>();
+        for (String m : members) {
+            try {
+                ids.add(Long.parseLong(m));
+            } catch (NumberFormatException ignore) {
+                // Match selection's handling of malformed members.
+            }
+        }
+        Collections.sort(ids);
+        List<Long> eligible = new ArrayList<>();
+        boolean supportingRuntimeExists = false;
+        boolean unsupportedWithCapacity = false;
+        for (Long id : ids) {
+            if (!isRuntimeAvailable(id)) {
+                continue;
+            }
+            boolean supports = supportsFeature(id, requiredFeature);
+            supportingRuntimeExists |= supports;
+            if (!hasRemainingCapacity(id, false)) {
+                continue;
+            }
+            if (!supports) {
+                unsupportedWithCapacity = true;
+                continue;
+            }
+            eligible.add(id);
+        }
+        if (eligible.isEmpty() && !supportingRuntimeExists && unsupportedWithCapacity) {
+            throw new ExecutorProtocolCompatibilityException(requiredFeature);
+        }
+        return eligible;
+    }
+
+    /** 从给定候选中按现有轮询游标选一台（本地二次开发：会话均衡的平局打破）。 */
+    public Long selectRoundRobin(long agentId, List<Long> candidates) {
+        if (candidates == null || candidates.isEmpty()) {
+            return null;
+        }
+        if (candidates.size() == 1) {
+            return candidates.get(0);
+        }
+        long sequence;
+        try {
+            sequence = redisManager.exIncrBy(roundRobinKey(agentId), 1L, ROUND_ROBIN_TTL_SECONDS);
+        } catch (RuntimeException e) {
+            log.warn("executor round-robin cursor unavailable agentId={}; using first candidate", agentId, e);
+            sequence = 1L;
+        }
+        int index = sequence > 0 ? (int) ((sequence - 1) % candidates.size()) : 0;
+        return candidates.get(index);
     }
 
     private Long select(long agentId, Long preferredExecutorId, boolean interaction,

@@ -785,6 +785,127 @@ class PlatformImChannelConfigServiceTest {
         assertFalse(service.isReady("DINGTALK"));
     }
 
+    @Test
+    void wecomNotifyUsesBotIdAndSecretAndAcceptsWssUrl() {
+        PlatformImChannelConfigDao dao = mock(PlatformImChannelConfigDao.class);
+        SecretCrypto secretCrypto = mock(SecretCrypto.class);
+        when(secretCrypto.encrypt("secret")).thenReturn("kms://wecom");
+        PlatformImChannelConfigService service = new PlatformImChannelConfigService(
+                dao, secretCrypto);
+        UpdateDingTalkChannelRequest request = request(true, " bot-id ", "secret", null);
+        request.setBaseUrl(" wss://openws.work.weixin.qq.com/// ");
+
+        var result = service.update(100L, "WECOM", request);
+
+        ArgumentCaptor<PlatformImChannelConfigDO> captor =
+                ArgumentCaptor.forClass(PlatformImChannelConfigDO.class);
+        verify(dao).upsert(captor.capture());
+        assertEquals("WECOM", captor.getValue().getProvider());
+        assertEquals("NOTIFY", captor.getValue().getPurpose());
+        assertEquals("bot-id", captor.getValue().getAppKey());
+        assertEquals("kms://wecom", captor.getValue().getCredentialRef());
+        assertNull(captor.getValue().getRobotCode());
+        assertEquals("wss://openws.work.weixin.qq.com", captor.getValue().getBaseUrl());
+        assertTrue(result.isReady());
+    }
+
+    @Test
+    void wecomRejectsNonWssBaseUrl() {
+        PlatformImChannelConfigDao dao = mock(PlatformImChannelConfigDao.class);
+        PlatformImChannelConfigService service = new PlatformImChannelConfigService(
+                dao, mock(SecretCrypto.class));
+        UpdateDingTalkChannelRequest request = request(true, "bot-id", "secret", null);
+        request.setBaseUrl("https://openws.work.weixin.qq.com");
+
+        BizException error = assertThrows(BizException.class,
+                () -> service.update(100L, "WECOM", request));
+
+        assertEquals("10001", error.getCode());
+        assertEquals("im.base_url_wss_required", error.getMessageKey());
+        verifyNoInteractions(dao);
+    }
+
+    @Test
+    void wecomRejectsNonOfficialWssHost() {
+        PlatformImChannelConfigDao dao = mock(PlatformImChannelConfigDao.class);
+        PlatformImChannelConfigService service = new PlatformImChannelConfigService(
+                dao, mock(SecretCrypto.class));
+        UpdateDingTalkChannelRequest request = request(true, "bot-id", "secret", null);
+        request.setBaseUrl("wss://other.example.com");
+
+        BizException error = assertThrows(BizException.class,
+                () -> service.update(100L, "WECOM", request));
+
+        assertEquals("10001", error.getCode());
+        assertEquals("im.base_url_wss_required", error.getMessageKey());
+        verifyNoInteractions(dao);
+    }
+
+    @Test
+    void wecomGroupChatStoresSecretOnlyAndIsReadyWithoutRobotCode() {
+        PlatformImChannelConfigDao dao = mock(PlatformImChannelConfigDao.class);
+        SecretCrypto secretCrypto = mock(SecretCrypto.class);
+        AtomicReference<PlatformImChannelConfigDO> saved = new AtomicReference<>();
+        when(dao.findByProviderAndPurpose("WECOM", "GROUP_CHAT"))
+                .thenAnswer(invocation -> saved.get());
+        doAnswer(invocation -> {
+            saved.set(invocation.getArgument(0));
+            return 1;
+        }).when(dao).upsert(any());
+        when(secretCrypto.encrypt(anyString())).thenReturn("kms://bundle");
+        when(secretCrypto.decrypt("kms://bundle")).thenReturn("{\"v\":1,\"appSecret\":\"s\"}");
+        PlatformImChannelConfigService service =
+                new PlatformImChannelConfigService(dao, secretCrypto, new ObjectMapper());
+        UpdateGroupChatConfigRequest request = groupRequest(true, "bot-id", null, "secret");
+
+        GroupChatConfigVO vo = service.updateGroupChat(100L, "WECOM", request);
+
+        ArgumentCaptor<PlatformImChannelConfigDO> captor =
+                ArgumentCaptor.forClass(PlatformImChannelConfigDO.class);
+        verify(dao).upsert(captor.capture());
+        assertEquals("bot-id", captor.getValue().getAppKey());
+        assertNull(captor.getValue().getRobotCode());
+        assertEquals("kms://bundle", captor.getValue().getCredentialRef());
+        assertTrue(vo.isReady());
+        assertFalse(vo.isVerificationTokenConfigured());
+    }
+
+    @Test
+    void wecomGroupChatRejectsNotifyBotId() {
+        PlatformImChannelConfigDao dao = mock(PlatformImChannelConfigDao.class);
+        when(dao.findByProviderAndPurpose("WECOM", "NOTIFY"))
+                .thenReturn(wecomRow("NOTIFY", "bot-id", "kms://notify"));
+        PlatformImChannelConfigService service =
+                new PlatformImChannelConfigService(dao, mock(SecretCrypto.class));
+
+        BizException error = assertThrows(BizException.class,
+                () -> service.updateGroupChat(100L, "WECOM",
+                        groupRequest(true, "bot-id", null, "secret")));
+
+        assertEquals("im.notify_identity_conflict", error.getMessageKey());
+        verify(dao, never()).upsert(any());
+    }
+
+    @Test
+    void wecomCredentialRotationBumpsRouteVersion() {
+        PlatformImChannelConfigDao dao = mock(PlatformImChannelConfigDao.class);
+        SecretCrypto secretCrypto = mock(SecretCrypto.class);
+        PlatformImChannelConfigDO existing = wecomRow("NOTIFY", "bot-id", "kms://existing");
+        existing.setEnabled(1);
+        existing.setRouteVersion(5L);
+        when(dao.findByProviderAndPurpose("WECOM", "NOTIFY")).thenReturn(existing);
+        when(secretCrypto.encrypt("new-secret")).thenReturn("kms://rotated");
+        PlatformImChannelConfigService service = new PlatformImChannelConfigService(
+                dao, secretCrypto);
+        UpdateDingTalkChannelRequest request = request(true, "bot-id", "new-secret", null);
+        request.setBaseUrl(null);
+
+        service.update(100L, "WECOM", request);
+
+        verify(dao).upsert(argThat(config -> config.getRouteVersion() == 6L
+                && "kms://rotated".equals(config.getCredentialRef())));
+    }
+
     private static void assertInvalid(PlatformImChannelConfigService service,
                                       UpdateDingTalkChannelRequest request) {
         assertEquals("10001", assertThrows(BizException.class,
@@ -822,6 +943,17 @@ class PlatformImChannelConfigServiceTest {
         row.setCredentialRef(credentialRef);
         row.setRobotCode(robotCode);
         row.setBaseUrl("https://api.dingtalk.com");
+        return row;
+    }
+
+    private static PlatformImChannelConfigDO wecomRow(String purpose, String appKey,
+                                                       String credentialRef) {
+        PlatformImChannelConfigDO row = new PlatformImChannelConfigDO();
+        row.setProvider("WECOM");
+        row.setPurpose(purpose);
+        row.setEnabled(0);
+        row.setAppKey(appKey);
+        row.setCredentialRef(credentialRef);
         return row;
     }
 

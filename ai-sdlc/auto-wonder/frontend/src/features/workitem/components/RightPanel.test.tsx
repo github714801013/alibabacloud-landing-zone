@@ -1,7 +1,7 @@
 import { MemoryRouter } from 'react-router-dom';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { ReactNode } from 'react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -19,6 +19,7 @@ vi.mock('../clarification/WorkitemClarificationPanel', () => ({
     onContextChange,
     headerPrefix,
     headerSuffix,
+    workitemTitle,
   }: {
     onAgentConfirmed?: () => void;
     fullscreen?: boolean;
@@ -30,12 +31,14 @@ vi.mock('../clarification/WorkitemClarificationPanel', () => ({
     }) => void;
     headerPrefix?: ReactNode;
     headerSuffix?: ReactNode;
+    workitemTitle?: string;
   }) => (
     <div
       data-testid="clarification-panel-stub"
       data-fullscreen={fullscreen ? 'true' : 'false'}
       data-initial-agent={initialAgentId == null ? '' : String(initialAgentId)}
       data-initial-conversation={initialConversationId == null ? '' : String(initialConversationId)}
+      data-workitem-title={workitemTitle ?? ''}
     >
       {headerPrefix}
       {headerSuffix}
@@ -65,6 +68,19 @@ function renderPanel(props: Partial<Parameters<typeof RightPanel>[0]> = {}) {
       />
     </QueryClientProvider></MemoryRouter>,
   ) };
+}
+
+function stubMobileMatchMedia() {
+  vi.stubGlobal('matchMedia', (query: string) => ({
+    matches: query.includes('767.98px'),
+    media: query,
+    onchange: null,
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  }));
 }
 
 async function enterClarifyMode() {
@@ -197,6 +213,31 @@ it('replaces recovery diagnostics rather than accumulating them while switching 
     expect(within(workbench).getAllByText('recovery-302')).toHaveLength(1);
   }
   expect(reads).toBeGreaterThanOrEqual(4);
+});
+
+describe('RightPanel clarify mobile fullscreen', () => {
+  beforeEach(() => {
+    useAuthStore.getState().clear();
+    useAuthStore.getState().setCurrentWorkspace({ id: 1, name: 'O', description: '' }, 'READ_WRITE');
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('opens the clarification session fullscreen on mobile and hides the fullscreen toggle', async () => {
+    stubMobileMatchMedia();
+    renderPanel();
+
+    await userEvent.click(screen.getByRole('button', { name: /AI 需求澄清/ }));
+    const box = await screen.findByTestId('clarify-resize-box');
+
+    expect(box).toHaveStyle({ position: 'fixed', zIndex: 1000 });
+    expect(screen.getByTestId('clarification-panel-stub')).toHaveAttribute('data-fullscreen', 'true');
+    expect(screen.queryByRole('button', { name: '全屏' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '退出全屏' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '返回' })).toBeInTheDocument();
+  });
 });
 
 describe('RightPanel clarify fullscreen', () => {
@@ -368,6 +409,14 @@ describe('RightPanel clarify fullscreen', () => {
 
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(screen.getByTestId('clarification-panel-stub')).toHaveAttribute('data-fullscreen', 'false');
+  });
+
+  it('passes the workitem title down to the clarification header', async () => {
+    renderPanel({ workitemTitle: '支持按执行器配置平台服务地址' });
+    await enterClarifyMode();
+
+    expect(screen.getByTestId('clarification-panel-stub'))
+      .toHaveAttribute('data-workitem-title', '支持按执行器配置平台服务地址');
   });
 });
 

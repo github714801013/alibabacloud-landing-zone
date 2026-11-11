@@ -124,4 +124,59 @@ class PlatformImNotifyChannelTest {
         assertTrue(channel.deliver(notification));
         verifyNoInteractions(queue);
     }
+
+    @Test
+    void wecomProjectNotificationsGoThroughTheReliableQueue() {
+        var configs = mock(PlatformImChannelConfigService.class);
+        var settings = mock(SystemSettingService.class);
+        var queue = mock(com.aliyun.autowonder.im.notification.ImNotificationQueue.class);
+        var registry = mock(ImProviderRegistry.class);
+        when(configs.selectedProvider()).thenReturn("WECOM");
+        when(configs.isReady("WECOM")).thenReturn(true);
+        when(settings.getDecryptedValue("NOTIFY", "wecom_enabled", 1L)).thenReturn("true");
+        var channel = new PlatformImNotifyChannel(configs, mock(UserImIdentityService.class),
+                registry, settings, queue);
+        var notification = new NotificationDO();
+        notification.setId(99L); notification.setTenantId(1L); notification.setRecipientId(2L);
+        notification.setType("SCHEDULED_TASK_RUN_SUCCEEDED");
+        notification.setTitle("定时任务完成"); notification.setContent("任务内容");
+        notification.setRecipientLocale("en-US");
+
+        assertTrue(channel.deliver(notification));
+
+        var task = ArgumentCaptor.forClass(com.aliyun.autowonder.im.notification.ImNotificationTask.class);
+        verify(queue).enqueue(task.capture());
+        assertEquals("WECOM", task.getValue().provider());
+        assertEquals("SCHEDULED_TASK_RUN_SUCCEEDED", task.getValue().notificationType());
+        assertEquals("en-US", task.getValue().recipientLocale());
+        assertTrue(task.getValue().isPreRendered());
+        assertEquals("定时任务完成", task.getValue().workitemTitle());
+        assertEquals("## 定时任务完成\n\n任务内容", task.getValue().commentContentMd());
+        verifyNoInteractions(registry);
+    }
+
+    @Test
+    void inputRequiredTaskCarriesNotificationLink() {
+        var configs = mock(PlatformImChannelConfigService.class);
+        var queue = mock(com.aliyun.autowonder.im.notification.ImNotificationQueue.class);
+        when(configs.selectedProvider()).thenReturn("WECOM");
+        var channel = new PlatformImNotifyChannel(configs, mock(UserImIdentityService.class),
+                mock(ImProviderRegistry.class), mock(SystemSettingService.class), queue);
+        var notification = new NotificationDO();
+        notification.setId(99L);
+        notification.setTenantId(1L);
+        notification.setRecipientId(2L);
+        notification.setRefId(42L);
+        notification.setType("WORKITEM_INPUT_REQUIRED");
+        notification.setTitle("需求澄清待回答");
+        notification.setContent("工单「测试工单」\n请确认以下范围");
+        notification.setLink("/workitems/42?workspaceId=1&panel=clarify&fullscreen=1&agent=10035&conversation=20");
+
+        assertTrue(channel.deliver(notification));
+
+        var task = ArgumentCaptor.forClass(com.aliyun.autowonder.im.notification.ImNotificationTask.class);
+        verify(queue).enqueue(task.capture());
+        assertEquals(List.of(new NotificationLink("DETAIL", notification.getTitle(), notification.getLink())),
+                task.getValue().relatedLinks());
+    }
 }

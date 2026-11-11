@@ -63,7 +63,7 @@ class ExclusiveImProviderTest {
         var dao = mock(PlatformImChannelConfigDao.class);
         when(dao.selectedProvider()).thenReturn("FEISHU");
         var result = new PlatformImChannelConfigService(dao, mock(SecretCrypto.class)).list(1L);
-        assertEquals(2, result.size());
+        assertEquals(3, result.size());
         assertEquals("FEISHU", result.stream().filter(v -> v.isSelected()).findFirst().orElseThrow().getProvider());
     }
 

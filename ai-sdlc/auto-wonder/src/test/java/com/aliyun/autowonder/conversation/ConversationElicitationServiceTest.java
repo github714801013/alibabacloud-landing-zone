@@ -5,6 +5,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 
@@ -338,6 +339,39 @@ class ConversationElicitationServiceTest {
         verifyNoFrameSent();
     }
 
+    @Test
+    void assignedOwnerMayAnswerThroughPolicy() {
+        var record = new AgentConversationElicitationDO();
+        record.setTurnId(100L); record.setStatus("PENDING"); record.setRequestId("owner-card");
+        when(dao.findByRequestId(1L, 10L, "owner-card")).thenReturn(record);
+        when(dao.settleIfPending(1L, 10L, "owner-card", "ANSWERED", "{}")).thenReturn(1);
+        var active = turn("IN", "PROCESSING"); active.setSubmittedUserId(70L);
+        when(turnDao.findByConversationTurn(1L, 10L, 100L)).thenReturn(active);
+        var policy = mock(ClarificationAnswerActorPolicy.class);
+        when(policy.mayAnswer(1L, 10L, 71L)).thenReturn(true);
+        service.setAnswerActorPolicy(policy);
+
+        service.reply(1L, 10L, "owner-card", "accept", "{}", 71L);
+
+        verify(dao).settleIfPending(1L, 10L, "owner-card", "ANSWERED", "{}");
+        verify(transport).sendElicitationReply(any(), eq(100L), eq("owner-card"), eq("accept"), eq("{}"));
+    }
+
+    @Test
+    void policyDenialKeepsOriginalActorRequirement() {
+        var record = new AgentConversationElicitationDO();
+        record.setTurnId(100L); record.setStatus("PENDING"); record.setRequestId("denied-card");
+        when(dao.findByRequestId(1L, 10L, "denied-card")).thenReturn(record);
+        var active = turn("IN", "PROCESSING"); active.setSubmittedUserId(70L);
+        when(turnDao.findByConversationTurn(1L, 10L, 100L)).thenReturn(active);
+        var policy = mock(ClarificationAnswerActorPolicy.class);
+        when(policy.mayAnswer(1L, 10L, 71L)).thenReturn(false);
+        service.setAnswerActorPolicy(policy);
+
+        assertThrows(BizException.class, () -> service.reply(1L, 10L, "denied-card", "accept", "{}", 71L));
+        verify(dao, never()).settleIfPending(anyLong(), anyLong(), anyString(), anyString(), any());
+    }
+
     private static final String MULTI_SCHEMA = "{\"type\":\"object\",\"properties\":{"
             + "\"q0\":{\"type\":\"string\"},\"q1\":{\"type\":\"array\",\"items\":{\"anyOf\":[{\"const\":\"x\"}]}},"
             + "\"q2\":{\"type\":\"string\"}},\"required\":[\"q0\",\"q1\"]}";
@@ -462,6 +496,65 @@ class ConversationElicitationServiceTest {
         assertEquals(10L, saved.getConversationId());
         assertEquals(100L, saved.getTurnId());
         assertTrue(saved.getSchemaJson().contains("\"type\":\"object\""));
+    }
+
+    /** 工单澄清对话新出现的待回答卡片要通知监听器，由后者推送企业微信。 */
+    @Test
+    void publishesWorkitemClarificationQuestionWhenNewlyPending() {
+        AgentConversationDO conv = conversation();
+        conv.setChannel(WorkitemClarificationConversationService.CHANNEL);
+        conv.setBizRefType(WorkitemClarificationConversationService.BIZ_REF_TYPE);
+        conv.setBizRefId(77L);
+        conv.setAgentId(10035L);
+        when(convDao.findById(1L, 10L)).thenReturn(conv);
+        when(dao.insertIfAbsent(any())).thenReturn(1);
+        AgentConversationTurnDO asking = turn("IN", "PROCESSING");
+        asking.setSubmittedUserId(70L);
+        when(turnDao.findByConversationTurn(1L, 10L, 100L)).thenReturn(asking);
+        List<Object> events = new ArrayList<>();
+        service.setApplicationEventPublisher(events::add);
+
+        service.onEvent(1L, 10L, 100L, "acp_elicitation", openedPayload("req-1"));
+
+        assertEquals(1, events.size());
+        var event = (ConversationElicitationService.WorkitemClarificationQuestionOpened) events.get(0);
+        assertEquals(1L, event.tenantId());
+        assertEquals(77L, event.workitemId());
+        assertEquals(10L, event.conversationId());
+        assertEquals(10035L, event.agentId());
+        assertEquals(100L, event.turnId());
+        assertEquals(70L, event.submittedUserId());
+        assertEquals("req-1", event.requestId());
+        assertEquals("pick", event.message());
+    }
+
+    /** 同一条提问的重复上行不能重复推送。 */
+    @Test
+    void doesNotPublishQuestionWhenInsertIsDuplicate() {
+        AgentConversationDO conv = conversation();
+        conv.setChannel(WorkitemClarificationConversationService.CHANNEL);
+        conv.setBizRefType(WorkitemClarificationConversationService.BIZ_REF_TYPE);
+        conv.setBizRefId(77L);
+        when(convDao.findById(1L, 10L)).thenReturn(conv);
+        when(dao.insertIfAbsent(any())).thenReturn(0);
+        List<Object> events = new ArrayList<>();
+        service.setApplicationEventPublisher(events::add);
+
+        service.onEvent(1L, 10L, 100L, "acp_elicitation", openedPayload("req-1"));
+
+        assertTrue(events.isEmpty());
+    }
+
+    /** 非工单澄清会话（如 Chief of Staff）不触发工单待回答推送。 */
+    @Test
+    void doesNotPublishQuestionOutsideWorkitemClarification() {
+        when(dao.insertIfAbsent(any())).thenReturn(1);
+        List<Object> events = new ArrayList<>();
+        service.setApplicationEventPublisher(events::add);
+
+        service.onEvent(1L, 10L, 100L, "acp_elicitation", openedPayload("req-1"));
+
+        assertTrue(events.isEmpty());
     }
 
     /**

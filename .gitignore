@@ -40,3 +40,10 @@ override.tf.json
 # ignore MacOS system file
 **/.DS_Store
 .idea/
+
+# docs/engineering 全部不托管
+docs/engineering/*
+
+# Claude Code local state
+.claude/
+.scratch/

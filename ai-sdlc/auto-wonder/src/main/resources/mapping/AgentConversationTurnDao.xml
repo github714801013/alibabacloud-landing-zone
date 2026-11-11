@@ -48,6 +48,15 @@
         ORDER BY t.id LIMIT #{limit}
     </select>
 
+    <select id="listActiveWecomTurns" resultMap="BaseResultMap">
+        SELECT <include refid="Turn_Column_List"/>
+        FROM agent_conversation_turn t
+        JOIN agent_conversation c ON c.id = t.conversation_id AND c.tenant_id = t.tenant_id
+        WHERE t.direction = 'IN' AND t.status IN ('PROCESSING', 'QUEUED')
+          AND c.channel = 'WECOM' AND t.id &gt; #{afterId} AND t.gmt_create &gt;= #{cutoff}
+        ORDER BY t.id LIMIT #{limit}
+    </select>
+
     <!-- error is a VARCHAR(1024) summary. Bound every writer so diagnostics cannot roll back terminal state. -->
     <insert id="insert" parameterType="com.aliyun.autowonder.conversation.AgentConversationTurnDO"
             useGeneratedKeys="true" keyProperty="id">

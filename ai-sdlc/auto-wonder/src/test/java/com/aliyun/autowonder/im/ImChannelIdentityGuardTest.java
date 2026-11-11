@@ -5,6 +5,8 @@ import com.aliyun.autowonder.integration.dingtalk.DingtalkRobotBindingDO;
 import com.aliyun.autowonder.integration.dingtalk.DingtalkRobotBindingDao;
 import com.aliyun.autowonder.integration.feishu.FeishuBinding;
 import com.aliyun.autowonder.integration.feishu.FeishuBindingDao;
+import com.aliyun.autowonder.integration.wecom.WecomRobotBindingDO;
+import com.aliyun.autowonder.integration.wecom.WecomRobotBindingDao;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -14,7 +16,9 @@ class ImChannelIdentityGuardTest {
     private final PlatformImChannelConfigDao configDao = mock(PlatformImChannelConfigDao.class);
     private final DingtalkRobotBindingDao dingtalk = mock(DingtalkRobotBindingDao.class);
     private final FeishuBindingDao feishu = mock(FeishuBindingDao.class);
-    private final ImChannelIdentityGuard guard = new ImChannelIdentityGuard(configDao, dingtalk, feishu);
+    private final WecomRobotBindingDao wecom = mock(WecomRobotBindingDao.class);
+    private final ImChannelIdentityGuard guard =
+            new ImChannelIdentityGuard(configDao, dingtalk, feishu, wecom);
 
     @Test
     void groupChatIdentityCannotReuseLegacyDingTalkRobot() {
@@ -131,6 +135,22 @@ class ImChannelIdentityGuardTest {
         guard.assertGroupAvailable("OTHER", 8L, "group", null);
         verify(feishu, times(2)).findSharedByConfigAndGroup(8L, "oc_group");
         verifyNoInteractions(dingtalk);
+    }
+
+    @Test
+    void wecomHasNoLegacyBindingButStillChecksGroupOccupancy() {
+        guard.assertGroupChatIdentityAvailable("WECOM", "bot-id", null);
+        guard.assertLegacyIdentityAvailable("WECOM", "bot-id", null);
+
+        verifyNoInteractions(dingtalk, feishu);
+
+        WecomRobotBindingDO row = new WecomRobotBindingDO();
+        row.setId(13L);
+        when(wecom.findSharedByConfigAndGroup(8L, "group")).thenReturn(row);
+        BizException error = assertThrows(BizException.class,
+                () -> guard.assertGroupAvailable("WECOM", 8L, "group", null));
+        assertEquals("integration.group_already_bound", error.getMessageKey());
+        guard.assertGroupAvailable("WECOM", 8L, "group", 13L);
     }
 
     private static ImIdentityConflictException assertConflict(Runnable action) {

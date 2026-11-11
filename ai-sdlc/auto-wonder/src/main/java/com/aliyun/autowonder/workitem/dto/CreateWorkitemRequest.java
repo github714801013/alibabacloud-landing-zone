@@ -12,6 +12,10 @@ public class CreateWorkitemRequest {
     private String contentMd;
     private Integer priority;
     /**
+     * 可选创建人：仅空间拥有者可指定；缺省或等于实际调用者时按未指定处理。
+     */
+    private Long creatorId;
+    /**
      * Optional assignee type (e.g. {@code HUMAN} or {@code AGENT}). When omitted the
      * workitem is assigned to the creator, preserving the original behavior. When
      * present, {@link com.aliyun.autowonder.workitem.WorkitemService#create} delegates

@@ -12,6 +12,9 @@ public interface AgentConversationTurnDao {
     List<AgentConversationTurnDO> listActiveWorkflowTurns(@Param("afterId") long afterId,
             @Param("limit") int limit);
 
+    List<AgentConversationTurnDO> listActiveWecomTurns(@Param("afterId") long afterId,
+            @Param("cutoff") Date cutoff, @Param("limit") int limit);
+
     AgentConversationTurnDO findByExternalMsgId(@Param("tenantId") Long tenantId,
             @Param("externalMsgId") String externalMsgId);
 

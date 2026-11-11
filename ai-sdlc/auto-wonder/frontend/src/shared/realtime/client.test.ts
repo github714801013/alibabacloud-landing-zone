@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { RealtimeClient, buildRealtimeUrl, getConfiguredRealtimeBase } from './client';
+import { useAuthStore } from '@/shared/auth/store';
+import { refreshRealtimeSession } from '@/shared/auth/sessionRefresh';
+
+vi.mock('@/shared/auth/sessionRefresh', () => ({
+  refreshRealtimeSession: vi.fn(),
+}));
 
 class MockWebSocket {
   static instances: MockWebSocket[] = [];
@@ -8,7 +14,7 @@ class MockWebSocket {
   url: string;
   readyState = 0;
   onopen: (() => void) | null = null;
-  onclose: (() => void) | null = null;
+  onclose: ((event: { code?: number; reason?: string }) => void) | null = null;
   onmessage: ((e: { data: string }) => void) | null = null;
   onerror: (() => void) | null = null;
   close = vi.fn();
@@ -28,9 +34,9 @@ class MockWebSocket {
     this.onmessage?.({ data: JSON.stringify(data) });
   }
 
-  simulateClose() {
+  simulateClose(event: { code?: number; reason?: string } = {}) {
     this.readyState = 3;
-    this.onclose?.();
+    this.onclose?.(event);
   }
 }
 
@@ -40,11 +46,14 @@ describe('RealtimeClient', () => {
   beforeEach(() => {
     MockWebSocket.instances = [];
     vi.stubGlobal('WebSocket', MockWebSocket);
+    vi.mocked(refreshRealtimeSession).mockClear();
+    useAuthStore.getState().clear();
     client = new RealtimeClient('ws://localhost:8080/ws');
   });
 
   afterEach(() => {
     client.disconnect();
+    useAuthStore.getState().clear();
     vi.unstubAllGlobals();
   });
 
@@ -165,6 +174,37 @@ describe('RealtimeClient', () => {
     vi.useRealTimers();
   });
 
+  it('rebinds with the refreshed token after an auth-required close', async () => {
+    vi.useFakeTimers();
+    vi.mocked(refreshRealtimeSession).mockResolvedValue({ kind: 'refreshed', token: 'fresh' });
+    client.connect('stale');
+    MockWebSocket.instances[0].simulateOpen();
+    MockWebSocket.instances[0].simulateClose({ code: 1008, reason: 'auth required' });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(MockWebSocket.instances).toHaveLength(2);
+    MockWebSocket.instances[1].simulateOpen();
+    expect(MockWebSocket.instances[1].send).toHaveBeenCalledWith(
+      JSON.stringify({ type: 'auth', token: 'fresh' }),
+    );
+    vi.useRealTimers();
+  });
+
+  it('stops reconnecting when the session is revoked and cannot be refreshed', async () => {
+    vi.useFakeTimers();
+    vi.mocked(refreshRealtimeSession).mockResolvedValue({ kind: 'expired' });
+    client.connect('revoked');
+    MockWebSocket.instances[0].simulateOpen();
+    MockWebSocket.instances[0].simulateClose({ code: 1008, reason: 'auth required' });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(client.state).toBe('disconnected');
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(MockWebSocket.instances).toHaveLength(1);
+    expect(refreshRealtimeSession).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
   it('uses fresh credentials when reconnecting and ignores the replaced socket', async () => {
     vi.useFakeTimers();
     let token = 'old';
@@ -223,6 +263,44 @@ describe('RealtimeClient', () => {
 
     MockWebSocket.instances[0].onerror?.();
     expect(MockWebSocket.instances[0].close).toHaveBeenCalled();
+  });
+});
+
+describe('getRealtimeClient 能力选择', () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.resetModules();
+  });
+
+  it('SharedWorker 不可用时回退现有客户端', async () => {
+    vi.stubGlobal('SharedWorker', undefined);
+    const { getRealtimeClient, RealtimeClient } = await import('./client');
+    expect(getRealtimeClient()).toBeInstanceOf(RealtimeClient);
+  });
+
+  it('SharedWorker 可用时返回标签页代理', async () => {
+    class FakeSharedWorker {
+      port = { onmessage: null, start: () => {}, postMessage: () => {}, close: () => {} };
+    }
+    vi.stubGlobal('SharedWorker', FakeSharedWorker);
+    const { getRealtimeClient } = await import('./client');
+    const { SharedWorkerClient } = await import('./sharedWorkerClient');
+    expect(getRealtimeClient()).toBeInstanceOf(SharedWorkerClient);
+  });
+
+  it('worker 构造失败时回退现有客户端', async () => {
+    class ThrowingSharedWorker {
+      constructor() {
+        throw new Error('blocked');
+      }
+    }
+    vi.stubGlobal('SharedWorker', ThrowingSharedWorker);
+    const { getRealtimeClient, RealtimeClient } = await import('./client');
+    expect(getRealtimeClient()).toBeInstanceOf(RealtimeClient);
   });
 });
 

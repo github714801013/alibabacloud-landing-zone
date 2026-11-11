@@ -14,7 +14,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class ImNotificationFormatterTest {
 
     @ParameterizedTest
-    @ValueSource(strings = {ImNotificationTask.TYPE_APPROVAL_REQUIRED, ImNotificationTask.TYPE_INPUT_REQUIRED})
+    @ValueSource(strings = {ImNotificationTask.TYPE_APPROVAL_REQUIRED, ImNotificationTask.TYPE_INPUT_REQUIRED,
+            ImNotificationTask.TYPE_CLARIFICATION_REPLY})
     void localizesHumanRequestEnvelopeWithoutChangingTheRequestBody(String notificationType) {
         ImNotificationTask task = new ImNotificationTask("request:42", 1L, 7L, 42L, 9L,
                 "AGENT", 10L, "Agent", "request-1", "验收工单", notificationType, "完整步骤名：编写验收摘要");
@@ -27,6 +28,34 @@ class ImNotificationFormatterTest {
         assertTrue(english.contains("**Workspace**: 测试空间"));
         assertTrue(english.contains("完整步骤名：编写验收摘要"));
         assertTrue(english.contains("[Open Work item](https://auto.example.com/workitems/42?workspaceId=7)"));
+    }
+
+    @Test
+    void usesClarifyDeepLinkWhenTaskCarriesLink() {
+        ImNotificationTask task = new ImNotificationTask("request:42", 1L, 7L, 42L, 9L,
+                "AGENT", 10L, "Agent", "request-1", "验收工单",
+                ImNotificationTask.TYPE_INPUT_REQUIRED, "请确认以下范围")
+                .withRelatedLinks(List.of(new NotificationLink("DETAIL", "验收工单",
+                        "/workitems/42?workspaceId=7&panel=clarify&fullscreen=1&agent=10035&conversation=99")));
+        var context = new ImNotificationMessageContext("测试空间", null, "https://auto.example.com/", 7L);
+
+        String chinese = new ImNotificationFormatter().format(context, task);
+
+        assertTrue(chinese.contains("[打开工单处理](https://auto.example.com/workitems/42?workspaceId=7"
+                + "&panel=clarify&fullscreen=1&agent=10035&conversation=99)"));
+    }
+
+    @Test
+    void fallsBackToWorkitemUrlWhenTaskLinkIsBlank() {
+        ImNotificationTask task = new ImNotificationTask("request:42", 1L, 7L, 42L, 9L,
+                "AGENT", 10L, "Agent", "request-1", "验收工单",
+                ImNotificationTask.TYPE_INPUT_REQUIRED, "请确认以下范围")
+                .withRelatedLinks(List.of(new NotificationLink("DETAIL", "验收工单", "  ")));
+        var context = new ImNotificationMessageContext("测试空间", null, "https://auto.example.com", 7L);
+
+        String chinese = new ImNotificationFormatter().format(context, task);
+
+        assertTrue(chinese.contains("[打开工单处理](https://auto.example.com/workitems/42?workspaceId=7)"));
     }
 
     @Test

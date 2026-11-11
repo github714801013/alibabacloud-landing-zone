@@ -12,6 +12,8 @@ type StoredLaunchConfig = {
   workspaceRoot?: string | null;
   daemonName?: string | null;
   debug?: boolean | null;
+  prefixCommand?: string | null;
+  serverBaseUrl?: string | null;
   version: number;
 };
 
@@ -63,6 +65,8 @@ export type SeededLaunchConfig = {
   workspaceRoot?: string | null;
   daemonName?: string | null;
   debug?: boolean | null;
+  prefixCommand?: string | null;
+  serverBaseUrl?: string | null;
   version?: number;
 };
 
@@ -76,12 +80,17 @@ export function setExecutorLaunchConfig(id: number, config: SeededLaunchConfig):
     reasoningEffort: config.reasoningEffort === undefined ? current.reasoningEffort : config.reasoningEffort,
     contextWindow: config.contextWindow === undefined ? current.contextWindow : config.contextWindow,
     memoryMode: config.memoryMode === undefined ? current.memoryMode : config.memoryMode,
+    prefixCommand: config.prefixCommand === undefined ? current.prefixCommand : config.prefixCommand,
+    serverBaseUrl: config.serverBaseUrl === undefined ? current.serverBaseUrl : config.serverBaseUrl,
     version: config.version ?? current.version,
   });
 }
 
 function emptyLaunchConfig(): StoredLaunchConfig {
-  return { model: null, reasoningEffort: null, contextWindow: null, memoryMode: null, version: 1 };
+  return {
+    model: null, reasoningEffort: null, contextWindow: null, memoryMode: null,
+    prefixCommand: null, serverBaseUrl: null, version: 1,
+  };
 }
 
 const MOCK_WS_URL = 'wss://community.example/ws/executor';
@@ -162,8 +171,11 @@ function buildMockLaunchCommand(id: number, stored: StoredLaunchConfig, fixture:
   if (stored.daemonName) argv.push('--name', `'${stored.daemonName.replace(/'/g, "'\\''")}'`);
   if (stored.maxConcurrentDispatches !== undefined) argv.push('--max-tasks', String(stored.maxConcurrentDispatches));
   if (debug || stored.debug) argv.push('--debug');
+  const prefix = stored.prefixCommand ? `${stored.prefixCommand} ` : '';
   const powershellOutput = debug ? shell === 'powershell' : os === 'windows';
-  const command = powershellOutput ? encodePowerShellCommand(argv.join(' ')) : argv.join(' ');
+  const command = powershellOutput
+    ? encodePowerShellCommand(`${prefix}${argv.join(' ')}`)
+    : `${prefix}${argv.join(' ')}`;
   return {
     executorId: id,
     clientKind: fixture.clientKind,
@@ -393,6 +405,8 @@ export const handlers = [
       reasoningEffort: body.reasoningEffort ?? null,
       contextWindow: body.contextWindow ?? null,
       memoryMode: body.memoryMode ?? null,
+      prefixCommand: body.prefixCommand ?? null,
+      serverBaseUrl: body.serverBaseUrl?.trim() ? body.serverBaseUrl.trim() : null,
       version: current.version + 1,
     };
     executorLaunchConfigStore.set(id, next);
@@ -764,6 +778,16 @@ export const handlers = [
       traceId: 'trace-workitem-tag-options',
     });
   }),
+  // 澄清面板读取工单级结构化澄清结果；默认无结果，不触发「再次澄清」模板。
+  http.get('/api/workitems/:workitemId/clarification', () => {
+    return HttpResponse.json({
+      success: true,
+      code: '0',
+      message: '',
+      data: null,
+      traceId: 'trace-workitem-clarification',
+    });
+  }),
   // 高级筛选的创建者候选复用工作空间成员接口，默认空成员列表；
   // 需要候选的用例用 server.use 覆盖成自己的成员数据。
   http.get('/api/workspaces/current/members', () => {
@@ -844,6 +868,26 @@ export const handlers = [
         capabilityReady: false,
       },
       traceId: 'trace-workspace-guide',
+    });
+  }),
+  // 默认无任何 AI 协作默认值；需要覆盖的用例自行 server.use。
+  http.get('/api/workspaces/current/ai-defaults', () => {
+    return HttpResponse.json({
+      success: true,
+      code: '0',
+      message: '',
+      data: {
+        owner: false,
+        clarify: {
+          defaultSquadId: null,
+          defaultAgentId: null,
+          autoSendFirstPrompt: false,
+          promptTemplates: null,
+          valid: true,
+        },
+        delivery: { defaultSquadId: null, defaultAgentId: null, valid: true },
+      },
+      traceId: 'trace-ai-defaults',
     });
   }),
   // 重复工单预检默认无命中，避免沿用真实网络或让无关用例因未处理请求失败。
