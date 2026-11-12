@@ -42,7 +42,7 @@ type Scope = WorkitemListScope;
 type StatusCategory = WorkitemStatusCategory;
 
 /** 看板每列首屏加载条数，点「加载更多」按此步长递增 */
-const KANBAN_COLUMN_PAGE_SIZE = 50;
+const KANBAN_COLUMN_PAGE_SIZE = 10;
 const ALL_STATUS_KEYS = STATUS_COLUMNS.map(col => col.key as StatusCategory);
 
 const SCOPE_STORAGE_KEY = 'autowonder.workitems.scope';
