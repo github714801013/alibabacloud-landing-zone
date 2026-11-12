@@ -7,6 +7,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import javax.annotation.PreDestroy;
@@ -26,34 +27,46 @@ import java.util.concurrent.TimeUnit;
 @Component
 public class InboundFrameScheduler {
     private static final Logger log = LoggerFactory.getLogger(InboundFrameScheduler.class);
-    private static final int MAX_PENDING = 256;
     private final SessionRegistry sessions;
     private final Executor results;
     private final Executor controls;
     private final Executor heartbeatTasks;
     private final int capacity;
+    private final int perDispatchCapacity;
     private final Map<Key, ArrayDeque<Pending>> queues = new HashMap<>();
     private int pendingCount;
     private int pendingHeartbeatCount;
 
     @Autowired
-    public InboundFrameScheduler(SessionRegistry sessions) {
-        this(sessions, pool("ws-result"), pool("ws-control"), ThreadPoolManager.asyncTaskThreadPool, MAX_PENDING);
+    public InboundFrameScheduler(SessionRegistry sessions,
+            @Value("${autowonder.websocket.inbound.control-threads:32}") int controlThreads,
+            @Value("${autowonder.websocket.inbound.result-threads:8}") int resultThreads,
+            @Value("${autowonder.websocket.inbound.max-pending:2048}") int maxPending,
+            @Value("${autowonder.websocket.inbound.max-pending-per-dispatch:64}") int maxPendingPerDispatch) {
+        this(sessions, pool("ws-result", resultThreads, maxPending),
+                pool("ws-control", controlThreads, maxPending),
+                ThreadPoolManager.asyncTaskThreadPool, maxPending, maxPendingPerDispatch);
     }
 
     InboundFrameScheduler(SessionRegistry sessions, Executor results, Executor controls,
             Executor heartbeatTasks, int capacity) {
+        this(sessions, results, controls, heartbeatTasks, capacity, capacity);
+    }
+
+    InboundFrameScheduler(SessionRegistry sessions, Executor results, Executor controls,
+            Executor heartbeatTasks, int capacity, int perDispatchCapacity) {
         this.sessions = sessions;
         this.results = results;
         this.controls = controls;
         this.heartbeatTasks = heartbeatTasks;
-        this.capacity = capacity;
+        this.capacity = Math.max(1, capacity);
+        this.perDispatchCapacity = Math.max(1, perDispatchCapacity);
     }
 
-    private static ExecutorService pool(String name) {
-        int threads = Math.max(2, Math.min(8, Runtime.getRuntime().availableProcessors()));
-        return new MdcAwareThreadPoolExecutor(threads, threads, 30, TimeUnit.SECONDS,
-                new LinkedBlockingQueue<>(MAX_PENDING), new ThreadFactoryBuilder()
+    private static ExecutorService pool(String name, int threads, int queueCapacity) {
+        int actualThreads = Math.max(2, threads);
+        return new MdcAwareThreadPoolExecutor(actualThreads, actualThreads, 30, TimeUnit.SECONDS,
+                new LinkedBlockingQueue<>(Math.max(1, queueCapacity)), new ThreadFactoryBuilder()
                 .setNameFormat("autowonder-" + name + "-%d").setDaemon(true).build());
     }
 
@@ -73,7 +86,7 @@ public class InboundFrameScheduler {
         if (!isCurrent(session)) return;
         Pending item = new Pending(session, type, action, System.nanoTime(), MDC.getCopyOfContextMap());
         boolean start = false;
-        boolean full = false;
+        String rejectReason = null;
         synchronized (queues) {
             ArrayDeque<Pending> queue = queues.get(key);
             // Only the latest heartbeat side effects matter; liveness was already published.
@@ -83,8 +96,12 @@ public class InboundFrameScheduler {
                 return;
             }
             // Trace pressure must not consume admission for unrelated heartbeat side effects.
-            if ((key.heartbeat() ? pendingHeartbeatCount : pendingCount) == capacity) {
-                full = true;
+            int pending = key.heartbeat() ? pendingHeartbeatCount : pendingCount;
+            if (pending >= capacity) {
+                rejectReason = "GLOBAL";
+            } else if (!key.heartbeat() && queue != null && queue.size() >= perDispatchCapacity) {
+                // One slow dispatch must not exhaust the shared admission for every session.
+                rejectReason = "DISPATCH";
             } else {
                 if (queue == null) {
                     queue = new ArrayDeque<>();
@@ -95,7 +112,7 @@ public class InboundFrameScheduler {
                 changePendingCount(key, 1);
             }
         }
-        if (full) reject(session, key.heartbeat() ? 0 : key.id(), type);
+        if (rejectReason != null) reject(session, key.heartbeat() ? 0 : key.id(), type, rejectReason);
         else if (start) schedule(key, item);
     }
 
@@ -113,7 +130,7 @@ public class InboundFrameScheduler {
                 changePendingCount(key, -rejected.size());
             }
             rejected.stream().map(Pending::session).distinct()
-                    .forEach(session -> reject(session, key.heartbeat() ? 0 : key.id(), item.type()));
+                    .forEach(session -> reject(session, key.heartbeat() ? 0 : key.id(), item.type(), "EXECUTOR"));
         }
     }
 
@@ -149,10 +166,10 @@ public class InboundFrameScheduler {
         else pendingCount += delta;
     }
 
-    private void reject(ExecutorSession session, long dispatchId, String type) {
+    private void reject(ExecutorSession session, long dispatchId, String type, String reason) {
         // No receipt: both legacy and V2 Runtime keep unacknowledged results for replay.
-        log.warn("inbound frame queue full executorId={} dispatchId={} type={}; closing session for replay",
-                session.getExecutorId(), dispatchId, type);
+        log.warn("inbound frame queue full executorId={} dispatchId={} type={} reason={}; closing session for replay",
+                session.getExecutorId(), dispatchId, type, reason);
         try {
             session.getSession().close(new CloseReason(CloseReason.CloseCodes.getCloseCode(1013),
                     "inbound processing busy; retry"));

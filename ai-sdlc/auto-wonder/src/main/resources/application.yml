@@ -97,6 +97,15 @@ autowonder:
       retention-failed-days: ${AUTOWONDER_SQUAD_WORKFLOW_RETENTION_FAILED_DAYS:7}
       retention-success-days: ${AUTOWONDER_SQUAD_WORKFLOW_RETENTION_SUCCESS_DAYS:30}
       max-input-bytes: ${AUTOWONDER_SQUAD_WORKFLOW_MAX_INPUT_BYTES:2097152}
+  websocket:
+    inbound:
+      # 入站帧线程池容量：进度帧突发打满会以 1013 关闭执行器连接。
+      # 线程总数（control + result）应低于 AW_DB_POOL_MAX，否则排空积压时会集中等待数据库连接。
+      control-threads: ${AUTOWONDER_WEBSOCKET_INBOUND_CONTROL_THREADS:32}
+      result-threads: ${AUTOWONDER_WEBSOCKET_INBOUND_RESULT_THREADS:8}
+      # 队列上限同时用于两个线程池的排队容量；单帧最大 256KB，2048 在最坏情况下约滞留 512MB。
+      max-pending: ${AUTOWONDER_WEBSOCKET_INBOUND_MAX_PENDING:2048}
+      max-pending-per-dispatch: ${AUTOWONDER_WEBSOCKET_INBOUND_MAX_PENDING_PER_DISPATCH:64}
   runtime:
     recommended-version: ${AUTOWONDER_RUNTIME_RECOMMENDED_VERSION:0.3.43}
     # 全局自动升级开关：开启后服务端发现执行器版本落后就自动下发升级指令。默认开启；

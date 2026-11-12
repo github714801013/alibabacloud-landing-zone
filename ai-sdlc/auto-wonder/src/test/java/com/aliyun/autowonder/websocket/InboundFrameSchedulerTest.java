@@ -154,4 +154,35 @@ class InboundFrameSchedulerTest {
         heartbeats.remove().run();
         assertEquals(List.of("progress", "ack", "heartbeat", "next-heartbeat"), completed);
     }
+
+    @Test
+    void boundsPerDispatchBacklogWithoutClosingOtherExecutors() throws Exception {
+        var registry = mock(SessionRegistry.class);
+        when(registry.isCurrent(any())).thenReturn(true);
+        var tasks = new ArrayDeque<Runnable>();
+        var scheduler = new InboundFrameScheduler(registry, tasks::add, tasks::add, tasks::add, 10, 1);
+        // 一个执行器会话承载多个 dispatch，拒绝粒度为整条会话，因此只会影响同一执行器。
+        var busy = session(100, 1, "busy");
+        var other = session(100, 2, "other");
+        scheduler.dispatch(busy, 55, "TASK_PROGRESS", () -> { });
+        scheduler.dispatch(busy, 55, "TASK_PROGRESS", () -> fail("per-dispatch backlog must be bounded"));
+        verify(busy.getSession()).close(argThat(reason -> reason.getCloseCode().getCode() == 1013));
+        scheduler.dispatch(other, 56, "TASK_PROGRESS", () -> { });
+        verify(other.getSession(), never()).close(any(CloseReason.class));
+    }
+
+    @Test
+    void perDispatchLimitDoesNotApplyToHeartbeatLane() throws Exception {
+        var registry = mock(SessionRegistry.class);
+        when(registry.isCurrent(any())).thenReturn(true);
+        var tasks = new ArrayDeque<Runnable>();
+        var scheduler = new InboundFrameScheduler(registry, tasks::add, tasks::add, tasks::add, 10, 1);
+        var session = session(100, 1, "busy");
+        var completed = new ArrayList<String>();
+        scheduler.dispatch(session, 55, "TASK_PROGRESS", () -> completed.add("progress"));
+        scheduler.heartbeat(session, () -> completed.add("heartbeat"));
+        verify(session.getSession(), never()).close(any(CloseReason.class));
+        while (!tasks.isEmpty()) tasks.remove().run();
+        assertEquals(List.of("progress", "heartbeat"), completed);
+    }
 }
