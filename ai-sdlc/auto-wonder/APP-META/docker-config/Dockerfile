@@ -1,6 +1,10 @@
 # syntax=docker/dockerfile:1
 FROM maven:3.9.9-eclipse-temurin-21 AS build
 
+# npm 包走国内镜像，覆盖 frontend/.npmrc 固定的 registry.npmjs.org，避免 npm ci 空闲超时。
+ENV npm_config_registry=https://registry.npmmirror.com \
+    npm_config_replace_registry_host=always
+
 # 国内镜像源：Maven 走阿里云，Node/npm 由下方构建参数指向 npmmirror。
 RUN printf '%s\n' \
     '<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"><mirrors><mirror>' \
