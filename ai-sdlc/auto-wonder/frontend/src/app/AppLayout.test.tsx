@@ -161,7 +161,7 @@ describe('AppLayout', () => {
       expect(mark).toHaveClass('aw-initial-mark');
     });
     expect(screen.getByRole('button', { name: '用户菜单' })).toHaveTextContent('爱');
-    expect(screen.queryByText('系统设置')).not.toBeInTheDocument();
+    expect(screen.getAllByText('系统设置')).toHaveLength(1);
     expect(screen.getAllByText('成员管理')).toHaveLength(1);
     expect(screen.getByRole('region', { name: '页面内容' })).toContainElement(screen.getByText('角色权限页'));
     expect(document.querySelector('.aw-page-header-context')?.textContent).toBe('');

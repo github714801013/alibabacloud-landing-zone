@@ -359,16 +359,16 @@ function SystemSettingsTab() {
 
 export function SettingsPage() {
   const { t } = useTranslation('settings');
+  const isAdmin = useAuthStore((s) => s.hasAccess('ADMIN'));
+  const tabs = [
+    { key: 'AI', label: t('aiTab'), children: <AiSettingsTab /> },
+    { key: 'NOTIFY', label: t('notifyTab'), children: <NotifySettingsTab /> },
+    { key: 'SYSTEM', label: t('systemTab'), children: <SystemSettingsTab /> },
+    { key: 'AI_DEFAULTS', label: t('aiDefaultsTab'), children: <AiCollaborationDefaultsPage /> },
+  ];
   return (
     <Card className="aw-content-card" title={<PageHeading title={t('settings')} description={t('settingsDescription')} />}>
-      <Tabs
-        items={[
-          { key: 'AI', label: t('aiTab'), children: <AiSettingsTab /> },
-          { key: 'NOTIFY', label: t('notifyTab'), children: <NotifySettingsTab /> },
-          { key: 'SYSTEM', label: t('systemTab'), children: <SystemSettingsTab /> },
-          { key: 'AI_DEFAULTS', label: t('aiDefaultsTab'), children: <AiCollaborationDefaultsPage /> },
-        ]}
-      />
+      <Tabs items={isAdmin ? tabs : tabs.filter((item) => item.key === 'NOTIFY' || item.key === 'AI_DEFAULTS')} />
     </Card>
   );
 }

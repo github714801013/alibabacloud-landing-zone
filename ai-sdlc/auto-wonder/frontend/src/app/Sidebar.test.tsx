@@ -164,11 +164,11 @@ describe('Sidebar helpers', () => {
     expect(groupKeys.indexOf('about-group')).toBe(groupKeys.indexOf('insight-group') + 1);
   });
 
-  it('hides the system settings entry from the menu while keeping its route metadata', () => {
+  it('shows the system settings entry in the menu while keeping its route metadata', () => {
     const items = buildMenuItems();
     const configGroup = items.find((item) => item?.key === 'config-group');
 
-    expect(childKeys(configGroup)).not.toContain('/settings');
+    expect(childKeys(configGroup)).toContain('/settings');
     expect(NAV_GROUPS.flatMap((group) => group.items).map((item) => item.key)).toContain('/settings');
     expect(resolveSelectedNavKey('/settings')).toBe('/settings');
   });
@@ -204,29 +204,32 @@ describe('Sidebar helpers', () => {
     expect(screen.getByText('审计日志')).toBeInTheDocument();
   });
 
-  it('hides the 状态模版 entry from the menu while keeping its route resolvable', () => {
+  it('shows the 状态模版 entry in the menu while keeping its route resolvable', () => {
     const items = buildMenuItems();
     const configGroup = items.find((item) => item?.key === 'config-group');
 
-    expect(items.flatMap(childKeys)).not.toContain('/status-templates');
+    expect(items.flatMap(childKeys)).toContain('/status-templates');
     expect(childKeys(configGroup)).toEqual([
+      '/status-templates',
       '/integrations',
       '/settings/members',
       '/settings/backups',
       '/settings/environment-variables',
+      '/settings',
     ]);
     expect(NAV_GROUPS.flatMap((group) => group.items).map((item) => item.key)).toContain('/status-templates');
     expect(resolveSelectedNavKey('/status-templates')).toBe('/status-templates');
   });
 
-  it('does not render the 状态模版 label in the rendered menu', () => {
+  it('renders the 状态模版 and 系统设置 labels in the rendered menu', () => {
     render(
       <TestWrapper>
         <Sidebar />
       </TestWrapper>,
     );
 
-    expect(screen.queryByText('状态模版')).toBeNull();
+    expect(screen.getByText('状态模版')).toBeInTheDocument();
+    expect(screen.getByText('系统设置')).toBeInTheDocument();
     expect(screen.getByText('平台集成')).toBeInTheDocument();
   });
 

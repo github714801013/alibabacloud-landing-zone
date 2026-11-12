@@ -182,25 +182,31 @@ describe('SettingsPage', () => {
     expect(await screen.findByText('保存后仅对当前浏览器生效')).toBeInTheDocument();
   });
 
-  it('keeps save commands visible but blocks read-only users before mutation', async () => {
-    let quotaUpdates = 0;
-    useAuthStore.getState().setCurrentWorkspace({ id: 1, name: 'O', description: '' }, 'READ_ONLY');
-    useCommonSettingsHandlers([
-      http.put('/api/ai-usage/quota', () => {
-        quotaUpdates += 1;
-        return HttpResponse.json(apiOk(null));
-      }),
-    ]);
+  it('shows all four tabs to workspace admins', async () => {
+    useCommonSettingsHandlers([]);
 
     renderPage();
 
-    const saveButton = await screen.findByRole('button', { name: /保存AI配置/ });
-    expect(saveButton).toBeEnabled();
-    await userEvent.click(saveButton);
-
-    expect(quotaUpdates).toBe(0);
-    expect(await screen.findByText('当前为只读权限，保存AI配置需要管理员权限')).toBeInTheDocument();
+    expect(await screen.findByRole('tab', { name: 'AI 配置' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: '通知配置' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: '系统配置' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'AI 默认值' })).toBeInTheDocument();
   });
+
+  it.each(['READ_WRITE', 'READ_ONLY'] as const)(
+    'shows only notification and AI default tabs to %s members',
+    async (accessLevel) => {
+      useAuthStore.getState().setCurrentWorkspace({ id: 1, name: 'O', description: '' }, accessLevel);
+      useCommonSettingsHandlers([]);
+
+      renderPage();
+
+      expect(await screen.findByRole('tab', { name: '通知配置' })).toBeInTheDocument();
+      expect(screen.getByRole('tab', { name: 'AI 默认值' })).toBeInTheDocument();
+      expect(screen.queryByRole('tab', { name: 'AI 配置' })).toBeNull();
+      expect(screen.queryByRole('tab', { name: '系统配置' })).toBeNull();
+    },
+  );
 });
 
 it('only saves Feishu settings and preferences when the platform selects Feishu', async () => {
@@ -224,13 +230,17 @@ it('only saves Feishu settings and preferences when the platform selects Feishu'
 
 it('keeps personal notification preferences usable for non-admin members', async () => {
   let prefsSaves = 0;
+  let settingsLoads = 0;
   let settingsUpdates = 0;
   useAuthStore.getState().setCurrentWorkspace({ id: 1, name: 'O', description: '' }, 'READ_WRITE');
   useCommonSettingsHandlers([
     http.get('/api/platform/im-channels', () => HttpResponse.json(apiOk([{ provider: 'WECOM', selected: true, enabled: false }]))),
-    http.get('/api/settings/NOTIFY', () => HttpResponse.json({
-      success: false, code: '10403', message: 'denied', traceId: null, data: null,
-    }, { status: 403 })),
+    http.get('/api/settings/NOTIFY', () => {
+      settingsLoads += 1;
+      return HttpResponse.json({
+        success: false, code: '10403', message: 'denied', traceId: null, data: null,
+      }, { status: 403 });
+    }),
     http.get('/api/notifications/prefs', () => HttpResponse.json(apiOk([{ type: 'WORKITEM_ASSIGNED', inApp: true, wecom: false }]))),
     http.put('/api/notifications/prefs', () => { prefsSaves += 1; return HttpResponse.json(apiOk(null)); }),
     http.put('/api/settings/NOTIFY', () => { settingsUpdates += 1; return HttpResponse.json(apiOk(null)); }),
@@ -243,6 +253,7 @@ it('keeps personal notification preferences usable for non-admin members', async
   expect(screen.queryByText('通知配置加载失败，请刷新重试')).not.toBeInTheDocument();
   expect(await screen.findByRole('switch', { name: '工单指派：站内' })).toBeChecked();
   expect(screen.queryByLabelText('启用企业微信通知')).not.toBeInTheDocument();
+  expect(settingsLoads).toBe(0);
 
   await userEvent.click(screen.getByRole('button', { name: /保存通知配置/ }));
   await waitFor(() => expect(prefsSaves).toBe(1));
