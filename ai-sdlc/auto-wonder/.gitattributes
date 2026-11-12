@@ -1,1 +1,9 @@
+# 统一按 LF 检出，避免 Docker 构建按字节复制时摘要/逐字比对不一致。
+* text=auto eol=lf
+
+# Windows 原生脚本保留 CRLF：cmd 的标签跳转与 PowerShell 解析依赖 CRLF。
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
 *.sh text eol=lf
