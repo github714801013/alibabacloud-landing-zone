@@ -29,6 +29,7 @@
 | `ai-sdlc/auto-wonder/src/main/resources/application.yml` | `autowonder.websocket.inbound.*` | 新增配置项及注释（09e6518），默认值不改 | 本地 → 上游 | 无 | — |
 | `ai-sdlc/auto-wonder/src/test/java/com/aliyun/autowonder/websocket/InboundFrameSchedulerTest.java` | 新增/调整用例 | 覆盖进度合并、溢出丢弃、关键帧拒绝、heartbeat 豁免 | 本地 → 上游 | 无 | 同生产类接口 |
 | `ai-sdlc/auto-wonder/src/test/java/com/aliyun/autowonder/dispatch/DispatchPrepareRetryTest.java` | `@BeforeEach` | 删除与父类建表列重复的 `ALTER TABLE dispatch ADD COLUMN resume_from_dispatch_id`（8f06e7f） | 本地 → 上游 | 无 | 父类 `DispatchRecoveryServiceTest` 的基线 schema |
+| `ai-sdlc/auto-wonder/APP-META/docker-config/Dockerfile` | 构建阶段 | 依赖预取分层、构建时 `-DskipTests`、Maven/Node/npm 国内镜像源 | 本地 → 上游 | 无（构建文件） | 基础镜像、`frontend-maven-plugin` 配置 |
 
 ### 低耦合核对
 
@@ -45,6 +46,7 @@
 | `dropQueuedProgress` 方法 | 保留；独立方法便于按上游新结构重写或删除 | `InboundFrameSchedulerTest` |
 | `autowonder.websocket.inbound.*` 配置键 | 保留；上游若新增同名键，合并时以上游语义为准，仅保留本地默认值 | 启动日志与 `/actuator` 配置核对 |
 | `.gitattributes`（`* text=auto eol=lf`，Windows 脚本 CRLF 例外） | 保留。解决 Docker 按字节复制时 `harness-config.json` 摘要与 release-manifest 不一致；升级时检查上游是否引入 eol 规则，冲突则合并 | `git ls-files --eol`；构建时 harness 模板摘要校验 |
+| Dockerfile 依赖预取分层与 `-DskipTests` | 保留。若上游重写 Dockerfile，重放分层与跳过测试改动；测试由本地/CI 单独执行 | `docker build` 构建通过；`mvn -B test -Dtest=InboundFrameSchedulerTest` |
 
 ## 5. 复现测试
 
