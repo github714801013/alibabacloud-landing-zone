@@ -17,7 +17,6 @@ class DispatchPrepareRetryTest extends DispatchRecoveryServiceTest {
         jdbc.execute("ALTER TABLE dispatch ADD COLUMN sdlc_step_id BIGINT");
         jdbc.execute("ALTER TABLE dispatch ADD COLUMN agent_id BIGINT");
         jdbc.execute("ALTER TABLE dispatch ADD COLUMN agent_version_id BIGINT");
-        jdbc.execute("ALTER TABLE dispatch ADD COLUMN resume_from_dispatch_id BIGINT");
         jdbc.execute("ALTER TABLE dispatch ADD COLUMN delivery_source_dispatch_id BIGINT");
         when(dao.returnOwnedActiveToPending(anyLong(), anyLong(), any(), anyInt(), anyLong())).thenAnswer(i ->
                 jdbc.update("UPDATE dispatch SET status='PENDING',executor_id=NULL,error=NULL,version=version+1 "
