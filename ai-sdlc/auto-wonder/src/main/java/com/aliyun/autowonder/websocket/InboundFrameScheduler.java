@@ -15,6 +15,7 @@ import javax.websocket.CloseReason;
 import java.io.IOException;
 import java.util.ArrayDeque;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executor;
@@ -95,9 +96,25 @@ public class InboundFrameScheduler {
                 queue.addLast(item);
                 return;
             }
+            // 进度帧只影响展示：排队中的旧进度可丢弃，队首正在执行不能从结构中移除。
+            boolean progress = "TASK_PROGRESS".equals(type);
+            if (progress && queue != null) {
+                dropQueuedProgress(key, queue);
+                // 合并后仍无空间，说明等待中的是关键帧；丢弃新进度而不是关闭整条会话。
+                if (queue.size() >= perDispatchCapacity) {
+                    log.debug("inbound progress dropped executorId={} dispatchId={} queued={}",
+                            session.getExecutorId(), key.id(), queue.size());
+                    return;
+                }
+            }
             // Trace pressure must not consume admission for unrelated heartbeat side effects.
             int pending = key.heartbeat() ? pendingHeartbeatCount : pendingCount;
             if (pending >= capacity) {
+                if (progress) {
+                    log.debug("inbound progress dropped executorId={} dispatchId={} pending={}",
+                            session.getExecutorId(), key.id(), pending);
+                    return;
+                }
                 rejectReason = "GLOBAL";
             } else if (!key.heartbeat() && queue != null && queue.size() >= perDispatchCapacity) {
                 // One slow dispatch must not exhaust the shared admission for every session.
@@ -114,6 +131,23 @@ public class InboundFrameScheduler {
         }
         if (rejectReason != null) reject(session, key.heartbeat() ? 0 : key.id(), type, rejectReason);
         else if (start) schedule(key, item);
+    }
+
+    /** 丢弃队首之外已排队的进度帧；队首正在执行，不能从结构中移除。 */
+    private void dropQueuedProgress(Key key, ArrayDeque<Pending> queue) {
+        int dropped = 0;
+        ArrayDeque<Pending> kept = new ArrayDeque<>();
+        Iterator<Pending> items = queue.iterator();
+        if (items.hasNext()) kept.addLast(items.next());
+        while (items.hasNext()) {
+            Pending queued = items.next();
+            if ("TASK_PROGRESS".equals(queued.type())) dropped++;
+            else kept.addLast(queued);
+        }
+        if (dropped == 0) return;
+        queue.clear();
+        queue.addAll(kept);
+        changePendingCount(key, -dropped);
     }
 
     private void schedule(Key key, Pending item) {
