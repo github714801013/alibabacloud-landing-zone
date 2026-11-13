@@ -19,6 +19,16 @@ class PlatformPageContextServiceTest {
         String snapshot=new PlatformPageContextService(tools).snapshot(1,3,2,"/workitems/128");
         assertTrue(snapshot.contains("128"));assertTrue(snapshot.contains("Refund approval"));assertFalse(snapshot.contains("secret"));
     }
+    @Test void passesRunIdToTheScheduledTaskRunReader() {
+        var tools=mock(McpToolService.class);
+        when(tools.call(any(),eq("autowonder.get_scheduled_task_run"),any())).thenAnswer(inv->{
+            Map<String,Object> args=inv.getArgument(2);
+            assertEquals(20026L,args.get("runId"));
+            assertFalse(args.containsKey("id"));
+            return Map.of("id",20026,"status","SUCCEEDED");});
+        String snapshot=new PlatformPageContextService(tools).snapshot(1,3,2,"/scheduled-task-runs/20026");
+        assertTrue(snapshot.contains("20026"));
+    }
     @Test void rejectsArbitraryUrlsAndPropagatesResourcePermissionDenials() {
         var tools=mock(McpToolService.class);var service=new PlatformPageContextService(tools);
         assertNull(service.snapshot(1,3,2,"https://private.invalid"));verifyNoInteractions(tools);

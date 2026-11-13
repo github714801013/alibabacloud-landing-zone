@@ -29,7 +29,11 @@ public class PlatformPageContextService {
             long id = Long.parseLong(parts[2]);
             var principal = new McpAccessTokenService.Principal(workspaceId, userId, conversationId,
                     WorkspaceAccessLevel.READ_ONLY, McpAccessTokenService.CredentialType.CONVERSATION);
-            Object resource = tools.call(principal, readers.get(parts[1]), Map.of("workspaceId", workspaceId, "id", id));
+            // 运行详情工具要求 runId，其余资源读取工具统一用 id。
+            Map<String, Object> args = "scheduled-task-runs".equals(parts[1])
+                    ? Map.of("workspaceId", workspaceId, "runId", id)
+                    : Map.of("workspaceId", workspaceId, "id", id);
+            Object resource = tools.call(principal, readers.get(parts[1]), args);
             Map<String, Object> raw = JSON.parseObject(JSON.toJSONString(resource));
             Map<String, Object> summary = new LinkedHashMap<>();
             for (String key : new String[]{"id", "title", "name", "status", "workType", "assigneeType", "assigneeRef", "contentMd", "description"}) {
