@@ -2583,6 +2583,51 @@ class McpToolServiceTest {
     }
 
     @Test
+    void scheduledTaskRunDispatchCanAssignAnyWorkitemInWorkspace() {
+        McpAccessTokenService.Principal dispatchPrincipal = dispatchPrincipal(-321L);
+        DispatchDO runDispatch = dispatch(321L, WORKSPACE_ID, 20331L, 40014L);
+        runDispatch.setSourceType(ExecutionSourceType.SCHEDULED_TASK_RUN.name());
+        AgentVO agent = new AgentVO();
+        agent.setId(40014L);
+        agent.setName("AW开发数字人");
+        WorkitemVO assigned = new WorkitemVO();
+        assigned.setId(10988L);
+        when(dispatchDao.findById(321L)).thenReturn(runDispatch);
+        when(agentService.get(40014L, WORKSPACE_ID)).thenReturn(agent);
+        when(workitemService.assignAs(10988L, "AGENT", 10036L, null, null, null, 100L, 7L,
+                AssignmentActor.agent(40014L, "AW开发数字人"))).thenReturn(assigned);
+
+        Object result = call(dispatchPrincipal, "autowonder.assign_workitem",
+                Map.of("id", 10988L, "assigneeType", "AGENT", "assigneeRef", 10036L));
+
+        assertSame(assigned, result);
+        verify(workitemService).assignAs(10988L, "AGENT", 10036L, null, null, null, 100L, 7L,
+                AssignmentActor.agent(40014L, "AW开发数字人"));
+    }
+
+    @Test
+    void scheduledTaskRunDispatchRejectsMissingWorkitemId() {
+        McpAccessTokenService.Principal dispatchPrincipal = dispatchPrincipal(-321L);
+
+        assertEquals(ErrorCode.MCP_TOOL_ARGUMENT_INVALID.getCode(), assertThrows(BizException.class,
+                () -> call(dispatchPrincipal, "autowonder.assign_workitem",
+                        Map.of("assigneeType", "AGENT", "assigneeRef", 10036L))).getCode());
+        verify(workitemService, never()).assignAs(anyLong(), anyString(), any(), any(), any(), any(), anyLong(), anyLong(), any());
+    }
+
+    @Test
+    void readOnlyDispatchCredentialCannotAssignWorkitem() {
+        var readOnlyDispatch = new McpAccessTokenService.Principal(
+                WORKSPACE_ID, USER_ID, -321L, WorkspaceAccessLevel.READ_ONLY,
+                McpAccessTokenService.CredentialType.DISPATCH);
+
+        assertEquals(ErrorCode.NO_PERMISSION.getCode(), assertThrows(BizException.class,
+                () -> call(readOnlyDispatch, "autowonder.assign_workitem",
+                        Map.of("id", 10988L, "assigneeType", "AGENT", "assigneeRef", 10036L))).getCode());
+        verify(workitemService, never()).assignAs(anyLong(), anyString(), any(), any(), any(), any(), anyLong(), anyLong(), any());
+    }
+
+    @Test
     void addWorkitemCommentSchemaExposesTargetAgentIds() {
         Map<String, Object> targetAgentIds = property(
                 schemaFor("autowonder.add_workitem_comment"), "targetAgentIds");

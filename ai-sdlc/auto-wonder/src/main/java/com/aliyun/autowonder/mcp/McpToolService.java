@@ -2718,7 +2718,12 @@ public class McpToolService {
                 long workitemId = requiredLong(safeArgs, "id");
                 Date scheduledStartAt = isoInstantArgument(safeArgs, "scheduledStartAt");
                 if (isDispatchCredential(context)) {
-                    DispatchDO dispatch = requireDispatchScope(context, workitemId);
+                    DispatchDO dispatch = requireDispatchOwner(context);
+                    // 定时任务派发的 workitemId 承载运行 id，无法与目标工单比较，按工作空间级放行。
+                    if (dispatch.executionSourceType() != ExecutionSourceType.SCHEDULED_TASK_RUN
+                            && !Objects.equals(dispatch.getWorkitemId(), workitemId)) {
+                        throw new BizException(ErrorCode.NO_PERMISSION);
+                    }
                     yield workitemService.assignAs(workitemId, requiredString(safeArgs, "assigneeType"),
                             lng(safeArgs, "assigneeRef"), lng(safeArgs, "sdlcId"), lng(safeArgs, "squadId"),
                             scheduledStartAt,
