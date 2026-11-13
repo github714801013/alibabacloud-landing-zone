@@ -19,6 +19,7 @@ import {
 } from '@ant-design/icons';
 import { MarkdownView } from '@/shared/ui/MarkdownView';
 import { ResizeHandle } from '@/shared/ui/ResizeHandle';
+import { useIsMobile } from '@/shared/ui/useIsMobile';
 import { ApiError, ErrorCodes } from '@/shared/types/common';
 import { useAuthStore } from '@/shared/auth/store';
 import { useAccessCommand } from '@/shared/auth/useAccessCommand';
@@ -104,6 +105,8 @@ export const CLARIFICATION_INPUT_MAX_RATIO = 0.6;
 export const CLARIFICATION_PANEL_FALLBACK_HEIGHT = 280;
 /** 自动模式默认行数：默认给 6 行高度，保证足够的输入空间（工单评论反馈） */
 export const CLARIFICATION_INPUT_DEFAULT_ROWS = 6;
+/** 手机端自动模式默认行数：3 行，给消息区让出阅读空间 */
+export const CLARIFICATION_INPUT_MOBILE_DEFAULT_ROWS = 3;
 export function computeInputHeightMax(panelHeight: number): number {
   const safeHeight = Number.isFinite(panelHeight) && panelHeight > 0
     ? panelHeight
@@ -310,6 +313,15 @@ export function WorkitemClarificationPanel({
   // 在内容持续增长时这些事件可能短暂落在“非底部”位置，若直接参与
   // 判定会把跟随误关掉导致流式回复不再自动滚动（工单问题3）。
   const programmaticScrollPendingRef = useRef(false);
+  // 「回到底部」的平滑滚动会连续派发多帧 scroll 事件：到底（或用户反向滚动接管）
+  // 前都按程序化滚动处理，避免恢复后的标题栏/输入区在动画途中再次隐藏。
+  const smoothScrollPendingRef = useRef(false);
+  const lastScrollTopRef = useRef(0);
+  // 移动端全屏沉浸阅读：滚动消息区时让标题栏/输入区让位，点按消息区恢复。
+  const isMobile = useIsMobile();
+  const immersiveEnabled = isMobile && !!fullscreen;
+  const [headerHidden, setHeaderHidden] = useState(false);
+  const [composerHidden, setComposerHidden] = useState(false);
   // Guards the auto-create effect: createMutation is a new object every
   // render (react-query v5), so without this set a persistent create failure
   // would re-trigger mutate on every effect run (request storm + toast spam).
@@ -1359,25 +1371,62 @@ export function WorkitemClarificationPanel({
     const el = scrollRef.current;
     if (!el) return;
     const nearBottom = isNearScrollBottom(el);
-    if (programmaticScrollPendingRef.current) {
+    const goingUp = el.scrollTop < lastScrollTopRef.current;
+    lastScrollTopRef.current = el.scrollTop;
+    let programmatic = programmaticScrollPendingRef.current;
+    if (programmatic) {
       programmaticScrollPendingRef.current = false;
       // 程序化滚动到达底部：保持跟随开启，不让中间态/底部事件反复改写状态；
       // 若此时已不在底部（内容刚好又增长），落回正常判定。
       if (nearBottom) return;
     }
+    if (smoothScrollPendingRef.current) {
+      if (nearBottom) {
+        // 平滑滚动到达底部：保持恢复后的可见状态并恢复跟随
+        smoothScrollPendingRef.current = false;
+        followBottomRef.current = true;
+        setFollowBottom(true);
+        return;
+      }
+      // 动画中间帧按程序化滚动处理；用户反向滚动接管后恢复正常判定
+      if (goingUp) smoothScrollPendingRef.current = false;
+      else programmatic = true;
+    }
     followBottomRef.current = nearBottom;
     setFollowBottom(nearBottom);
-  }, []);
+    // 流式跟随等程序化滚动不隐藏；软键盘弹出（输入区聚焦）或提问卡片
+    // 显示时只隐藏标题栏，保留输入区。
+    if (programmatic || !immersiveEnabled) return;
+    setHeaderHidden(true);
+    if (displayedElicitation) return;
+    if (inputWrapRef.current?.contains(document.activeElement)) return;
+    setComposerHidden(true);
+  }, [displayedElicitation, immersiveEnabled]);
 
   const scrollToBottomAndFollow = useCallback(() => {
     followBottomRef.current = true;
     setFollowBottom(true);
+    setHeaderHidden(false);
+    setComposerHidden(false);
     const el = scrollRef.current;
     if (el && typeof el.scrollTo === 'function') {
       programmaticScrollPendingRef.current = true;
+      smoothScrollPendingRef.current = true;
       el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
     }
   }, []);
+
+  // 切换会话/数字人、新建对话、进出全屏与跨越移动端断点时恢复全部可见。
+  useEffect(() => {
+    setHeaderHidden(false);
+    setComposerHidden(false);
+    smoothScrollPendingRef.current = false;
+  }, [conversationId, effectiveAgentId, fullscreen, isMobile]);
+
+  // 提问卡片接管输入区后，结算再落回输入框时不能带着旧的隐藏状态。
+  useEffect(() => {
+    if (displayedElicitation) setComposerHidden(false);
+  }, [displayedElicitation]);
 
   const needsAgentSelection = !effectiveAgentId;
 
@@ -1558,6 +1607,7 @@ export function WorkitemClarificationPanel({
           padding: fullscreen ? '12px 24px' : '10px 14px',
           borderBottom: `1px solid ${CLARIFICATION_THEME.hairline}`,
           flexShrink: 0,
+          display: immersiveEnabled && headerHidden ? 'none' : undefined,
         }}
       >
         {fullscreen ? (
@@ -1663,6 +1713,12 @@ export function WorkitemClarificationPanel({
           ref={scrollRef}
           data-testid="clarification-message-scroll"
           onScroll={handleMessageScroll}
+          // 点按消息区任意位置恢复标题栏/输入区；不阻止默认行为与冒泡，
+          // 消息内链接/按钮照常触发。
+          onClick={() => {
+            setHeaderHidden(false);
+            setComposerHidden(false);
+          }}
           style={{ height: '100%', overflow: 'auto', padding: fullscreen ? '20px 24px' : '8px 12px' }}
         >
           {/* 这层列节点必须在滚动容器内部：滚动元素仍是 scrollRef 那层，
@@ -1807,6 +1863,7 @@ export function WorkitemClarificationPanel({
         <div style={{
           padding: fullscreen ? '12px 24px' : '8px 12px',
           position: 'relative', flexShrink: 0,
+          display: immersiveEnabled && composerHidden ? 'none' : undefined,
         }}>
           <ResizeHandle
             direction="vertical"
@@ -1913,7 +1970,9 @@ export function WorkitemClarificationPanel({
                 disabled={composerDisabled}
                 placeholder={agentRestorePending ? t('clarification.restoring') : t('clarification.messagePlaceholder')}
                 height={manualInputHeight}
-                minHeight={Math.round(CLARIFICATION_INPUT_DEFAULT_ROWS * 16 * 1.7) + 26}
+                minHeight={Math.round(
+                  (isMobile ? CLARIFICATION_INPUT_MOBILE_DEFAULT_ROWS : CLARIFICATION_INPUT_DEFAULT_ROWS) * 16 * 1.7,
+                ) + 26}
                 maxHeight={inputHeightMax}
               />
             </div>
