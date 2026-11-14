@@ -257,13 +257,33 @@
     width: 100% !important;
   }
 
+  /* 输入操作行两行布局：首行「附件 + 模板选择 + 发送」、次行「发送方式」。
+     左组沿用组件内的 calc(100% - 112px) 限宽并只在组内换行，外层不换行；
+     发送按钮贴右，并按目标图与首行垂直居中（首行控件 28.5px、按钮 38px，上移两者差的一半）。
+     次行缩进 32.5px = 附件按钮实测 28.5px + 组内 gap 4px，使次行左边界与模板选择对齐。 */
   .aw-clarify-input-actions {
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
   }
 
   .aw-clarify-input-actions > div {
-    max-width: 100% !important;
     flex-wrap: wrap;
+  }
+
+  .aw-clarify-input-actions > button {
+    align-self: flex-start;
+    margin-top: calc((28.5px - 38px) / 2);
+  }
+
+  .aw-clarify-input-actions > div > [data-testid='clarification-template-select'] {
+    flex: 1 1 0;
+    min-width: 0;
+    width: auto !important;
+  }
+
+  .aw-clarify-input-actions > div > [data-testid='clarification-send-mode-select'] {
+    flex: 0 0 calc(100% - 32.5px);
+    width: auto !important;
+    margin-left: 32.5px;
   }
 }
 
