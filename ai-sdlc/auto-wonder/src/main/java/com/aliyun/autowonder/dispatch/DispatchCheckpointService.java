@@ -600,8 +600,9 @@ public class DispatchCheckpointService {
         // Checkpoints are portable, provider-native session ids are not: after an
         // affinity deadline (or any resume that lands on another machine) never
         // leak the old machine's session to the replacement executor.
-        if ("DEGRADED_CONTINUOUS".equals(dispatch.getResumeMode())
-                || resumedOnAnotherExecutor(dispatch, source.dispatchId())) {
+        boolean dropNativeSession = "DEGRADED_CONTINUOUS".equals(dispatch.getResumeMode())
+                || resumedOnAnotherExecutor(dispatch, source.dispatchId());
+        if (dropNativeSession) {
             providerSession = null;
         }
         if (checkpoint == null) {
@@ -625,7 +626,7 @@ public class DispatchCheckpointService {
         return descriptor(dispatch,
                 source.dispatchId(),
                 providerSession == null ? checkpoint.getProvider() : providerSession.provider(),
-                "DEGRADED_CONTINUOUS".equals(dispatch.getResumeMode()) ? null
+                dropNativeSession ? null
                         : (providerSession == null ? checkpoint.getProviderSessionId() : providerSession.sessionId()),
                 downloadUrl,
                 candidates.isEmpty() ? "sha256:" + checkpoint.getSha256() : candidates.get(0).getSha256(),

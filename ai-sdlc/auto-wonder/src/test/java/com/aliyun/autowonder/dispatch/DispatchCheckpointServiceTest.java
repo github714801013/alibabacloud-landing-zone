@@ -290,6 +290,253 @@ class DispatchCheckpointServiceTest {
     }
 
     @Test
+    void crossExecutorDescriptorDropsCheckpointNativeSession() {
+        DispatchCheckpointDao dao = mock(DispatchCheckpointDao.class);
+        DispatchDao dispatchDao = mock(DispatchDao.class);
+        DispatchRuntimeEventDao runtimeEventDao = mock(DispatchRuntimeEventDao.class);
+        ObjectStorage storage = mock(ObjectStorage.class);
+        DispatchCheckpointService service = new DispatchCheckpointService(
+                dao, runtimeEventDao, dispatchDao, storage, new OssProperties());
+        DispatchDO dispatch = new DispatchDO();
+        dispatch.setTenantId(100L);
+        dispatch.setResumeMode("CANONICAL_INTERACTION");
+        dispatch.setResumeFromDispatchId(55L);
+        dispatch.setExecutorId(2L);
+        DispatchDO source = new DispatchDO();
+        source.setId(55L);
+        source.setTenantId(100L);
+        source.setExecutorId(1L);
+        when(dispatchDao.findById(55L)).thenReturn(source);
+        DispatchCheckpointDO checkpoint = checkpoint(1L, "bucket/checkpoint", "abc");
+        checkpoint.setProvider("codex");
+        checkpoint.setProviderSessionId("native-session");
+        when(dao.listLatestByDispatch(100L, 55L, 2)).thenReturn(List.of(checkpoint));
+        when(storage.exists("bucket/checkpoint")).thenReturn(true);
+        when(storage.presignGet("bucket/checkpoint", 600)).thenReturn("https://oss/checkpoint");
+
+        ResumeDescriptor descriptor = service.descriptor(dispatch);
+
+        assertNull(descriptor.providerSessionId());
+        assertEquals("codex", descriptor.provider());
+        assertEquals("https://oss/checkpoint", descriptor.checkpointDownloadUrl());
+        assertEquals(1L, descriptor.checkpointSeq());
+    }
+
+    @Test
+    void sideInteractionCrossExecutorDescriptorDropsCheckpointNativeSession() {
+        DispatchCheckpointDao dao = mock(DispatchCheckpointDao.class);
+        DispatchDao dispatchDao = mock(DispatchDao.class);
+        DispatchRuntimeEventDao runtimeEventDao = mock(DispatchRuntimeEventDao.class);
+        ObjectStorage storage = mock(ObjectStorage.class);
+        DispatchCheckpointService service = new DispatchCheckpointService(
+                dao, runtimeEventDao, dispatchDao, storage, new OssProperties());
+        DispatchDO dispatch = new DispatchDO();
+        dispatch.setTenantId(100L);
+        dispatch.setResumeMode("SIDE_INTERACTION");
+        dispatch.setResumeFromDispatchId(55L);
+        dispatch.setExecutorId(2L);
+        DispatchDO source = new DispatchDO();
+        source.setId(55L);
+        source.setTenantId(100L);
+        source.setExecutorId(1L);
+        when(dispatchDao.findById(55L)).thenReturn(source);
+        DispatchCheckpointDO checkpoint = checkpoint(1L, "bucket/checkpoint", "abc");
+        checkpoint.setProvider("codex");
+        checkpoint.setProviderSessionId("native-session");
+        when(dao.listLatestByDispatch(100L, 55L, 2)).thenReturn(List.of(checkpoint));
+        when(storage.exists("bucket/checkpoint")).thenReturn(true);
+        when(storage.presignGet("bucket/checkpoint", 600)).thenReturn("https://oss/checkpoint");
+
+        ResumeDescriptor descriptor = service.descriptor(dispatch);
+
+        assertNull(descriptor.providerSessionId());
+        assertEquals("codex", descriptor.provider());
+        assertEquals("https://oss/checkpoint", descriptor.checkpointDownloadUrl());
+        assertEquals(1L, descriptor.checkpointSeq());
+    }
+
+    @Test
+    void sameExecutorDescriptorKeepsCheckpointNativeSession() {
+        DispatchCheckpointDao dao = mock(DispatchCheckpointDao.class);
+        DispatchDao dispatchDao = mock(DispatchDao.class);
+        DispatchRuntimeEventDao runtimeEventDao = mock(DispatchRuntimeEventDao.class);
+        ObjectStorage storage = mock(ObjectStorage.class);
+        DispatchCheckpointService service = new DispatchCheckpointService(
+                dao, runtimeEventDao, dispatchDao, storage, new OssProperties());
+        DispatchDO dispatch = new DispatchDO();
+        dispatch.setTenantId(100L);
+        dispatch.setResumeMode("CANONICAL_INTERACTION");
+        dispatch.setResumeFromDispatchId(55L);
+        dispatch.setExecutorId(1L);
+        DispatchDO source = new DispatchDO();
+        source.setId(55L);
+        source.setTenantId(100L);
+        source.setExecutorId(1L);
+        when(dispatchDao.findById(55L)).thenReturn(source);
+        DispatchCheckpointDO checkpoint = checkpoint(1L, "bucket/checkpoint", "abc");
+        checkpoint.setProvider("codex");
+        checkpoint.setProviderSessionId("native-session");
+        when(dao.listLatestByDispatch(100L, 55L, 2)).thenReturn(List.of(checkpoint));
+        when(storage.exists("bucket/checkpoint")).thenReturn(true);
+        when(storage.presignGet("bucket/checkpoint", 600)).thenReturn("https://oss/checkpoint");
+
+        ResumeDescriptor descriptor = service.descriptor(dispatch);
+
+        assertEquals("native-session", descriptor.providerSessionId());
+        assertEquals("https://oss/checkpoint", descriptor.checkpointDownloadUrl());
+    }
+
+    @Test
+    void crossExecutorUnavailableCheckpointDropsNativeSession() {
+        DispatchCheckpointDao dao = mock(DispatchCheckpointDao.class);
+        DispatchDao dispatchDao = mock(DispatchDao.class);
+        DispatchRuntimeEventDao runtimeEventDao = mock(DispatchRuntimeEventDao.class);
+        ObjectStorage storage = mock(ObjectStorage.class);
+        DispatchCheckpointService service = new DispatchCheckpointService(
+                dao, runtimeEventDao, dispatchDao, storage, new OssProperties());
+        DispatchDO dispatch = new DispatchDO();
+        dispatch.setTenantId(100L);
+        dispatch.setResumeMode("CANONICAL_INTERACTION");
+        dispatch.setResumeFromDispatchId(55L);
+        dispatch.setExecutorId(2L);
+        DispatchDO source = new DispatchDO();
+        source.setId(55L);
+        source.setTenantId(100L);
+        source.setExecutorId(1L);
+        when(dispatchDao.findById(55L)).thenReturn(source);
+        DispatchCheckpointDO checkpoint = checkpoint(1L, "bucket/checkpoint", "abc");
+        checkpoint.setProvider("codex");
+        checkpoint.setProviderSessionId("native-session");
+        when(dao.listLatestByDispatch(100L, 55L, 2)).thenReturn(List.of(checkpoint));
+        when(storage.exists("bucket/checkpoint")).thenReturn(false);
+
+        ResumeDescriptor descriptor = service.descriptor(dispatch);
+
+        assertNull(descriptor.providerSessionId());
+        assertNull(descriptor.checkpointDownloadUrl());
+        assertNull(descriptor.checkpointSeq());
+    }
+
+    @Test
+    void missingExecutorIdKeepsCheckpointNativeSession() {
+        DispatchCheckpointDao dao = mock(DispatchCheckpointDao.class);
+        DispatchDao dispatchDao = mock(DispatchDao.class);
+        DispatchRuntimeEventDao runtimeEventDao = mock(DispatchRuntimeEventDao.class);
+        ObjectStorage storage = mock(ObjectStorage.class);
+        DispatchCheckpointService service = new DispatchCheckpointService(
+                dao, runtimeEventDao, dispatchDao, storage, new OssProperties());
+        DispatchDO dispatch = new DispatchDO();
+        dispatch.setTenantId(100L);
+        dispatch.setResumeMode("CANONICAL_INTERACTION");
+        dispatch.setResumeFromDispatchId(55L);
+        DispatchDO source = new DispatchDO();
+        source.setId(55L);
+        source.setTenantId(100L);
+        source.setExecutorId(1L);
+        when(dispatchDao.findById(55L)).thenReturn(source);
+        DispatchCheckpointDO checkpoint = checkpoint(1L, "bucket/checkpoint", "abc");
+        checkpoint.setProvider("codex");
+        checkpoint.setProviderSessionId("native-session");
+        when(dao.listLatestByDispatch(100L, 55L, 2)).thenReturn(List.of(checkpoint));
+        when(storage.exists("bucket/checkpoint")).thenReturn(true);
+        when(storage.presignGet("bucket/checkpoint", 600)).thenReturn("https://oss/checkpoint");
+
+        ResumeDescriptor descriptor = service.descriptor(dispatch);
+
+        assertEquals("native-session", descriptor.providerSessionId());
+        assertEquals("https://oss/checkpoint", descriptor.checkpointDownloadUrl());
+    }
+
+    @Test
+    void missingSourceDispatchKeepsCheckpointNativeSession() {
+        DispatchCheckpointDao dao = mock(DispatchCheckpointDao.class);
+        DispatchDao dispatchDao = mock(DispatchDao.class);
+        DispatchRuntimeEventDao runtimeEventDao = mock(DispatchRuntimeEventDao.class);
+        ObjectStorage storage = mock(ObjectStorage.class);
+        DispatchCheckpointService service = new DispatchCheckpointService(
+                dao, runtimeEventDao, dispatchDao, storage, new OssProperties());
+        DispatchDO dispatch = new DispatchDO();
+        dispatch.setTenantId(100L);
+        dispatch.setResumeMode("CANONICAL_INTERACTION");
+        dispatch.setResumeFromDispatchId(55L);
+        dispatch.setExecutorId(2L);
+        when(dispatchDao.findById(55L)).thenReturn(null);
+        DispatchCheckpointDO checkpoint = checkpoint(1L, "bucket/checkpoint", "abc");
+        checkpoint.setProvider("codex");
+        checkpoint.setProviderSessionId("native-session");
+        when(dao.listLatestByDispatch(100L, 55L, 2)).thenReturn(List.of(checkpoint));
+        when(storage.exists("bucket/checkpoint")).thenReturn(true);
+        when(storage.presignGet("bucket/checkpoint", 600)).thenReturn("https://oss/checkpoint");
+
+        ResumeDescriptor descriptor = service.descriptor(dispatch);
+
+        assertEquals("native-session", descriptor.providerSessionId());
+        assertEquals("https://oss/checkpoint", descriptor.checkpointDownloadUrl());
+    }
+
+    @Test
+    void blankCheckpointSessionIdIsDroppedForCrossExecutor() {
+        DispatchCheckpointDao dao = mock(DispatchCheckpointDao.class);
+        DispatchDao dispatchDao = mock(DispatchDao.class);
+        DispatchRuntimeEventDao runtimeEventDao = mock(DispatchRuntimeEventDao.class);
+        ObjectStorage storage = mock(ObjectStorage.class);
+        DispatchCheckpointService service = new DispatchCheckpointService(
+                dao, runtimeEventDao, dispatchDao, storage, new OssProperties());
+        DispatchDO dispatch = new DispatchDO();
+        dispatch.setTenantId(100L);
+        dispatch.setResumeMode("CANONICAL_INTERACTION");
+        dispatch.setResumeFromDispatchId(55L);
+        dispatch.setExecutorId(2L);
+        DispatchDO source = new DispatchDO();
+        source.setId(55L);
+        source.setTenantId(100L);
+        source.setExecutorId(1L);
+        when(dispatchDao.findById(55L)).thenReturn(source);
+        DispatchCheckpointDO checkpoint = checkpoint(1L, "bucket/checkpoint", "abc");
+        checkpoint.setProvider("codex");
+        checkpoint.setProviderSessionId("   ");
+        when(dao.listLatestByDispatch(100L, 55L, 2)).thenReturn(List.of(checkpoint));
+        when(storage.exists("bucket/checkpoint")).thenReturn(true);
+        when(storage.presignGet("bucket/checkpoint", 600)).thenReturn("https://oss/checkpoint");
+
+        ResumeDescriptor descriptor = service.descriptor(dispatch);
+
+        assertNull(descriptor.providerSessionId());
+        assertEquals("https://oss/checkpoint", descriptor.checkpointDownloadUrl());
+    }
+
+    @Test
+    void blankCheckpointSessionIdStaysForSameExecutor() {
+        DispatchCheckpointDao dao = mock(DispatchCheckpointDao.class);
+        DispatchDao dispatchDao = mock(DispatchDao.class);
+        DispatchRuntimeEventDao runtimeEventDao = mock(DispatchRuntimeEventDao.class);
+        ObjectStorage storage = mock(ObjectStorage.class);
+        DispatchCheckpointService service = new DispatchCheckpointService(
+                dao, runtimeEventDao, dispatchDao, storage, new OssProperties());
+        DispatchDO dispatch = new DispatchDO();
+        dispatch.setTenantId(100L);
+        dispatch.setResumeMode("CANONICAL_INTERACTION");
+        dispatch.setResumeFromDispatchId(55L);
+        dispatch.setExecutorId(1L);
+        DispatchDO source = new DispatchDO();
+        source.setId(55L);
+        source.setTenantId(100L);
+        source.setExecutorId(1L);
+        when(dispatchDao.findById(55L)).thenReturn(source);
+        DispatchCheckpointDO checkpoint = checkpoint(1L, "bucket/checkpoint", "abc");
+        checkpoint.setProvider("codex");
+        checkpoint.setProviderSessionId("   ");
+        when(dao.listLatestByDispatch(100L, 55L, 2)).thenReturn(List.of(checkpoint));
+        when(storage.exists("bucket/checkpoint")).thenReturn(true);
+        when(storage.presignGet("bucket/checkpoint", 600)).thenReturn("https://oss/checkpoint");
+
+        ResumeDescriptor descriptor = service.descriptor(dispatch);
+
+        assertEquals("   ", descriptor.providerSessionId());
+        assertEquals("https://oss/checkpoint", descriptor.checkpointDownloadUrl());
+    }
+
+    @Test
     void recoveryDescriptorIncludesLatestAndPreviousCheckpointCandidates() {
         DispatchCheckpointDao dao = mock(DispatchCheckpointDao.class);
         DispatchDao dispatchDao = mock(DispatchDao.class);
