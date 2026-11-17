@@ -38,7 +38,7 @@ class CommunityBuildInputTest {
     void containerUsesJava21AndDropsRootPrivileges() throws Exception {
         String dockerfile = Files.readString(Path.of("APP-META/docker-config/Dockerfile"));
 
-        assertTrue(dockerfile.contains("eclipse-temurin:21"));
+        assertTrue(dockerfile.contains("jiuji-java-semeru-jdk21:20260421@sha256:"));
         assertTrue(dockerfile.contains("USER autowonder"));
     }
 

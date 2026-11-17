@@ -14,7 +14,7 @@ class DockerRuntimeToolingTest {
     void runtimeImageContainsOnlyThePublicServerRuntime() throws Exception {
         String dockerfile = Files.readString(Path.of("APP-META/docker-config/Dockerfile"));
 
-        assertTrue(dockerfile.contains("eclipse-temurin:21-jre-jammy@sha256:"));
+        assertTrue(dockerfile.contains("jiuji-java-semeru-jdk21:20260421@sha256:"));
         assertTrue(dockerfile.contains("USER autowonder"));
         assertFalse(dockerfile.contains("claude"),
                 "Agent CLIs belong in independently deployed runtimes, not the server image");

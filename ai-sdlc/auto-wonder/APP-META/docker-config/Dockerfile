@@ -32,11 +32,11 @@ RUN --mount=type=cache,target=/root/.m2 \
         -Dnpm.download.root=https://registry.npmmirror.com/npm/-/ \
         package
 
-FROM eclipse-temurin:21-jre-jammy@sha256:468586c92d39f8cbad76574623db3fe001625ed4d895431c3ff7bd2ec9ce7ae3
+FROM harbor.saas.ch999.cn:1088/common/jiuji-java-semeru-jdk21:20260421@sha256:1c316b04dacbf86adcf268ada6c5e298df5b637671b3b1538cbdb648a5eb9af9
 
-RUN groupadd --system autowonder && \
-    useradd --system --gid autowonder --home /app autowonder && \
-    install -d -o autowonder -g autowonder /app/logs
+RUN addgroup -S autowonder && \
+    adduser -S -G autowonder -h /app autowonder && \
+    mkdir -p /app/logs && chown autowonder:autowonder /app/logs
 
 WORKDIR /app
 COPY --from=build /workspace/target/auto-wonder.jar /app/auto-wonder.jar
