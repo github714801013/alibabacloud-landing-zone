@@ -278,6 +278,24 @@ class PlatformConversationControllerTest {
         verify(service).cancelTurn(WORKSPACE_ID, CONVERSATION_ID, USER_ID, TURN_ID);
     }
 
+    @Test
+    void retryTurnDelegatesTheTurnIdUnderTheCallerIdentity() {
+        assertTrue(controller.retryTurn(CONVERSATION_ID, TURN_ID).isSuccess());
+        verify(service).retryTurn(WORKSPACE_ID, CONVERSATION_ID, USER_ID, TURN_ID);
+    }
+
+    /** 重试沿用类级只读闸门，Owner 判定下沉给 service，但访问动作必须可审计。 */
+    @Test
+    void retryTurnKeepsTheReadOnlyGateAndDeclaresItsAccessAction() throws NoSuchMethodException {
+        RequireWorkspaceAccess access = PlatformConversationController.class
+                .getMethod("retryTurn", Long.class, Long.class)
+                .getAnnotation(RequireWorkspaceAccess.class);
+
+        assertNotNull(access);
+        assertEquals(WorkspaceAccessLevel.READ_ONLY, access.value());
+        assertEquals("access.action.retry_a_platform_assistant_message", access.actionKey());
+    }
+
     /** 答案 JSON 原样透传：结构由 Agent 的 requestedSchema 决定，服务端不解释也不重排。 */
     @Test
     void replyElicitationPassesActionAndRawAnswerThroughUnchanged() {

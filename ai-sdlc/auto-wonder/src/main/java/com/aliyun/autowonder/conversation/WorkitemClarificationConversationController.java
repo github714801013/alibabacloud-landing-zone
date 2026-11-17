@@ -174,6 +174,16 @@ public class WorkitemClarificationConversationController {
         return Result.ok(null);
     }
 
+    @PostMapping("/{conversationId}/turns/{turnId}/retry")
+    @RequireWorkspaceAccess(value = WorkspaceAccessLevel.READ_WRITE, action = "重试工单澄清消息", actionKey = "access.action.retry_a_work_item_clarification_message")
+    public Result<Void> retryTurn(
+            @PathVariable Long workitemId,
+            @PathVariable Long conversationId,
+            @PathVariable Long turnId) {
+        service.retryTurn(currentWorkspaceId(), workitemId, conversationId, turnId);
+        return Result.ok(null);
+    }
+
     /** 回答会驱动挂起的 Agent 继续本轮，属于写操作。 */
     @PostMapping("/{conversationId}/elicitations/{requestId}/reply")
     @RequireWorkspaceAccess(value = WorkspaceAccessLevel.READ_WRITE, action = "回答工单澄清问题卡片", actionKey = "access.action.answer_a_work_item_clarification_question_card")

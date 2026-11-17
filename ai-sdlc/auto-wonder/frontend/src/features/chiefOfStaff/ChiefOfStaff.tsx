@@ -1,12 +1,13 @@
 import { appendQuestionContext } from '@/features/workitem/clarification/continueQuestion';
 import { conversationNotice } from '@/features/workitem/clarification/conversationNotice';
+import { hiddenFailedOutboundTurnIds } from '@/features/workitem/clarification/hooks';
 import { AnswerDeliveryStatus } from "@/features/workitem/clarification/cards/AnswerDeliveryStatus";
 import { useTranslation } from 'react-i18next';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Alert, Button, Input, Spin, Switch, Tag, message } from 'antd';
-import { CloseOutlined, HistoryOutlined, CopyOutlined, PictureOutlined, StopOutlined, ArrowUpOutlined, PlusOutlined, HolderOutlined, LeftOutlined, RightOutlined, FullscreenOutlined, CompressOutlined } from '@ant-design/icons';
+import { CloseOutlined, HistoryOutlined, CopyOutlined, PictureOutlined, StopOutlined, ArrowUpOutlined, PlusOutlined, HolderOutlined, LeftOutlined, RightOutlined, FullscreenOutlined, CompressOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useAuthStore } from '@/shared/auth/store';
 import { useRealtime } from '@/shared/realtime/useRealtime';
 import { useLocale } from '@/shared/i18n/LocaleProvider';
@@ -468,6 +469,20 @@ function Assistant({ userId, workspaceId, hideLauncher }: { userId: number; work
   const contextLabel = contextMatch ? t('resourceContext', { resource: pageLabel, id: contextMatch[2] }) : pageLabel;
   const canContinue = canWrite && !processing && !submit.isPending && !upload.isPending && !perform.isPending
     && !!setup.data?.ready && !conversation.data?.archivedAt && !conversation.error;
+  const [retryingInboundId, setRetryingInboundId] = useState<number | null>(null);
+  const hiddenFailedOutbound = useMemo(
+    () => hiddenFailedOutboundTurnIds(conversation.data?.turns ?? [], retryingInboundId),
+    [conversation.data?.turns, retryingInboundId],
+  );
+  // 只给最新一条失败的用户消息提供重试，且只有会话 Owner 能操作。
+  const latestInbound = [...(conversation.data?.turns ?? [])].reverse()
+    .find(turn => turn.direction === INBOUND);
+  const retryableTurnId = latestInbound && canWrite && conversation.data?.owner === true
+    && !processing && !!setup.data?.ready && !conversation.data?.archivedAt && !conversation.error
+    && (latestInbound.status ?? '').toUpperCase() === 'FAILED'
+    && !(conversation.data?.turns ?? []).some(turn => turn.direction === INBOUND
+      && (turn.status === 'PROCESSING' || turn.status === 'QUEUED'))
+    ? latestInbound.id : null;
   const settledQuestions = new Set([...(conversation.data?.answerDeliveries ?? []), ...(conversation.data?.questionHistory ?? [])].map(card => card.requestId));
   const currentQuestionTurnId = conversation.data?.processingTurnId ?? [...(conversation.data?.turns ?? [])].reverse().find(turn => turn.direction === INBOUND)?.id;
   const turnNotices = new Map(conversation.data?.turns.map(turn => [turn.id, [
@@ -613,7 +628,7 @@ function Assistant({ userId, workspaceId, hideLauncher }: { userId: number; work
               : <><Input aria-label={t('rename')} value={rename} onChange={e => setRename(e.target.value)} maxLength={255} /><Button disabled={!rename.trim()} onClick={() => perform.mutate(async () => { await api.patchConversation(prefs.conversationId!, { title: rename }); setRename(null); })}>{t('save')}</Button></>}
             <Button size="small" onClick={() => perform.mutate(() => api.patchConversation(prefs.conversationId!, { archived: !conversation.data!.archivedAt }))}>{conversation.data.archivedAt ? t('restore') : t('archive')}</Button>
           </div>}
-          {conversation.data?.turns.map(turn => <section key={turn.id} className={`aw-chief-message ${turn.direction === INBOUND ? 'aw-chief-user' : ''}`}>
+          {conversation.data?.turns.filter(turn => !hiddenFailedOutbound.has(turn.id)).map(turn => <section key={turn.id} className={`aw-chief-message ${turn.direction === INBOUND ? 'aw-chief-user' : ''}`}>
             <div className="aw-chief-message-heading">
               {turn.direction !== INBOUND && <div className="aw-chief-secondary">{t('name')}</div>}
               <div className="aw-chief-message-actions"><Button type="text" size="small" icon={<CopyOutlined />} aria-label={t('copyMessage')} title={t('copyMessage')} onClick={() => copyMessage(turn.content)} /></div>
@@ -627,6 +642,10 @@ function Assistant({ userId, workspaceId, hideLauncher }: { userId: number; work
             {!!turn.images?.length && <div className="aw-chief-images">{turn.images.map(image => <a key={image.id} href={image.url} target="_blank" rel="noreferrer"><img src={image.url} alt={image.name} /></a>)}</div>}
             <div className="aw-chief-message-actions"><Button type="text" size="small" icon={<CopyOutlined />} aria-label={t('copyMessage')} title={t('copyMessage')} onClick={() => copyMessage(turn.content)} /></div>
             {turn.error && <Alert type="error" message={turnNotices.get(turn.id)?.[1] ?? turn.error} />}
+            {turn.direction === INBOUND && turn.id === retryableTurnId &&
+              <div className="aw-chief-actions"><Button size="small" icon={<ReloadOutlined />} loading={perform.isPending}
+                onClick={() => perform.mutate(() => api.retryTurn(prefs.conversationId!, turn.id),
+                  { onSuccess: () => setRetryingInboundId(turn.id) })}>{t('retry')}</Button></div>}
             {planLayout.anchoredPlans.get(turn.id)?.map(renderPlan)}
           </section>)}
           {processing && <><Tag>{t('processing')}</Tag>

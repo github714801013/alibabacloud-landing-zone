@@ -1009,6 +1009,58 @@ public class AgentConversationService {
     }
 
     /**
+     * 会话重试：把最新一条失败的入站轮次恢复为可派发并重新投递同一轮次，
+     * 复用原内容与附件；执行器不可用时由渠道入口先抛错，轮次保持 FAILED。
+     */
+    @Transactional
+    public void retryTurn(Long tenantId, Long conversationId, Long turnId) {
+        if (tenantId == null || conversationId == null || turnId == null) {
+            throw new KeyedIllegalArgumentException("conversation.retry_ids_required", null,
+                    "tenantId, conversationId and turnId are required");
+        }
+        AgentConversationDO conv = convDao.findById(tenantId, conversationId);
+        if (conv == null) {
+            throw new KeyedIllegalArgumentException("conversation.not_found", null,
+                    "conversation not found");
+        }
+        withConversationLock(conversationLockName(tenantId, conversationId),
+                () -> retryTurnLocked(tenantId, conv, turnId));
+    }
+
+    private PendingDispatch retryTurnLocked(Long tenantId, AgentConversationDO conv, Long turnId) {
+        AgentConversationTurnDO turn = inboundTurn(tenantId, conv.getId(), turnId);
+        if (turn == null) {
+            throw BizException.keyed(ErrorCode.NOT_FOUND, "conversation.turn_not_found", null,
+                    "conversation turn not found: " + turnId);
+        }
+        if (!DIRECTION_IN.equals(turn.getDirection())) {
+            throw turnNotRetryable(turnId, "direction=" + turn.getDirection());
+        }
+        if (!"FAILED".equals(turn.getStatus())) {
+            throw turnNotRetryable(turnId, "status=" + turn.getStatus());
+        }
+        AgentConversationTurnDO latest = turnDao.findLatestInbound(tenantId, conv.getId());
+        if (latest == null || !turnId.equals(latest.getId())) {
+            throw turnNotRetryable(turnId, "not the latest inbound turn");
+        }
+        if (turnDao.findProcessingInbound(tenantId, conv.getId()) != null
+                || turnDao.findNextQueuedInbound(tenantId, conv.getId()) != null) {
+            throw turnNotRetryable(turnId, "conversation has an active inbound turn");
+        }
+        if (turnDao.resetFailedInboundForRetry(tenantId, conv.getId(), turnId) != 1) {
+            throw turnNotRetryable(turnId, "turn state changed concurrently");
+        }
+        recordQueueDepth(conv, 1L);
+        // 重置后走既有排队推进；执行器在线但无空位时保持 QUEUED，由排队恢复任务继续推进。
+        return nextQueuedDispatch(tenantId, conv);
+    }
+
+    private BizException turnNotRetryable(Long turnId, String diagnostic) {
+        return BizException.keyed(ErrorCode.CONFLICT, "conversation.turn_not_retryable", null,
+                "conversation turn not retryable: " + turnId + " (" + diagnostic + ")");
+    }
+
+    /**
      * 取消 / 重投前先把该轮所有挂起卡片 cancel 掉 —— ACP 要求挂起请求必须有终态，
      * 否则执行器侧的 JSON-RPC 请求会一直悬着，用户也会对着一个投不进去的表单填。
      *

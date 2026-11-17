@@ -277,22 +277,7 @@ public class WorkitemClarificationConversationService {
             return;
         }
         AgentDO agent = agentDao.findById(conv.getAgentId());
-        Long executorId;
-        if (conv.getExecutorId() != null) {
-            // 会话硬绑自身执行器：在线但无剩余容量时入队，离线明确报错，不回落其他机器。
-            executorId = executorRouter.selectStrict(tenantId, conv.getAgentId(),
-                    requireOnlineVersion(agent), conv.getExecutorId());
-            if (executorId == null && !executorRouter.canQueueOnOwner(tenantId, conv.getAgentId(),
-                    requireOnlineVersion(agent), conv.getExecutorId(), false)) {
-                throw new BizException(ErrorCode.CLARIFICATION_EXECUTOR_OFFLINE);
-            }
-        } else {
-            executorId = executorRouter.select(tenantId, conv.getAgentId(),
-                    requireOnlineVersion(agent), null);
-            if (executorId == null) {
-                throw new BizException(ErrorCode.CLARIFICATION_EXECUTOR_OFFLINE);
-            }
-        }
+        Long executorId = requireDispatchableExecutor(tenantId, conv, agent);
         if (executorId != null && !executorId.equals(conv.getExecutorId())) {
             boolean firstBinding = conv.getExecutorId() == null;
             convDao.updateExecutor(tenantId, conversationId, executorId);
@@ -323,6 +308,40 @@ public class WorkitemClarificationConversationService {
             throw new KeyedIllegalArgumentException("conversation.workitem_mismatch", null, "conversation does not belong to this workitem");
         }
         conversationService.requestTurnCancel(tenantId, conversationId, turnId);
+    }
+
+    @Transactional
+    public void retryTurn(Long tenantId, Long workitemId, Long conversationId, Long turnId) {
+        AgentConversationDO conv = convDao.findById(tenantId, conversationId);
+        if (conv == null) {
+            throw new KeyedIllegalArgumentException("conversation.not_found", null, "conversation not found");
+        }
+        if (!CHANNEL.equals(conv.getChannel()) || !BIZ_REF_TYPE.equals(conv.getBizRefType())
+                || !workitemId.equals(conv.getBizRefId())) {
+            throw new KeyedIllegalArgumentException("conversation.workitem_mismatch", null, "conversation does not belong to this workitem");
+        }
+        // 与发送同一口径先判执行器：离线时直接报错，不让轮次脱离 FAILED。
+        requireDispatchableExecutor(tenantId, conv, agentDao.findById(conv.getAgentId()));
+        conversationService.retryTurn(tenantId, conversationId, turnId);
+    }
+
+    private Long requireDispatchableExecutor(Long tenantId, AgentConversationDO conv, AgentDO agent) {
+        if (conv.getExecutorId() != null) {
+            // 会话硬绑自身执行器：在线但无剩余容量时入队，离线明确报错，不回落其他机器。
+            Long executorId = executorRouter.selectStrict(tenantId, conv.getAgentId(),
+                    requireOnlineVersion(agent), conv.getExecutorId());
+            if (executorId == null && !executorRouter.canQueueOnOwner(tenantId, conv.getAgentId(),
+                    requireOnlineVersion(agent), conv.getExecutorId(), false)) {
+                throw new BizException(ErrorCode.CLARIFICATION_EXECUTOR_OFFLINE);
+            }
+            return executorId;
+        }
+        Long executorId = executorRouter.select(tenantId, conv.getAgentId(),
+                requireOnlineVersion(agent), null);
+        if (executorId == null) {
+            throw new BizException(ErrorCode.CLARIFICATION_EXECUTOR_OFFLINE);
+        }
+        return executorId;
     }
 
     private Long requireOnlineVersion(AgentDO agent) {

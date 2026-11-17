@@ -151,6 +151,13 @@ public class PlatformConversationController {
         return Result.ok(null);
     }
 
+    @PostMapping("/{conversationId}/turns/{turnId}/retry")
+    @RequireWorkspaceAccess(value = WorkspaceAccessLevel.READ_ONLY, action = "重试平台管家消息", actionKey = "access.action.retry_a_platform_assistant_message")
+    public Result<Void> retryTurn(@PathVariable Long conversationId, @PathVariable Long turnId) {
+        service.retryTurn(currentWorkspaceId(), conversationId, currentUserId(), turnId);
+        return Result.ok(null);
+    }
+
     /** 回答会驱动挂起的 Agent 继续本轮，属于写操作。 */
     @PostMapping("/{conversationId}/elicitations/{requestId}/reply")
     @RequireWorkspaceAccess(value = WorkspaceAccessLevel.READ_ONLY, action = "回答平台管家问题卡片", actionKey = "access.action.answer_a_platform_assistant_question_card")

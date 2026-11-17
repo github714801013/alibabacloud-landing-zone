@@ -171,6 +171,19 @@ export function useCancelClarificationTurn(workitemId: number | string, conversa
   });
 }
 
+export function useRetryClarificationTurn(workitemId: number | string, conversationId: number | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (turnId: number) =>
+      api.retryClarificationTurn(workitemId, conversationId!, turnId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: ['workitem', workitemId, 'clarification-conversation', conversationId],
+      });
+    },
+  });
+}
+
 /** 服务端单轮可达数千条 token 级事件，实时数组只保留最近窗口，避免内存与渲染无限增长。 */
 export const MAX_STREAMED_EVENTS = 2000;
 
@@ -434,19 +447,68 @@ export function isOutboundTurnDirection(direction: string): boolean {
 export function findPairedInboundTurnId(
   turns: ReadonlyArray<{ id: number; direction: string; status?: string }>,
   outboundIndex: number,
+  retryingInboundId?: number | null,
 ): number | null {
   for (let i = outboundIndex - 1; i >= 0; i -= 1) {
     const candidate = turns[i];
     if (isOutboundTurnDirection(candidate.direction)) continue;
     // 卡片挂起时用户再输入会立刻插入一个 QUEUED 的 IN 轮次。它排在这个 OUT
     // 之前，但还没被处理过，不可能产出它 —— 配上去详情就又是空的。
+    // 例外是用户手动重试的那一轮：重试后它也会短暂停在 QUEUED，
+    // 调用方明确传入 retryingInboundId 时才允许越过这条排除规则。
     // CANCELED 同理：要么在 QUEUED 时就被取消（从未执行），要么已经带着自己的
     // 「已取消」OUT 气泡，都不该吃掉真正在跑的那一轮产出的 OUT。
     const status = (candidate.status ?? '').toUpperCase();
-    if (status === 'QUEUED' || status === 'CANCELED') continue;
+    if (status === 'QUEUED' && candidate.id !== retryingInboundId) continue;
+    if (status === 'CANCELED') continue;
     return candidate.id;
   }
   return null;
+}
+
+/**
+ * 重试语义下的旧失败气泡隐藏：同一 IN 轮次只保留最后一条失败 OUT。
+ *
+ * <p>只有「该 IN 已重新派发（PROCESSING / QUEUED）或已另有成功回复」才隐藏失败 OUT；
+ * IN 成功却只有失败 OUT 的是普通执行失败，必须保留——它不是重试残留，
+ * 也没有重试入口，隐藏后用户看不到失败原因。
+ *
+ * <p>retryingInboundId 是用户刚点过重试的 IN：重试被接受后它可能短暂停在
+ * QUEUED 等空位，这段窗口也要按重试中处理。不传时保持旧行为。
+ */
+export function hiddenFailedOutboundTurnIds(
+  turns: ReadonlyArray<{ id: number; direction: string; status?: string }>,
+  retryingInboundId?: number | null,
+): ReadonlySet<number> {
+  const statusById = new Map(turns.map(turn => [turn.id, (turn.status ?? '').toUpperCase()]));
+  const groups = new Map<number, { inboundStatus: string; outboundIds: number[] }>();
+  const answered = new Set<number>();
+  turns.forEach((turn, index) => {
+    if (!isOutboundTurnDirection(turn.direction)) return;
+    const inboundId = findPairedInboundTurnId(turns, index, retryingInboundId);
+    if (inboundId == null) return;
+    if ((turn.status ?? '').toUpperCase() !== 'FAILED') {
+      answered.add(inboundId);
+      return;
+    }
+    const group = groups.get(inboundId);
+    if (group) group.outboundIds.push(turn.id);
+    else groups.set(inboundId, {
+      inboundStatus: statusById.get(inboundId) ?? '',
+      outboundIds: [turn.id],
+    });
+  });
+  const hidden = new Set<number>();
+  for (const [inboundId, { inboundStatus, outboundIds }] of groups) {
+    const redelivering = inboundStatus === 'PROCESSING' || inboundId === retryingInboundId;
+    const keep = inboundStatus !== 'FAILED' && (redelivering || answered.has(inboundId))
+      ? null
+      : outboundIds[outboundIds.length - 1];
+    for (const id of outboundIds) {
+      if (id !== keep) hidden.add(id);
+    }
+  }
+  return hidden;
 }
 
 /**

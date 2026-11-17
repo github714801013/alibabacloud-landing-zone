@@ -285,12 +285,7 @@ public class PlatformConversationService {
             throw BizException.keyed(ErrorCode.PARAM_INVALID, "conversation.message_required", null, "消息内容不能为空");
         }
         AgentDO agent = requireUsableChief(tenantId, conv.getAgentId());
-        Long executorId = executorRouter.selectPlatform(tenantId, conv.getAgentId(),
-                agent.getOnlineVersionId(), conv.getExecutorId());
-        if (executorId == null && !executorRouter.canQueueOnOwner(tenantId, conv.getAgentId(),
-                agent.getOnlineVersionId(), conv.getExecutorId(), true)) {
-            throw new IllegalStateException("RUNTIME_OFFLINE");
-        }
+        Long executorId = requireDispatchableExecutor(tenantId, conv, agent);
         Long previousExecutorId = conv.getExecutorId();
         if (executorId != null && !executorId.equals(previousExecutorId)) {
             convDao.updateExecutor(tenantId, conversationId, executorId);
@@ -317,6 +312,30 @@ public class PlatformConversationService {
             throw BizException.keyed(ErrorCode.NOT_FOUND, "conversation.turn_not_found", null, "轮次不存在");
         }
         conversationService.requestTurnCancel(tenantId, conv.getId(), turnId);
+    }
+
+    @Transactional
+    public void retryTurn(Long tenantId, Long conversationId, Long userId, Long turnId) {
+        AgentConversationDO conv = accessService.requireBodyWrite(tenantId, conversationId, userId);
+        if (conv.getArchivedAt() != null) {
+            throw new BizException(ErrorCode.PLATFORM_CONVERSATION_ARCHIVED);
+        }
+        if (!STATUS_ACTIVE.equals(conv.getStatus())) {
+            throw new BizException(ErrorCode.PLATFORM_CONVERSATION_DELETED);
+        }
+        // 与发送同一口径先判执行器：离线时直接报错，不让轮次脱离 FAILED。
+        requireDispatchableExecutor(tenantId, conv, requireUsableChief(tenantId, conv.getAgentId()));
+        conversationService.retryTurn(tenantId, conversationId, turnId);
+    }
+
+    private Long requireDispatchableExecutor(Long tenantId, AgentConversationDO conv, AgentDO agent) {
+        Long executorId = executorRouter.selectPlatform(tenantId, conv.getAgentId(),
+                agent.getOnlineVersionId(), conv.getExecutorId());
+        if (executorId == null && !executorRouter.canQueueOnOwner(tenantId, conv.getAgentId(),
+                agent.getOnlineVersionId(), conv.getExecutorId(), true)) {
+            throw new IllegalStateException("RUNTIME_OFFLINE");
+        }
+        return executorId;
     }
 
     /** 回答卡片会驱动挂起的 Agent 继续本轮，属于写操作，只认 Owner。 */

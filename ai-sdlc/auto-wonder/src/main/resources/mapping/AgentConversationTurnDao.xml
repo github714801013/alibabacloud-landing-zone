@@ -123,6 +123,27 @@
         LIMIT 1
     </select>
 
+    <select id="findLatestInbound" resultMap="BaseResultMap">
+        SELECT <include refid="Base_Column_List"/>
+        FROM agent_conversation_turn
+        WHERE tenant_id = #{tenantId}
+          AND conversation_id = #{conversationId}
+          AND direction = 'IN'
+        ORDER BY id DESC
+        LIMIT 1
+    </select>
+
+    <!-- 重试重置：只有最新失败轮次能被恢复为 QUEUED，并把自动重投次数与错误一起清空。 -->
+    <update id="resetFailedInboundForRetry">
+        UPDATE agent_conversation_turn
+        SET status = 'QUEUED', error = NULL, dispatch_attempt = 0
+        WHERE tenant_id = #{tenantId}
+          AND conversation_id = #{conversationId}
+          AND id = #{id}
+          AND direction = 'IN'
+          AND status = 'FAILED'
+    </update>
+
     <select id="listStaleProcessingInboundByExecutor" resultMap="BaseResultMap">
         SELECT <include refid="Turn_Column_List"/>
         FROM agent_conversation_turn t

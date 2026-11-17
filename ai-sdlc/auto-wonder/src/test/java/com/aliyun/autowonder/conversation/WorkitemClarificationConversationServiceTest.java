@@ -100,6 +100,63 @@ class WorkitemClarificationConversationServiceTest {
         verify(conversationService, never()).requestTurnCancel(anyLong(), anyLong(), anyLong());
     }
 
+    /** 重试与发送同一口径：绑定执行器离线直接报错，轮次保持 FAILED，不委派给会话服务。 */
+    @Test
+    void retryTurnRejectsOfflineBoundExecutorWithoutTouchingTheTurn() {
+        when(convDao.findById(1L, 77L)).thenReturn(clarificationConversation(10011L));
+        AgentDO agent = new AgentDO();
+        agent.setId(3L);
+        agent.setOnlineVersionId(50L);
+        when(agentDao.findById(3L)).thenReturn(agent);
+        when(executorRouter.selectStrict(1L, 3L, 50L, 9L)).thenReturn(null);
+        when(executorRouter.canQueueOnOwner(1L, 3L, 50L, 9L, false)).thenReturn(false);
+
+        BizException ex = assertThrows(BizException.class,
+                () -> service.retryTurn(1L, 10011L, 77L, 55L));
+
+        assertEquals(ErrorCode.CLARIFICATION_EXECUTOR_OFFLINE.getCode(), ex.getCode());
+        verify(conversationService, never()).retryTurn(anyLong(), anyLong(), anyLong());
+    }
+
+    /** 绑定执行器在线但无空位：允许重置入队，由排队恢复继续推进。 */
+    @Test
+    void retryTurnQueuesWhenTheBoundExecutorHasNoFreeSlot() {
+        when(convDao.findById(1L, 77L)).thenReturn(clarificationConversation(10011L));
+        AgentDO agent = new AgentDO();
+        agent.setId(3L);
+        agent.setOnlineVersionId(50L);
+        when(agentDao.findById(3L)).thenReturn(agent);
+        when(executorRouter.selectStrict(1L, 3L, 50L, 9L)).thenReturn(null);
+        when(executorRouter.canQueueOnOwner(1L, 3L, 50L, 9L, false)).thenReturn(true);
+
+        service.retryTurn(1L, 10011L, 77L, 55L);
+
+        verify(conversationService).retryTurn(1L, 77L, 55L);
+    }
+
+    @Test
+    void retryTurnDelegatesWhenTheBoundExecutorHasCapacity() {
+        when(convDao.findById(1L, 77L)).thenReturn(clarificationConversation(10011L));
+        AgentDO agent = new AgentDO();
+        agent.setId(3L);
+        agent.setOnlineVersionId(50L);
+        when(agentDao.findById(3L)).thenReturn(agent);
+        when(executorRouter.selectStrict(1L, 3L, 50L, 9L)).thenReturn(9L);
+
+        service.retryTurn(1L, 10011L, 77L, 55L);
+
+        verify(conversationService).retryTurn(1L, 77L, 55L);
+    }
+
+    @Test
+    void retryTurnRejectsConversationFromOtherWorkitem() {
+        when(convDao.findById(1L, 77L)).thenReturn(clarificationConversation(10011L));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> service.retryTurn(1L, 99999L, 77L, 55L));
+        verify(conversationService, never()).retryTurn(anyLong(), anyLong(), anyLong());
+    }
+
     @Test
     void getConversationReportsCancelSupportedWhenRuntimeNegotiatesFeature() {
         when(convDao.findById(1L, 77L)).thenReturn(clarificationConversation(10011L));

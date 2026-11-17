@@ -12,6 +12,7 @@ import {
   assembleTurnEvents,
   hasPersistedReplyForTurn,
   findPairedInboundTurnId,
+  hiddenFailedOutboundTurnIds,
   useClarificationConversation,
   useLatestClarificationConversation,
   isClarificationReplyingStatus,
@@ -800,6 +801,88 @@ describe('findPairedInboundTurnId', () => {
   it('still pairs when status is absent', () => {
     const turns = [turn(1, 'IN'), turn(2, 'OUT')];
     expect(findPairedInboundTurnId(turns, 1)).toBe(1);
+  });
+});
+
+describe('hiddenFailedOutboundTurnIds', () => {
+  // 重试只重置原 IN 轮次：IN 仍是 FAILED 时，本次投递的失败气泡要保留，
+  // 否则用户点重试后连「为什么失败」都一起消失了。
+  it('keeps the only failed outbound bubble while the inbound turn is still failed', () => {
+    const turns = [
+      { id: 1, direction: 'IN', status: 'FAILED' },
+      { id: 2, direction: 'OUT', status: 'FAILED' },
+    ];
+    expect(hiddenFailedOutboundTurnIds(turns).size).toBe(0);
+  });
+
+  // 重试已被接受并重新派发：旧失败气泡属于历史投递，必须整体隐藏。
+  // QUEUED 的 IN 默认按详情配对语义跳过；只有调用方明确传入正在重试的轮次时才隐藏。
+  it('hides every failed outbound bubble while the inbound turn is being redelivered', () => {
+    const turns = [
+      { id: 1, direction: 'IN', status: 'PROCESSING' },
+      { id: 2, direction: 'OUT', status: 'FAILED' },
+    ];
+    expect([...hiddenFailedOutboundTurnIds(turns)]).toEqual([2]);
+  });
+
+  // 手动重试被接受、执行器暂无空位时 IN 停在 QUEUED，这段窗口同样是重试中。
+  it('hides the stale failure while the retried inbound turn waits in the queue', () => {
+    const turns = [
+      { id: 1, direction: 'IN', status: 'QUEUED' },
+      { id: 2, direction: 'OUT', status: 'FAILED' },
+    ];
+    expect([...hiddenFailedOutboundTurnIds(turns, 1)]).toEqual([2]);
+  });
+
+  // 重试成功并产生新回复：旧的失败气泡不能再和新回复并排出现。
+  it('hides the failed bubble once the retried turn has a successful reply', () => {
+    const turns = [
+      { id: 1, direction: 'IN', status: 'SUCCESS' },
+      { id: 2, direction: 'OUT', status: 'FAILED' },
+      { id: 3, direction: 'OUT', status: 'SUCCESS' },
+    ];
+    expect([...hiddenFailedOutboundTurnIds(turns)]).toEqual([2]);
+  });
+
+  // 普通执行失败不是重试残留：IN 正常完成但没有成功回复时必须显示原因。
+  it('keeps a plain execution failure visible when the inbound turn has no reply', () => {
+    const turns = [
+      { id: 1, direction: 'IN', status: 'COMPLETED' },
+      { id: 2, direction: 'OUT', status: 'FAILED' },
+    ];
+    expect(hiddenFailedOutboundTurnIds(turns).size).toBe(0);
+  });
+
+  // 自动重投把同一 IN 的失败 OUT 堆了多条：只保留最后一条，避免重试后残留两行报错。
+  it('keeps only the last failed bubble when one inbound turn failed several times', () => {
+    const turns = [
+      { id: 1, direction: 'IN', status: 'FAILED' },
+      { id: 2, direction: 'OUT', status: 'FAILED' },
+      { id: 3, direction: 'OUT', status: 'FAILED' },
+    ];
+    expect([...hiddenFailedOutboundTurnIds(turns)]).toEqual([2]);
+  });
+
+  it('skips a queued inbound turn when pairing just like the detail panel does', () => {
+    const turns = [
+      { id: 1, direction: 'IN', status: 'FAILED' },
+      { id: 2, direction: 'OUT', status: 'FAILED' },
+      { id: 3, direction: 'IN', status: 'QUEUED' },
+    ];
+    expect(hiddenFailedOutboundTurnIds(turns).size).toBe(0);
+  });
+
+  it('never hides an orphaned failed bubble without a paired inbound turn', () => {
+    const turns = [{ id: 2, direction: 'OUT', status: 'FAILED' }];
+    expect(hiddenFailedOutboundTurnIds(turns).size).toBe(0);
+  });
+
+  it('ignores outbound bubbles that did not fail', () => {
+    const turns = [
+      { id: 1, direction: 'IN', status: 'SUCCESS' },
+      { id: 2, direction: 'OUT', status: 'SUCCESS' },
+    ];
+    expect(hiddenFailedOutboundTurnIds(turns).size).toBe(0);
   });
 });
 

@@ -1,7 +1,7 @@
 import { apiClient } from '@/shared/api/client';
 import type { ClarificationConversation, ClarificationTurnEvent } from '@/features/workitem/clarification/types';
 export interface ConversationImage { id: string; name: string; contentType: string; size: number; url: string; }
-export interface Conversation extends ClarificationConversation { title: string | null; archivedAt: string | null; turns: (ClarificationConversation['turns'][number] & { images?: ConversationImage[] })[]; }
+export interface Conversation extends ClarificationConversation { title: string | null; archivedAt: string | null; owner?: boolean; turns: (ClarificationConversation['turns'][number] & { images?: ConversationImage[] })[]; }
 export interface SetupStatus { agentId: number | null; executorId: number | null; agentConfigured: boolean; skillsConfigured: boolean; executorConfigured: boolean; launchConfigured: boolean; ready: boolean; missingSkills: string[]; }
 export interface ActionPlan { id: string; turnId: number; actionsJson: string; payloadHash: string; status: string; resultJson: string | null; expiresAt: string; }
 const base = '/api/platform/conversations';
@@ -13,6 +13,8 @@ export async function getConversation(id: number) { return (await apiClient.get<
 export async function patchConversation(id: number, body: { title?: string; archived?: boolean }) { return (await apiClient.patch<Conversation>(`${base}/${id}`, body)).data; }
 export async function sendMessage(id: number, content: string, clientMessageId: string, pagePath: string | null, imageIds?: string[]) { await apiClient.post(`${base}/${id}/turns`, { content, clientMessageId, pagePath, imageIds }); }
 export async function cancelTurn(id: number, turnId: number) { await apiClient.post(`${base}/${id}/turns/${turnId}/cancel`); }
+/** 重试复用原轮次：服务端把失败消息恢复为可派发并重新投递，不新增用户消息。 */
+export async function retryTurn(id: number, turnId: number) { await apiClient.post(`${base}/${id}/turns/${turnId}/retry`); }
 export async function getEvents(id: number, afterId: number) { return (await apiClient.get<ClarificationTurnEvent[]>(`${base}/${id}/events`, { params: { afterId } })).data; }
 export async function getPlans(id: number) { return (await apiClient.get<ActionPlan[]>(`${base}/${id}/action-plans`)).data; }
 export async function resolvePlan(id: number, planId: string, payloadHash: string, confirm: boolean) { return (await apiClient.post<ActionPlan>(`${base}/${id}/action-plans/${planId}/resolve`, { confirm, payloadHash })).data; }

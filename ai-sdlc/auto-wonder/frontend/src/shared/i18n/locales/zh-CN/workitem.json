@@ -1146,6 +1146,7 @@
     "autoCreateFailed": "自动创建会话失败，请点击「新对话」重试",
     "sendFailed": "消息发送失败，请重试",
     "stopFailed": "终止响应失败，请重试",
+    "retryFailed": "重试失败，请稍后再试",
     "sendModeFailed": "发送方式保存失败，请重试",
     "attachFile": "添加附件",
     "attachmentUploading": "上传中",

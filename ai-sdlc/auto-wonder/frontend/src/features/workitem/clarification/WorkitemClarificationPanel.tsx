@@ -15,7 +15,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button, Typography, Empty, message, Select, Tag } from 'antd';
 import {
   SendOutlined, PlusOutlined, UserSwitchOutlined,
-  StopOutlined, VerticalAlignBottomOutlined, PaperClipOutlined,
+  StopOutlined, VerticalAlignBottomOutlined, PaperClipOutlined, ReloadOutlined,
 } from '@ant-design/icons';
 import { MarkdownView } from '@/shared/ui/MarkdownView';
 import { ResizeHandle } from '@/shared/ui/ResizeHandle';
@@ -58,6 +58,7 @@ import {
   useCreateClarificationConversation,
   useSubmitClarificationTurn,
   useCancelClarificationTurn,
+  useRetryClarificationTurn,
   useClarificationEvents,
   useReplyElicitation,
   useUploadClarificationAttachment,
@@ -65,6 +66,7 @@ import {
   hasPersistedReplyForTurn,
   isOutboundTurnDirection,
   findPairedInboundTurnId,
+  hiddenFailedOutboundTurnIds,
   isClarificationReplyingStatus,
 } from './hooks';
 import {
@@ -599,6 +601,7 @@ export function WorkitemClarificationPanel({
   const createMutation = useCreateClarificationConversation(workitemId);
   const submitMutation = useSubmitClarificationTurn(workitemId, conversationId);
   const cancelMutation = useCancelClarificationTurn(workitemId, conversationId);
+  const retryMutation = useRetryClarificationTurn(workitemId, conversationId);
   const uploadAttachmentMutation = useUploadClarificationAttachment(workitemId, conversationId);
   const deleteAttachmentMutation = useDeleteClarificationAttachment(workitemId, conversationId);
   const {
@@ -636,6 +639,21 @@ export function WorkitemClarificationPanel({
   // 输入行整体禁用口径：发送门禁、附件选择/上传/移除共用，避免某一入口在回复中仍可用。
   const composerDisabled = isSubmittingCurrentConversation || isCreatingConversation || isReplying
     || isConversationLoading || conversationHistoryFailed || agentRestorePending;
+  // 只给最新一条失败的用户消息提供重试；会话仍在处理/排队时不显示。
+  const retryableTurnId = useMemo(() => {
+    if (!canWrite || composerDisabled) return null;
+    const latestInbound = [...turns].reverse()
+      .find((turn) => !isOutboundTurnDirection(turn.direction));
+    if (!latestInbound || (latestInbound.status ?? '').toUpperCase() !== 'FAILED') return null;
+    const hasActiveInbound = turns.some((turn) => !isOutboundTurnDirection(turn.direction)
+      && isClarificationReplyingStatus((turn.status ?? '').toUpperCase()));
+    return hasActiveInbound ? null : latestInbound.id;
+  }, [canWrite, composerDisabled, turns]);
+  const [retryingInboundId, setRetryingInboundId] = useState<number | null>(null);
+  const hiddenFailedOutboundIds = useMemo(
+    () => hiddenFailedOutboundTurnIds(turns, retryingInboundId),
+    [turns, retryingInboundId],
+  );
   const readyAttachments = pendingAttachments.filter((item) => !!item.attachment);
   // 上传中或上传失败的附件都不能随消息发送：宁可拦住，也不让消息静默丢附件。
   const hasBlockingAttachments = pendingAttachments.some((item) => !item.attachment);
@@ -1324,6 +1342,20 @@ export function WorkitemClarificationPanel({
     });
   }, [conversationId, convData?.processingTurnId, cancelMutation]);
 
+  const handleRetryTurn = useCallback((turnId: number) => {
+    if (!conversationId || retryMutation.isPending) return;
+    retryMutation.mutate(turnId, {
+      // 记住刚重试的轮次：重试被接受但执行器暂无空位时它会短暂停在 QUEUED，
+      // 这期间仍要隐藏它的旧失败气泡（否则用户以为重试没生效）。
+      onSuccess: () => setRetryingInboundId(turnId),
+      onError: (error: Error) => {
+        // 执行器离线等渠道错误只在服务端文案里，优先原样展示。
+        message.error(error instanceof ApiError && error.message
+          ? error.message : i18n.t('workitem:clarification.retryFailed'));
+      },
+    });
+  }, [conversationId, retryMutation]);
+
   // 切换发送方式：先乐观生效（按键行为与入口文案必须立刻一致），再串行落用户级偏好。
   // 保存任务排进队列逐个执行：同一时刻只有一个 PUT 在飞，快速连切时最后一个任务
   // 保存最终选择，并发乱序完成的 PUT 不会让界面与落库值倒挂（工单 55511 验收 2/5）。
@@ -1762,7 +1794,9 @@ export function WorkitemClarificationPanel({
                   && !showReplyingIndicator && !showProcessingEvents && !awaitingAgentReply && (
                   <Empty description={t('clarification.noHistory')} image={Empty.PRESENTED_IMAGE_SIMPLE} />
                 )}
-                {turns.map((turn, index) => (
+                {turns.map((turn, index) => {
+                  if (hiddenFailedOutboundIds.has(turn.id)) return null;
+                  return (
                   <Fragment key={turn.id}>
                   <TurnBubble
                     turn={turn}
@@ -1771,6 +1805,10 @@ export function WorkitemClarificationPanel({
                     conversationId={conversationId}
                     artifacts={artifacts}
                     onArtifactClick={setPreviewArtifact}
+                    retry={turn.id === retryableTurnId ? {
+                      loading: retryMutation.isPending,
+                      onRetry: () => handleRetryTurn(turn.id),
+                    } : undefined}
                     detailToggle={
                       <OutboundTurnDetailToggle
                         workitemId={workitemId}
@@ -1789,7 +1827,8 @@ export function WorkitemClarificationPanel({
                       composerRef.current?.focus();
                     }} />
                   </Fragment>
-                ))}
+                  );
+                })}
                 {showProcessingEvents && (
                   // 「等待回复」提示由底部的 ReplyingIndicator 统一承担，避免双份动效。
                   // 保证的是文字块样式一致：流式区与完成态 TurnBubble 共用 agentBlockStyle()，
@@ -2101,7 +2140,7 @@ function OutboundTurnDetailToggle({ workitemId, conversationId, turns, index, co
 }
 
 function TurnBubble({
-  turn, agentName, detailToggle, workitemId, conversationId, artifacts, onArtifactClick,
+  turn, agentName, detailToggle, workitemId, conversationId, artifacts, onArtifactClick, retry,
 }: {
   turn: ClarificationTurn;
   agentName?: string;
@@ -2110,6 +2149,7 @@ function TurnBubble({
   conversationId: number | null;
   artifacts: Artifact[];
   onArtifactClick: (artifact: Artifact) => void;
+  retry?: { loading: boolean; onRetry: () => void };
 }) {
   const { t } = useTranslation('workitem');
   const isUser = turn.direction === 'IN' || turn.direction === 'INBOUND';
@@ -2173,6 +2213,18 @@ function TurnBubble({
             {hasContent ? <MarkdownView className="aw-clarify-md" content={turn.content} /> : null}
             {statusTag}
             {errorText}
+            {retry ? (
+              <Button
+                size="small"
+                icon={<ReloadOutlined />}
+                loading={retry.loading}
+                disabled={retry.loading}
+                onClick={retry.onRetry}
+                style={{ marginTop: 8 }}
+              >
+                {t('clarification.retry')}
+              </Button>
+            ) : null}
           </div>
         </div>
       </div>

@@ -1166,6 +1166,7 @@
     "autoCreateFailed": "Could not create a conversation automatically. Click “New conversation” to try again.",
     "sendFailed": "Could not send the message. Please try again.",
     "stopFailed": "Could not stop the response. Please try again.",
+    "retryFailed": "Retry failed. Please try again later.",
     "sendModeFailed": "Could not save the send mode. Please try again.",
     "attachFile": "Add attachments",
     "attachmentUploading": "Uploading",

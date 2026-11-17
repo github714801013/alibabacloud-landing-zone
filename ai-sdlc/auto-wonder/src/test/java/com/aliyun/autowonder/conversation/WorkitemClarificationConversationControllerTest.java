@@ -83,6 +83,25 @@ class WorkitemClarificationConversationControllerTest {
         verify(service).replyElicitation(1L, 10011L, 77L, "req-1", "accept", "{\"q0\":\"A\"}", 42L);
     }
 
+    /** 重试会重新派发轮次，属于写操作。 */
+    @Test
+    void retryTurnRequiresReadWriteAccess() throws NoSuchMethodException {
+        RequireWorkspaceAccess access = WorkitemClarificationConversationController.class
+                .getMethod("retryTurn", Long.class, Long.class, Long.class)
+                .getAnnotation(RequireWorkspaceAccess.class);
+
+        assertNotNull(access);
+        assertEquals(WorkspaceAccessLevel.READ_WRITE, access.value());
+        assertEquals("access.action.retry_a_work_item_clarification_message", access.actionKey());
+    }
+
+    @Test
+    void retryTurnDelegatesTheTurnIdUnderTheCurrentWorkspace() {
+        controller.retryTurn(10011L, 77L, 55L);
+
+        verify(service).retryTurn(1L, 10011L, 77L, 55L);
+    }
+
     /** AC-1 服务端链路：/latest 必须按当前工作空间委派给 Service，并原样返回 VO。 */
     @Test
     void latestDelegatesToServiceWithCurrentWorkspaceAndReturnsItsConversation() {

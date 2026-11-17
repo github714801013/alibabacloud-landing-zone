@@ -189,6 +189,17 @@ export async function cancelClarificationTurn(
   );
 }
 
+/** 重试复用原轮次：服务端把失败消息恢复为可派发并重新投递，不新增用户消息。 */
+export async function retryClarificationTurn(
+  workitemId: number | string,
+  conversationId: number,
+  turnId: number,
+): Promise<void> {
+  await apiClient.post(
+    `${base(workitemId)}/${conversationId}/turns/${turnId}/retry`,
+  );
+}
+
 /** content 以字符串承载：requestedSchema 是任意 JSON Schema，答案结构由 Agent 决定，
  *  原样透传回执行器最安全，服务端与前端都不重排。 */
 export async function replyClarificationElicitation(

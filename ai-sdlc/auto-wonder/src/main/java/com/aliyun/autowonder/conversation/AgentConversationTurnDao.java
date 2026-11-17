@@ -30,6 +30,12 @@ public interface AgentConversationTurnDao {
     AgentConversationTurnDO findNextQueuedInbound(@Param("tenantId") Long tenantId,
             @Param("conversationId") Long conversationId);
 
+    AgentConversationTurnDO findLatestInbound(@Param("tenantId") Long tenantId,
+            @Param("conversationId") Long conversationId);
+
+    int resetFailedInboundForRetry(@Param("tenantId") Long tenantId,
+            @Param("conversationId") Long conversationId, @Param("id") Long id);
+
     List<AgentConversationTurnDO> listQueuedInboundAfter(@Param("afterId") long afterId,
             @Param("limit") int limit);
 

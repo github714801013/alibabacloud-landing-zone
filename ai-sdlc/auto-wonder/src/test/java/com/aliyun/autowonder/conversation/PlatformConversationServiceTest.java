@@ -878,6 +878,53 @@ class PlatformConversationServiceTest {
         verifyNoInteractions(turnDao);
     }
 
+    /** 重试与发送同一口径：执行器离线直接报错，轮次保持 FAILED，不委派给会话服务。 */
+    @Test
+    void retryTurnFailsLoudlyWhenNoRuntimeIsAvailable() {
+        stubConversation(ownedConversation());
+        when(executorSelector.select(AGENT_ID, EXECUTOR_ID)).thenReturn(null);
+        when(executorRouter.canQueueOnOwner(TENANT_ID, AGENT_ID, 88L, EXECUTOR_ID, true))
+                .thenReturn(false);
+
+        IllegalStateException exception = assertThrows(IllegalStateException.class,
+                () -> service.retryTurn(TENANT_ID, CONVERSATION_ID, OWNER_ID, TURN_ID));
+        assertEquals("RUNTIME_OFFLINE", exception.getMessage());
+        verifyNoInteractions(conversationService);
+    }
+
+    /** 执行器在线但无空位：允许重置入队，由排队恢复继续推进。 */
+    @Test
+    void retryTurnQueuesWhenTheOwnerHasNoFreeSlot() {
+        stubConversation(ownedConversation());
+        when(executorSelector.select(AGENT_ID, EXECUTOR_ID)).thenReturn(null);
+        when(executorRouter.canQueueOnOwner(TENANT_ID, AGENT_ID, 88L, EXECUTOR_ID, true))
+                .thenReturn(true);
+
+        service.retryTurn(TENANT_ID, CONVERSATION_ID, OWNER_ID, TURN_ID);
+
+        verify(conversationService).retryTurn(TENANT_ID, CONVERSATION_ID, TURN_ID);
+    }
+
+    @Test
+    void retryTurnDelegatesForTheConversationOwner() {
+        stubConversation(ownedConversation());
+        when(executorSelector.select(AGENT_ID, EXECUTOR_ID)).thenReturn(EXECUTOR_ID);
+
+        service.retryTurn(TENANT_ID, CONVERSATION_ID, OWNER_ID, TURN_ID);
+
+        verify(conversationService).retryTurn(TENANT_ID, CONVERSATION_ID, TURN_ID);
+    }
+
+    @Test
+    void retryTurnIsRefusedToAReadGrantee() {
+        stubConversation(ownedConversation());
+        when(shareDao.findActive(TENANT_ID, CONVERSATION_ID, GRANTEE_ID))
+                .thenReturn(activeShare(GRANTEE_ID));
+
+        assertOwnerOnly(() -> service.retryTurn(TENANT_ID, CONVERSATION_ID, GRANTEE_ID, TURN_ID));
+        verifyNoInteractions(conversationService);
+    }
+
     @Test
     void replyElicitationIsOwnerOnly() {
         stubConversation(ownedConversation());
