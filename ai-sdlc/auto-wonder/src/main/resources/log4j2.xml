@@ -54,21 +54,21 @@
     </Appenders>
 
     <Loggers>
-        <Root level="INFO">
+        <Root level="WARN">
             <AppenderRef ref="Console"/>
             <AppenderRef ref="LocalFile"/>
             <AppenderRef ref="Loghub"/>
         </Root>
 
-        <AsyncLogger name="ConnectorManager" level="INFO" additivity="false">
+        <AsyncLogger name="ConnectorManager" level="WARN" additivity="false">
             <AppenderRef ref="Console"/>
         </AsyncLogger>
 
-        <AsyncLogger name="com.aliyun.autowonder.log.LoghubAppender" level="INFO" additivity="false">
+        <AsyncLogger name="com.aliyun.autowonder.log.LoghubAppender" level="WARN" additivity="false">
             <AppenderRef ref="Console"/>
         </AsyncLogger>
 
-        <AsyncLogger name="LocalMsgLogger" level="INFO" additivity="false">
+        <AsyncLogger name="LocalMsgLogger" level="WARN" additivity="false">
             <AppenderRef ref="Console"/>
         </AsyncLogger>
 

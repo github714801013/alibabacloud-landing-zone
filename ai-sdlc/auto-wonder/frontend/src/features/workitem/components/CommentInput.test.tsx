@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { act, fireEvent, render, screen, within, waitFor } from '@testing-library/react';
+import { act, fireEvent, render as rtlRender, screen, within, waitFor } from '@testing-library/react';
 import { message } from 'antd';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { http, HttpResponse } from 'msw';
+import type { ReactElement } from 'react';
+import { server } from '@/test/mocks/server';
 
 const { mutateMock, uploadMock, mentionCandidatesMock, mentionQueries } = vi.hoisted(() => ({
   mutateMock: vi.fn(),
@@ -27,6 +31,16 @@ import { commentAttachmentMarkdown } from './CommentAttachment';
 import { MarkdownView } from '@/shared/ui/MarkdownView';
 import { ApiError } from '@/shared/types/common';
 import type { Artifact, Participant } from '@/shared/types/workitem';
+
+function render(ui: ReactElement) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+  const wrap = (node: ReactElement) => <QueryClientProvider client={queryClient}>{node}</QueryClientProvider>;
+  const view = rtlRender(wrap(ui));
+  return {
+    ...view,
+    rerender: (next: ReactElement) => view.rerender(wrap(next)),
+  };
+}
 
 function buildCandidates(count: number): Participant[] {
   return Array.from({ length: count }, (_, index) => ({
@@ -492,3 +506,118 @@ it.each(['需求 [v2].pdf', 'image.png', 'a`b``c.md', '<img src=x onerror=alert(
     fireEvent.click(link); expect(open).toHaveBeenCalledWith(artifact);
   },
 );
+
+describe('CommentInput 提示词模板', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    mutateMock.mockReset();
+    mentionCandidatesMock.mockReset();
+  });
+
+  function aiDefaultsResponse(owner: boolean, custom: Array<{ id: string; name: string; content: string }> = []) {
+    return HttpResponse.json({
+      success: true, code: '0', message: '', traceId: null,
+      data: {
+        owner,
+        clarify: {
+          defaultSquadId: null,
+          defaultAgentId: null,
+          autoSendFirstPrompt: false,
+          promptTemplates: { version: 1, builtin: {}, custom, defaults: {} },
+          valid: true,
+        },
+        delivery: { defaultSquadId: null, defaultAgentId: null, valid: true },
+      },
+    });
+  }
+
+  const dropdownOption = '.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option-content';
+
+  async function chooseTemplate(name: string) {
+    fireEvent.mouseDown(within(screen.getByTestId('comment-template-select')).getByRole('combobox'));
+    fireEvent.click(await screen.findByText(name, { selector: dropdownOption }));
+  }
+
+  function templateOptionTexts(): Array<string | null> {
+    return Array.from(document.querySelectorAll(dropdownOption)).map((el) => el.textContent);
+  }
+
+  it('选择模板替换正文、渲染工单号并清理已选提及', async () => {
+    mentionCandidatesMock.mockReturnValue(buildCandidates(2));
+    server.use(http.get('/api/workspaces/current/ai-defaults', () => aiDefaultsResponse(false, [
+      { id: 'custom-1', name: '模板A', content: '模板A {{workitemId}} {{foo}}' },
+    ])));
+
+    render(<CommentInput workitemId="1" />);
+    insertAgentMention();
+    expect(composer().value).toBe('@成员1 ');
+
+    await chooseTemplate('模板A');
+    expect(composer().value).toBe('模板A 1 {{foo}}');
+    expect(mutateMock).not.toHaveBeenCalled();
+
+    // 手改正文后再次选择同一模板应重新填充（onChange 同值不触发，需走 onSelect）。
+    fireEvent.change(composer(), { target: { value: '手改内容' } });
+    await chooseTemplate('模板A');
+    expect(composer().value).toBe('模板A 1 {{foo}}');
+
+    clickSend();
+    expect(mutateMock).toHaveBeenCalledTimes(1);
+    expect(mutateMock.mock.calls[0][0]).toMatchObject({
+      workitemId: '1',
+      contentMd: '模板A 1 {{foo}}',
+      targetAgentIds: [],
+    });
+  });
+
+  it('ai-defaults 接口失败时只显示两条内置模板且仍可填充（验收 8）', async () => {
+    server.use(http.get('/api/workspaces/current/ai-defaults', () => new HttpResponse(null, { status: 500 })));
+
+    render(<CommentInput workitemId="1" />);
+    fireEvent.mouseDown(within(screen.getByTestId('comment-template-select')).getByRole('combobox'));
+    await screen.findByText('首次澄清', { selector: dropdownOption });
+
+    expect(templateOptionTexts()).toEqual(['首次澄清', '再次澄清']);
+    expect(screen.queryByText('自定义模板')).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
+
+    fireEvent.click(screen.getByText('首次澄清', { selector: dropdownOption }));
+    expect(composer().value).toBe('请通过平台 MCP 读取工单 #1，与我进行需求澄清。');
+  });
+
+  it('空正文模板插入后评论框为空且发送不可用（验收 6）', async () => {
+    server.use(http.get('/api/workspaces/current/ai-defaults', () => aiDefaultsResponse(false, [
+      { id: 'empty-1', name: '空模板验证', content: '' },
+    ])));
+
+    render(<CommentInput workitemId="1" />);
+    await chooseTemplate('空模板验证');
+
+    expect(composer().value).toBe('');
+    expect(screen.getByRole('button', { name: /发\s*送/ })).toBeDisabled();
+    expect(mutateMock).not.toHaveBeenCalled();
+  });
+
+  it('本地模板覆盖仅对非 owner 生效（验收 12）', async () => {
+    localStorage.setItem('aw:clarify-defaults:local', JSON.stringify({
+      templateContents: { bootstrap: '本地覆盖正文' },
+    }));
+    const probe = [{ id: 'probe-1', name: '占位模板', content: '占位正文' }];
+
+    // 以自定义模板出现作为 ai-defaults 已到达的信号，避免在查询返回前选中内置模板。
+    server.use(http.get('/api/workspaces/current/ai-defaults', () => aiDefaultsResponse(false, probe)));
+    const first = render(<CommentInput workitemId="1" />);
+    fireEvent.mouseDown(within(screen.getByTestId('comment-template-select')).getByRole('combobox'));
+    await screen.findByText('占位模板', { selector: dropdownOption });
+    fireEvent.click(screen.getByText('首次澄清', { selector: dropdownOption }));
+    expect(composer().value).toBe('本地覆盖正文');
+    first.unmount();
+
+    server.use(http.get('/api/workspaces/current/ai-defaults', () => aiDefaultsResponse(true, probe)));
+    render(<CommentInput workitemId="1" />);
+    fireEvent.mouseDown(within(screen.getByTestId('comment-template-select')).getByRole('combobox'));
+    await screen.findByText('占位模板', { selector: dropdownOption });
+    fireEvent.click(screen.getByText('首次澄清', { selector: dropdownOption }));
+    expect(composer().value).toBe('请通过平台 MCP 读取工单 #1，与我进行需求澄清。');
+  });
+});
