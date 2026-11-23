@@ -61,6 +61,7 @@ const NOTIFY_TYPES = [
   { type: 'DELIVERY_BLOCKED', labelKey: 'deliveryBlocked' },
   { type: 'AI_SESSION_DONE', labelKey: 'aiDone' },
   { type: 'REVIEW_REQUIRED', labelKey: 'reviewRequired' },
+  { type: 'CONVERSATION_DISPATCH_FAILED', labelKey: 'conversationDispatchFailed' },
 ] as const;
 
 function settingsToInitialValues(schema: SettingSchema[], settings: SettingVO[]) {
@@ -237,7 +238,8 @@ function NotifySettingsTab() {
       const pref = byType.get(type);
       return [
         [`${type}.inApp`, pref?.inApp ?? true],
-        [`${type}.${providerKey}`, pref?.[providerKey] ?? false],
+        [`${type}.${providerKey}`, pref?.[providerKey]
+          ?? (pref == null && type === 'CONVERSATION_DISPATCH_FAILED' && providerKey === 'wecom')],
       ];
     }));
     prefForm.setFieldsValue(values);

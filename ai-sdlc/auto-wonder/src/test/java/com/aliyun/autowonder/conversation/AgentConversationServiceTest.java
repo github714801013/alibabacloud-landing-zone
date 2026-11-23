@@ -179,6 +179,7 @@ class AgentConversationServiceTest {
         svc.setAdmissionService(null);
         svc.setEventPublisher(null);
         svc.setElicitationDao(null);
+        svc.setTurnEventDao(null);
         TransactionSynchronizationManager.initSynchronization();
         TransactionSynchronizationManager.setActualTransactionActive(true);
         when(turnDao.acquireConversationLock(anyString(), anyInt())).thenReturn(1);
@@ -2072,6 +2073,7 @@ class AgentConversationServiceTest {
         AgentConversationDO conv = existingConversationWithSession();
         AgentConversationTurnDO stale = processingInboundTurn(77L);
         stale.setDispatchAttempt(3);
+        stale.setAutoRedeliveryCount(2);
         when(turnDao.listStaleProcessingInboundByExecutor(1L, 9L, cutoff, 100))
                 .thenReturn(java.util.List.of(stale));
         when(convDao.findById(1L, 77L)).thenReturn(conv);
@@ -2089,6 +2091,90 @@ class AgentConversationServiceTest {
         verify(transport, never()).send(any(), any(), any(), any(), any());
     }
 
+    /** 最近 60 秒内仍有事件：即使心跳报空活跃集合，也不能判定失联重投。 */
+    @Test
+    void recentTurnEventSuppressesStaleRedelivery() {
+        Date cutoff = new Date(1_000L);
+        AgentConversationTurnDO stale = processingInboundTurn(77L);
+        when(turnDao.listStaleProcessingInboundByExecutor(1L, 9L, cutoff, 100))
+                .thenReturn(java.util.List.of(stale));
+        when(convDao.findById(1L, 77L)).thenReturn(existingConversationWithSession());
+        AgentConversationTurnEventDao eventDao = mock(AgentConversationTurnEventDao.class);
+        when(eventDao.findLatestEventTime(1L, 77L, 55L)).thenReturn(new Date());
+        svc.setTurnEventDao(eventDao);
+
+        svc.recoverStaleTurnsForExecutor(1L, 9L, java.util.Set.of(), true, cutoff, 100);
+        commitTransactionSynchronizations();
+
+        verify(turnDao, never()).claimStaleDispatchAttemptIfProcessing(anyLong(), anyLong(),
+                anyLong(), any());
+        verify(transport, never()).send(any(), any(), any(), any(), any());
+    }
+
+    /** 换执行器后的首个心跳要留 60 秒宽限，避免原执行器的回执仍在路上时被重投。 */
+    @Test
+    void replacedExecutorRecoveryWaitsSixtySecondGrace() {
+        when(turnDao.listStaleProcessingInboundByExecutor(eq(1L), eq(9L), any(Date.class), eq(100)))
+                .thenReturn(java.util.List.of());
+        long before = System.currentTimeMillis();
+
+        svc.recoverInactiveTurnsForReplacedExecutor(1L, 9L, java.util.Set.of());
+
+        ArgumentCaptor<Date> cutoff = ArgumentCaptor.forClass(Date.class);
+        verify(turnDao).listStaleProcessingInboundByExecutor(eq(1L), eq(9L), cutoff.capture(),
+                eq(100));
+        assertTrue(before - cutoff.getValue().getTime() >= 59_000L);
+    }
+
+    /** 排队派发必须使用数据库递增后的真实代次，而不是固定 1。 */
+    @Test
+    void queuedDispatchUsesPersistedMonotonicAttempt() {
+        AgentConversationDO conv = existingConversationWithSession();
+        AgentConversationTurnDO queued = processingInboundTurn(77L);
+        queued.setStatus("QUEUED");
+        queued.setContent("waiting");
+        queued.setDispatchAttempt(3);
+        when(turnDao.listQueuedInboundAfter(0L, 100)).thenReturn(java.util.List.of(queued));
+        when(convDao.findById(1L, 77L)).thenReturn(conv);
+        when(turnDao.findNextQueuedInbound(1L, 77L)).thenReturn(queued);
+        when(executorSelector.select(3L, 9L)).thenReturn(9L);
+        when(turnDao.updateStatusIfCurrent(1L, 55L, "QUEUED", "PROCESSING", null)).thenReturn(1);
+        AgentConversationTurnDO dispatched = processingInboundTurn(77L);
+        dispatched.setDispatchAttempt(4);
+        when(turnDao.findByConversationTurn(1L, 77L, 55L)).thenReturn(dispatched);
+
+        svc.recoverQueuedTurns();
+        commitTransactionSynchronizations();
+
+        verify(transport).send(eq(conv), eq(55L), eq("waiting"), any(), eq(4));
+    }
+
+    /** 手动重试复用同一轮次并让代次继续递增：reset 保留 dispatch_attempt，派发使用数据库新值。 */
+    @Test
+    void manualRetryRedeliversSameTurnWithNextDispatchAttempt() {
+        AgentConversationDO conv = existingConversationWithSession();
+        when(convDao.findById(1L, 77L)).thenReturn(conv);
+        AgentConversationTurnDO failed = processingInboundTurn(77L);
+        failed.setStatus("FAILED");
+        failed.setContent("retry me");
+        failed.setDispatchAttempt(3);
+        AgentConversationTurnDO reloaded = processingInboundTurn(77L);
+        reloaded.setContent("retry me");
+        reloaded.setDispatchAttempt(4);
+        when(turnDao.findByConversationTurn(1L, 77L, 55L)).thenReturn(failed, reloaded);
+        when(turnDao.findLatestInbound(1L, 77L)).thenReturn(failed);
+        when(turnDao.findNextQueuedInbound(1L, 77L)).thenReturn(null, reloaded);
+        when(turnDao.resetFailedInboundForRetry(1L, 77L, 55L)).thenReturn(1);
+        when(turnDao.updateStatusIfCurrent(1L, 55L, "QUEUED", "PROCESSING", null)).thenReturn(1);
+        when(executorSelector.select(3L, 9L)).thenReturn(9L);
+
+        svc.retryTurn(1L, 77L, 55L);
+        commitTransactionSynchronizations();
+
+        verify(turnDao).resetFailedInboundForRetry(1L, 77L, 55L);
+        verify(transport).send(eq(conv), eq(55L), eq("retry me"), anyString(), eq(4));
+    }
+
     /** 重试耗尽（无 ACK 失败路径）：企微补可投递失败 OUT 并进队列，其他渠道不落 OUT。 */
     @ParameterizedTest @ValueSource(strings = {"WECOM", "DINGTALK"})
     void staleAttemptExhaustionEnqueuesFailureReplyOnlyForWecom(String channel) {
@@ -2099,6 +2185,7 @@ class AgentConversationServiceTest {
         conv.setChannel(channel);
         AgentConversationTurnDO stale = processingInboundTurn(77L);
         stale.setDispatchAttempt(3);
+        stale.setAutoRedeliveryCount(2);
         stale.setExternalMsgId("msg-55");
         when(turnDao.listStaleProcessingInboundByExecutor(1L, 9L, cutoff, 100))
                 .thenReturn(java.util.List.of(stale));
@@ -2130,6 +2217,166 @@ class AgentConversationServiceTest {
             verify(sinkRegistry, never()).find(any());
             verifyNoInteractions(queue);
         }
+    }
+
+    @Test
+    void successfulDispatchDoesNotPublishConversationDispatchFailedEvent() {
+        var publisher = mock(org.springframework.context.ApplicationEventPublisher.class);
+        svc.setEventPublisher(publisher);
+        when(turnDao.findByExternalMsgId(1L, "msg-r")).thenReturn(null);
+        AgentConversationDO conv = existingConversationWithSession();
+        when(convDao.findByKey(1L, "DINGTALK", "conv-x", 3L)).thenReturn(conv);
+        when(executorSelector.select(eq(3L), eq(9L))).thenReturn(9L);
+        when(turnDao.insert(any())).thenAnswer(inv -> {
+            ((AgentConversationTurnDO) inv.getArgument(0)).setId(90L);
+            return 1;
+        });
+
+        svc.submitTurn(1L, 3L, "DINGTALK", "conv-x", "more", "msg-r");
+        commitTransactionSynchronizations();
+
+        verify(transport).send(any(), eq(90L), eq("more"), anyString(), any());
+        verifyNoInteractions(publisher);
+    }
+
+    /** 投递失败终态：发布 ConversationDispatchFailedEvent，携带 owner 与失败轮次提交人。 */
+    @Test
+    void dispatchFailurePublishesConversationDispatchFailedEvent() {
+        PlatformTransactionManager transactionManager = mock(PlatformTransactionManager.class);
+        when(transactionManager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
+        svc.configureFailureTransactionManager(transactionManager);
+        var publisher = mock(org.springframework.context.ApplicationEventPublisher.class);
+        svc.setEventPublisher(publisher);
+        when(turnDao.findByExternalMsgId(1L, "msg-r")).thenReturn(null);
+        AgentConversationDO conv = existingConversationWithSession();
+        conv.setOwnerUserId(701L);
+        when(convDao.findByKey(1L, "DINGTALK", "conv-x", 3L)).thenReturn(conv);
+        when(executorSelector.select(eq(3L), eq(9L))).thenReturn(9L);
+        when(turnDao.insert(any())).thenAnswer(inv -> {
+            ((AgentConversationTurnDO) inv.getArgument(0)).setId(90L);
+            return 1;
+        });
+        when(turnDao.updateInboundStatusIfProcessing(eq(1L), eq(77L), eq(90L),
+                eq("FAILED"), anyString())).thenReturn(1);
+        AgentConversationTurnDO inbound = processingInboundTurn(77L);
+        inbound.setId(90L);
+        inbound.setExternalMsgId("msg-r");
+        inbound.setSubmittedUserId(702L);
+        when(turnDao.findByConversationTurn(1L, 77L, 90L)).thenReturn(inbound);
+        ConversationChannelSink sink = mock(ConversationChannelSink.class);
+        when(sinkRegistry.find("DINGTALK")).thenReturn(sink);
+        doThrow(new IllegalArgumentException("transport down"))
+                .when(transport).send(any(), eq(90L), anyString(), anyString(), any());
+
+        svc.submitTurn(1L, 3L, "DINGTALK", "conv-x", "more", "msg-r");
+        assertDoesNotThrow(this::commitTransactionSynchronizations);
+
+        ArgumentCaptor<Object> published = ArgumentCaptor.forClass(Object.class);
+        verify(publisher).publishEvent(published.capture());
+        var event = (AgentConversationService.ConversationDispatchFailedEvent) published.getValue();
+        assertEquals(1L, event.tenantId());
+        assertEquals(77L, event.conversationId());
+        assertEquals(701L, event.ownerUserId());
+        assertEquals(702L, event.submittedUserId());
+        assertTrue(event.error().contains("transport down"));
+    }
+
+    /** 排队超时失败：同样发布失败事件，收件人字段取会话 owner 与排队轮次提交人。 */
+    @Test
+    void queuedTurnBusyFailurePublishesConversationDispatchFailedEvent() {
+        var publisher = mock(org.springframework.context.ApplicationEventPublisher.class);
+        svc.setEventPublisher(publisher);
+        var conv = existingConversationWithSession();
+        conv.setChannel("WORKITEM_CLARIFICATION");
+        conv.setOwnerUserId(701L);
+        var queued = processingInboundTurn(77L);
+        queued.setStatus("QUEUED");
+        queued.setContent("waiting");
+        queued.setSubmittedUserId(702L);
+        ConversationAdmissionService admission = mock(ConversationAdmissionService.class);
+        svc.setAdmissionService(admission);
+        when(turnDao.listQueuedInboundAfter(0L, 100)).thenReturn(java.util.List.of(queued));
+        when(convDao.findById(1L, 77L)).thenReturn(conv);
+        when(turnDao.findNextQueuedInbound(1L, 77L)).thenReturn(queued);
+        when(executorSelector.select(3L, 9L)).thenReturn(null);
+        when(admission.queueWaitExpired(55L)).thenReturn(true);
+        when(turnDao.updateStatusAndContextIfCurrent(eq(1L), eq(55L), eq("QUEUED"), eq("FAILED"),
+                contains("executor busy"), anyString())).thenReturn(1);
+
+        svc.recoverQueuedTurns();
+        commitTransactionSynchronizations();
+
+        ArgumentCaptor<Object> published = ArgumentCaptor.forClass(Object.class);
+        verify(publisher).publishEvent(published.capture());
+        var event = (AgentConversationService.ConversationDispatchFailedEvent) published.getValue();
+        assertEquals(77L, event.conversationId());
+        assertEquals(701L, event.ownerUserId());
+        assertEquals(702L, event.submittedUserId());
+        assertTrue(event.error().contains("executor busy"));
+    }
+
+    /** 执行器协议兼容失败：事务提交后才发布失败事件。 */
+    @Test
+    void compatibilityFailurePublishesConversationDispatchFailedEvent() {
+        var publisher = mock(org.springframework.context.ApplicationEventPublisher.class);
+        svc.setEventPublisher(publisher);
+        Date cutoff = new Date(1_000L);
+        AgentConversationDO conv = existingConversationWithSession();
+        conv.setOwnerUserId(701L);
+        AgentConversationTurnDO stale = processingInboundTurn(77L);
+        stale.setSubmittedUserId(702L);
+        when(turnDao.listStaleProcessingInboundByExecutor(1L, 9L, cutoff, 100))
+                .thenReturn(java.util.List.of(stale));
+        when(convDao.findById(1L, 77L)).thenReturn(conv);
+        when(turnDao.findByConversationTurn(1L, 77L, 55L)).thenReturn(stale);
+        when(executorRouter.select(1L, 3L, 50L, 9L)).thenThrow(
+                new ExecutorProtocolCompatibilityException(
+                        ExecutorProtocolFeatures.AGENT_ENVIRONMENT_VARIABLES_V1));
+        when(turnDao.updateInboundStatusIfProcessing(eq(1L), eq(77L), eq(55L), eq("FAILED"),
+                contains(ExecutorProtocolFeatures.AGENT_ENVIRONMENT_VARIABLES_V1))).thenReturn(1);
+
+        svc.recoverStaleTurnsForExecutor(1L, 9L, java.util.Set.of(), true, cutoff, 100);
+        verify(publisher, never()).publishEvent(any());
+        commitTransactionSynchronizations();
+
+        ArgumentCaptor<Object> published = ArgumentCaptor.forClass(Object.class);
+        verify(publisher).publishEvent(published.capture());
+        var event = (AgentConversationService.ConversationDispatchFailedEvent) published.getValue();
+        assertEquals(77L, event.conversationId());
+        assertEquals(701L, event.ownerUserId());
+        assertEquals(702L, event.submittedUserId());
+        assertTrue(event.error().contains("compatibility failed"));
+    }
+
+    /** 重投次数耗尽：发布失败事件，error 带尝试次数。 */
+    @Test
+    void staleAttemptExhaustionPublishesConversationDispatchFailedEvent() {
+        var publisher = mock(org.springframework.context.ApplicationEventPublisher.class);
+        svc.setEventPublisher(publisher);
+        Date cutoff = new Date(1_000L);
+        AgentConversationDO conv = existingConversationWithSession();
+        conv.setOwnerUserId(701L);
+        AgentConversationTurnDO stale = processingInboundTurn(77L);
+        stale.setDispatchAttempt(3);
+        stale.setAutoRedeliveryCount(2);
+        stale.setSubmittedUserId(702L);
+        when(turnDao.listStaleProcessingInboundByExecutor(1L, 9L, cutoff, 100))
+                .thenReturn(java.util.List.of(stale));
+        when(convDao.findById(1L, 77L)).thenReturn(conv);
+        when(turnDao.findByConversationTurn(1L, 77L, 55L)).thenReturn(stale);
+        when(turnDao.updateInboundStatusIfProcessing(eq(1L), eq(77L), eq(55L),
+                eq("FAILED"), anyString())).thenReturn(1);
+
+        svc.recoverStaleTurnsForExecutor(1L, 9L, java.util.Set.of(), true, cutoff, 100);
+        commitTransactionSynchronizations();
+
+        ArgumentCaptor<Object> published = ArgumentCaptor.forClass(Object.class);
+        verify(publisher).publishEvent(published.capture());
+        var event = (AgentConversationService.ConversationDispatchFailedEvent) published.getValue();
+        assertEquals(77L, event.conversationId());
+        assertEquals(701L, event.ownerUserId());
+        assertEquals(702L, event.submittedUserId());
+        assertTrue(event.error().contains("3 delivery attempts"));
     }
 
     /**
@@ -2258,6 +2505,7 @@ class AgentConversationServiceTest {
         AgentConversationDO conv = existingConversationWithSession();
         AgentConversationTurnDO stale = processingInboundTurn(77L);
         stale.setDispatchAttempt(3);
+        stale.setAutoRedeliveryCount(2);
         when(turnDao.listStaleProcessingInboundByExecutor(1L, 9L, cutoff, 100))
                 .thenReturn(java.util.List.of(stale));
         when(convDao.findById(1L, 77L)).thenReturn(conv);
@@ -2284,6 +2532,7 @@ class AgentConversationServiceTest {
         AgentConversationDO conv = existingConversationWithSession();
         AgentConversationTurnDO stale = processingInboundTurn(77L);
         stale.setDispatchAttempt(3);
+        stale.setAutoRedeliveryCount(2);
         when(turnDao.listStaleProcessingInboundByExecutor(1L, 9L, cutoff, 100))
                 .thenReturn(java.util.List.of(stale));
         when(convDao.findById(1L, 77L)).thenReturn(conv);
@@ -3317,6 +3566,7 @@ class AgentConversationServiceTest {
         AgentConversationTurnDO in = processingInboundTurn(77L);
         in.setExternalMsgId("owned-msg");
         in.setDispatchAttempt(3);
+        in.setAutoRedeliveryCount(2);
         when(convDao.findById(1L, 77L)).thenReturn(conv);
         when(convDao.findByKey(1L, "PLATFORM_ASSISTANT", "conv-x", 3L)).thenReturn(conv);
         when(ownedDao.findByConversationTurn(1L, 77L, 55L)).thenReturn(in);
@@ -3351,6 +3601,7 @@ class AgentConversationServiceTest {
                     .thenReturn(java.util.List.of(in));
             if ("compatibility".equals(branch)) {
                 in.setDispatchAttempt(1);
+                in.setAutoRedeliveryCount(0);
                 var failure = new ExecutorProtocolCompatibilityException(
                         ExecutorProtocolFeatures.AGENT_ENVIRONMENT_VARIABLES_V1);
                 detail = failure.getMessage();

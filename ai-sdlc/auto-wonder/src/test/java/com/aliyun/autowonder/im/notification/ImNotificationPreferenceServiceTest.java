@@ -23,6 +23,20 @@ class ImNotificationPreferenceServiceTest {
         assertTrue(service.isDisabled(1L, 2L, "WORKITEM_ASSIGNED", "WECOM"));
     }
 
+    @Test void conversationDispatchFailureDefaultsWecomOnUntilExplicitlyDisabled() {
+        var prefs = mock(NotifyPrefDao.class);
+        var settings = mock(SystemSettingService.class);
+        var service = new ImNotificationPreferenceService(prefs, settings);
+        assertFalse(service.isDisabled(1L, 2L, "CONVERSATION_DISPATCH_FAILED", "WECOM"));
+        var pref = new NotifyPrefDO(); pref.setWecom(0);
+        when(prefs.findByUserAndType(1L, 2L, "CONVERSATION_DISPATCH_FAILED")).thenReturn(pref);
+        assertTrue(service.isDisabled(1L, 2L, "CONVERSATION_DISPATCH_FAILED", "WECOM"));
+        pref.setWecom(1);
+        assertFalse(service.isDisabled(1L, 2L, "CONVERSATION_DISPATCH_FAILED", "WECOM"));
+        when(settings.getDecryptedValue("NOTIFY", "wecom_enabled", 1L)).thenReturn("false");
+        assertTrue(service.isDisabled(1L, 2L, "CONVERSATION_DISPATCH_FAILED", "WECOM"));
+    }
+
     @Test void preservesLegacyDeliveryButHonorsSelectedProviderPreferencesAndProjectSwitch() {
         var prefs = mock(NotifyPrefDao.class);
         var settings = mock(SystemSettingService.class);

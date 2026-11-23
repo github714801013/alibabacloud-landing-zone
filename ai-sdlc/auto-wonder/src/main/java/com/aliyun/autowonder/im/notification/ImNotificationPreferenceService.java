@@ -1,6 +1,7 @@
 package com.aliyun.autowonder.im.notification;
 
 import com.aliyun.autowonder.notification.NotifyPrefDao;
+import com.aliyun.autowonder.notification.NotifyTypeDefaults;
 import com.aliyun.autowonder.setting.SystemSettingService;
 import org.springframework.stereotype.Service;
 
@@ -21,8 +22,8 @@ public class ImNotificationPreferenceService {
         // Preserve existing assignment delivery until the project explicitly configures a switch.
         if (enabled != null && !Boolean.parseBoolean(enabled)) return true;
         var pref = preferences.findByUserAndType(tenantId, userId, type);
-        // 企业微信通知默认关闭：没有偏好行即视为未开启，站点内通知不受影响。
-        if (pref == null) return "WECOM".equals(provider);
+        // 企业微信通知默认关闭：没有偏好行即视为未开启，站点内通知不受影响；按类型默认开启的除外。
+        if (pref == null) return "WECOM".equals(provider) && !NotifyTypeDefaults.wecomDefaultOn(type);
         Integer selected;
         if ("FEISHU".equals(provider)) selected = pref.getFeishu();
         else if ("WECOM".equals(provider)) selected = pref.getWecom();

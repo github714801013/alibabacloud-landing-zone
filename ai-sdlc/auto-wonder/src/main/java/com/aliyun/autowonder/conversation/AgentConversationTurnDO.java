@@ -23,5 +23,7 @@ public class AgentConversationTurnDO {
     private String deliveryError;
     private Date lastDispatchAt;
     private Integer dispatchAttempt;
+    /** 自上次手动重试以来的自动重投次数 */
+    private Integer autoRedeliveryCount;
     private Date gmtCreate;
 }

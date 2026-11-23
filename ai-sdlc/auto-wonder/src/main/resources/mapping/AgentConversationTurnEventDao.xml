@@ -63,6 +63,54 @@
         ORDER BY id ASC LIMIT #{limit}
     </select>
 
+    <select id="findLatestStatusEvent" resultMap="BaseResultMap">
+        SELECT * FROM agent_conversation_turn_event
+        WHERE tenant_id = #{tenantId} AND conversation_id = #{conversationId}
+          AND turn_id = #{turnId} AND event_type = 'status'
+        ORDER BY id DESC LIMIT 1
+    </select>
+
+    <select id="listChunksBeforeAttempt" resultMap="BaseResultMap">
+        SELECT * FROM agent_conversation_turn_event
+        WHERE tenant_id = #{tenantId} AND turn_id = #{turnId}
+          AND dispatch_attempt &lt; #{dispatchAttempt} AND event_seq = #{eventSeq}
+        ORDER BY dispatch_attempt DESC, chunk_index ASC
+    </select>
+
+    <!--
+      倒序取上限内最新的事件：读侧投影只在事件数超过上限时才会被截断，
+      截断时应丢掉最早的内容，保住当前代次的最新输出。
+    -->
+    <select id="listByTurnExcludingStatus" resultMap="BaseResultMap">
+        SELECT * FROM agent_conversation_turn_event
+        WHERE tenant_id = #{tenantId} AND conversation_id = #{conversationId}
+          AND turn_id = #{turnId} AND event_type &lt;&gt; 'status'
+        ORDER BY event_seq DESC, chunk_index DESC, id DESC
+        LIMIT #{limit}
+    </select>
+
+    <select id="listStatusByTurn" resultMap="BaseResultMap">
+        SELECT * FROM agent_conversation_turn_event
+        WHERE tenant_id = #{tenantId} AND conversation_id = #{conversationId}
+          AND turn_id = #{turnId} AND event_type = 'status'
+        ORDER BY event_seq ASC, chunk_index ASC, id ASC
+        LIMIT #{limit}
+    </select>
+
+    <select id="findLatestEventTime" resultType="java.util.Date">
+        SELECT gmt_create FROM agent_conversation_turn_event
+        WHERE tenant_id = #{tenantId} AND conversation_id = #{conversationId}
+          AND turn_id = #{turnId}
+        ORDER BY id DESC LIMIT 1
+    </select>
+
+    <select id="existsEarlierGenerationEvent" resultType="java.lang.Integer">
+        SELECT 1 FROM agent_conversation_turn_event
+        WHERE tenant_id = #{tenantId} AND turn_id = #{turnId}
+          AND dispatch_attempt &lt; #{dispatchAttempt}
+        LIMIT 1
+    </select>
+
     <delete id="deleteExpiredBatch">
         DELETE FROM agent_conversation_turn_event
         WHERE gmt_create &lt; #{cutoff}

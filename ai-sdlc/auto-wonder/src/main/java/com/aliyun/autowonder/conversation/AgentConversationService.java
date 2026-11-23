@@ -55,8 +55,10 @@ public class AgentConversationService {
 
     private static final int CONVERSATION_LOCK_TIMEOUT_SECONDS = 10;
     private static final long STALE_TURN_REDELIVERY_AFTER_MILLIS = 5 * 60 * 1000L;
+    private static final long REPLACEMENT_REDELIVERY_GRACE_MILLIS = 60 * 1000L;
+    private static final long TURN_EVENT_FRESHNESS_MILLIS = 60 * 1000L;
     private static final int STALE_TURN_RECOVERY_BATCH_SIZE = 100;
-    private static final int MAX_DISPATCH_ATTEMPTS = 3;
+    private static final int MAX_AUTO_REDELIVERIES = 2;
     private static final int MAX_TURN_ERROR_LENGTH = 1024;
     private static final String STATUS_PROCESSING = "PROCESSING";
     private static final String STATUS_QUEUED = "QUEUED";
@@ -101,6 +103,7 @@ public class AgentConversationService {
     private com.aliyun.autowonder.squad.workflow.SquadWorkflowDao workflowDao;
     private long workflowCancellationCursor;
     private com.aliyun.autowonder.user.UserDao userDao;
+    private AgentConversationTurnEventDao turnEventDao;
 
     @Autowired
     void setWorkflowDao(com.aliyun.autowonder.squad.workflow.SquadWorkflowDao workflowDao) {
@@ -110,6 +113,11 @@ public class AgentConversationService {
     @Autowired
     void setUserDao(com.aliyun.autowonder.user.UserDao userDao) {
         this.userDao = userDao;
+    }
+
+    @Autowired(required = false)
+    void setTurnEventDao(AgentConversationTurnEventDao turnEventDao) {
+        this.turnEventDao = turnEventDao;
     }
 
     private boolean workflowMayRun(AgentConversationDO conv) {
@@ -566,7 +574,8 @@ public class AgentConversationService {
     @Transactional
     public void recoverInactiveTurnsForReplacedExecutor(Long tenantId, Long executorId,
             Collection<Long> activeConversationTurnIds) {
-        Date cutoff = new Date();
+        // 换执行器时留出宽限期：原执行器的终态回执与最后几条事件可能仍在路上。
+        Date cutoff = new Date(System.currentTimeMillis() - REPLACEMENT_REDELIVERY_GRACE_MILLIS);
         recoverStaleTurnsForExecutor(tenantId, executorId, activeConversationTurnIds, true,
                 cutoff, STALE_TURN_RECOVERY_BATCH_SIZE);
     }
@@ -1290,28 +1299,41 @@ public class AgentConversationService {
                         stale.getConversationId(), stale.getId(), conv.getExecutorId());
                 return null;
             }
+            if (turnEventDao != null) {
+                Date latestEventAt = turnEventDao.findLatestEventTime(stale.getTenantId(),
+                        stale.getConversationId(), stale.getId());
+                if (latestEventAt != null && System.currentTimeMillis() - latestEventAt.getTime()
+                        < TURN_EVENT_FRESHNESS_MILLIS) {
+                    log.info("conversation stale turn recovery skipped: recent events "
+                                    + "conversationId={} turnId={}",
+                            stale.getConversationId(), stale.getId());
+                    return null;
+                }
+            }
             AgentConversationTurnDO current = turnDao.findByConversationTurn(stale.getTenantId(),
                     stale.getConversationId(), stale.getId());
             if (!isActiveInboundTurn(current, stale.getConversationId())) {
                 return null;
             }
-            if (current.getDispatchAttempt() != null
-                    && current.getDispatchAttempt() >= MAX_DISPATCH_ATTEMPTS) {
+            int autoRedeliveries = current.getAutoRedeliveryCount() == null
+                    ? 0 : current.getAutoRedeliveryCount();
+            if (autoRedeliveries >= MAX_AUTO_REDELIVERIES) {
                 // 执行器已重启 / 掉线，它侧的挂起 requestId 不存在了：卡片必须立刻
                 // 失效，否则最长 30 分钟内用户的回答会落库成功却进黑洞（spec §4.6）。
                 String error = "conversation runtime did not acknowledge after "
-                        + current.getDispatchAttempt() + " delivery attempts";
+                        + (autoRedeliveries + 1) + " delivery attempts";
                 int finalized = updateOwnedFailure(stale.getTenantId(), conv, current.getId(), STATUS_PROCESSING,
                         current.getSourceContext(), error, "DELIVERY_ATTEMPTS_EXHAUSTED",
-                        java.util.Map.of("attempts", current.getDispatchAttempt()));
+                        java.util.Map.of("attempts", autoRedeliveries + 1));
                 if (finalized != 1) {
                     return null;
                 }
                 cancelPendingElicitations(stale.getTenantId(), stale.getConversationId(),
                         stale.getId());
+                publishDispatchFailed(conv, current, error);
                 log.warn("conversation stale turn exhausted delivery attempts conversationId={} "
                                 + "turnId={} attempts={}", stale.getConversationId(), stale.getId(),
-                        current.getDispatchAttempt());
+                        autoRedeliveries + 1);
                 return new PostCommitEffects(
                         queueWecomFailureReply(conv, current, error, current.getRequestId()),
                         nextQueuedDispatch(stale.getTenantId(), conv));
@@ -1390,11 +1412,16 @@ public class AgentConversationService {
         if (!recordProcessingDispatchAttempt(tenantId, conv.getId(), next.getId())) {
             return null;
         }
+        AgentConversationTurnDO dispatched = turnDao.findByConversationTurn(tenantId, conv.getId(),
+                next.getId());
+        int attempt = dispatched != null && dispatched.getDispatchAttempt() != null
+                ? dispatched.getDispatchAttempt()
+                : (next.getDispatchAttempt() == null ? 0 : next.getDispatchAttempt()) + 1;
         bindSelectedExecutor(tenantId, conv, selection);
         AgentIdentitySnapshot identity = refreshConversationIdentity(tenantId, conv,
                 selection.agentVersionId());
         return new PendingDispatch(conv, next.getId(), next.getContent(), next.getSourceContext(),
-                identity.systemPrompt(), next.getRequestId(), 1);
+                identity.systemPrompt(), next.getRequestId(), attempt);
     }
 
     private AgentConversationTurnDO inboundTurn(Long tenantId, Long conversationId, Long turnId) {
@@ -1838,6 +1865,10 @@ public class AgentConversationService {
                         dispatch.sourceContext(), error, "DISPATCH_FAILED", java.util.Map.of("detail", captured.detail()));
             }
         }
+        if (finalized == 1) {
+            publishDispatchFailed(dispatch.conv(), inboundTurn(dispatch.conv().getTenantId(),
+                    dispatch.conv().getId(), dispatch.turnId()), error);
+        }
         log.error("conversation runtime dispatch failed conversationId={} turnId={} finalized={} error={}",
                 dispatch.conv().getId(), dispatch.turnId(), finalized, error, failure);
     }
@@ -1875,6 +1906,16 @@ public class AgentConversationService {
         return new PostCommitEffects(channelReply,
                 nextQueuedDispatch(dispatch.conv().getTenantId(), dispatch.conv()),
                 terminalNotice(dispatch.conv(), "FAILED", reply, error));
+    }
+
+    /** 轮次以失败终态落库后发布事件；未注入发布器或会话为空时跳过。 */
+    private void publishDispatchFailed(AgentConversationDO conv, AgentConversationTurnDO inbound, String error) {
+        if (eventPublisher == null || conv == null) {
+            return;
+        }
+        eventPublisher.publishEvent(new ConversationDispatchFailedEvent(conv.getTenantId(), conv.getId(),
+                conv.getOwnerUserId(), conv.getBizRefType(), conv.getBizRefId(), conv.getTitle(),
+                inbound == null ? null : inbound.getSubmittedUserId(), error));
     }
 
     private DispatchFailure dispatchFailureSummary(Throwable failure) {
@@ -2089,6 +2130,7 @@ public class AgentConversationService {
                 error, "EXECUTOR_BUSY", java.util.Map.of());
         if (rows == 1) {
             admissionService.clearQueueWait(turn.getId());
+            publishDispatchFailed(conv, turn, error);
             PendingChannelReply reply = queueWecomFailureReply(conv, turn, error,
                     turn.getRequestId());
             if (reply != null) {
@@ -2130,7 +2172,11 @@ public class AgentConversationService {
             Supplier<PendingChannelReply> finalizeTarget = () -> {
                 int rows = updateOwnedFailure(tenantId, conv, turn.getId(), expectedStatus, turn.getSourceContext(),
                         error, "EXECUTOR_COMPATIBILITY_FAILED", java.util.Map.of("detail", failure.getMessage()));
-                return rows == 1 ? queueWecomFailureReply(conv, turn, error, turn.getRequestId()) : null;
+                if (rows != 1) {
+                    return null;
+                }
+                publishDispatchFailed(conv, turn, error);
+                return queueWecomFailureReply(conv, turn, error, turn.getRequestId());
             };
             PendingChannelReply reply = failureTransactionTemplate != null
                     ? failureTransactionTemplate.execute(status -> finalizeTarget.get())
@@ -2253,5 +2299,10 @@ public class AgentConversationService {
     /** 工单澄清会话的成功轮次产生了普通文本答复，通知监听器据此推送给提问人。 */
     public record WorkitemClarificationReplyCompleted(long tenantId, long workitemId,
             long conversationId, Long agentId, long turnId, String replyMarkdown, long recipientId) {
+    }
+
+    /** 会话轮次以失败终态结束时发布，携带通知所需的最小字段；由通知监听器在事务提交后消费。 */
+    public record ConversationDispatchFailedEvent(long tenantId, long conversationId, Long ownerUserId,
+            String bizRefType, Long bizRefId, String conversationTitle, Long submittedUserId, String error) {
     }
 }

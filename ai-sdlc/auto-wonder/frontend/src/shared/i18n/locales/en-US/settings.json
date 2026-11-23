@@ -82,6 +82,7 @@
   "deliveryBlocked": "Delivery blocked",
   "aiDone": "AI task completed",
   "reviewRequired": "Review required",
+  "conversationDispatchFailed": "Conversation delivery failed",
   "aiSaved": "AI settings saved",
   "notifySaved": "Notification settings saved",
   "systemSaved": "System settings saved",

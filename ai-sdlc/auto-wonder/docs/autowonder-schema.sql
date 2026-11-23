@@ -1683,6 +1683,7 @@ CREATE TABLE IF NOT EXISTS `agent_conversation_turn` (
   `delivery_error` TEXT NULL COMMENT '投递诊断，不覆盖业务 error',
   `last_dispatch_at` DATETIME DEFAULT NULL COMMENT '最近一次向 runtime 投递该 turn 的时间',
   `dispatch_attempt` INT NOT NULL DEFAULT 0 COMMENT '向 runtime 投递该 turn 的次数',
+  `auto_redelivery_count` INT NOT NULL DEFAULT 0 COMMENT '自上次手动重试以来的自动重投次数',
   `gmt_create` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_external_msg` (`tenant_id`, `external_msg_id`),
@@ -1710,6 +1711,7 @@ CREATE TABLE IF NOT EXISTS `agent_conversation_turn_event` (
   UNIQUE KEY `uk_turn_event_chunk` (`tenant_id`, `turn_id`, `dispatch_attempt`, `event_seq`, `chunk_index`),
   KEY `idx_replay` (`tenant_id`, `conversation_id`, `id`),
   KEY `idx_turn_event_page` (`tenant_id`, `conversation_id`, `turn_id`, `id`),
+  KEY `idx_turn_event_dedup` (`tenant_id`, `turn_id`, `event_seq`, `chunk_index`, `dispatch_attempt`),
   KEY `idx_cleanup` (`gmt_create`)
 ) ENGINE=InnoDB AUTO_INCREMENT=10000 DEFAULT CHARSET=utf8mb4 COMMENT='Provider event chunks for conversation turns';
 

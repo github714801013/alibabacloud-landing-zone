@@ -81,6 +81,7 @@
   "deliveryBlocked": "交付阻塞",
   "aiDone": "AI任务完成",
   "reviewRequired": "待审核",
+  "conversationDispatchFailed": "会话推送失败",
   "aiSaved": "AI配置已保存",
   "notifySaved": "通知配置已保存",
   "systemSaved": "系统配置已保存",

@@ -285,3 +285,28 @@ it('starts the WeCom preference off and saves only the WeCom switch', async () =
   await waitFor(() => expect(saved.prefs?.items[0]).toEqual({ type: 'WORKITEM_ASSIGNED', inApp: true, wecom: true, dingtalk: false, feishu: false }));
   expect(saved.settings?.items).toEqual([{ key: 'wecom_enabled', valueJson: 'true', secret: false }]);
 });
+
+it('defaults the conversation dispatch failure WeCom switch on and saves an explicit off', async () => {
+  const saved: { prefs?: { items: NotifyPrefItem[] } } = {};
+  useAuthStore.getState().setCurrentWorkspace({ id: 1, name: 'O', description: '' }, 'ADMIN');
+  useCommonSettingsHandlers([
+    http.get('/api/platform/im-channels', () => HttpResponse.json(apiOk([{ provider: 'WECOM', selected: true, enabled: true }]))),
+    http.get('/api/settings/NOTIFY', () => HttpResponse.json(apiOk([{ key: 'wecom_enabled', valueJson: 'true', secret: false }]))),
+    http.get('/api/notifications/prefs', () => HttpResponse.json(apiOk([{ type: 'WORKITEM_ASSIGNED', inApp: true, wecom: false }]))),
+    http.put('/api/notifications/prefs', async ({ request }) => { saved.prefs = await request.json() as { items: NotifyPrefItem[] }; return HttpResponse.json(apiOk(null)); }),
+    http.put('/api/settings/NOTIFY', () => HttpResponse.json(apiOk(null))),
+  ]);
+  renderPage();
+  await userEvent.click(await screen.findByRole('tab', { name: '通知配置' }));
+
+  const wecomSwitch = await screen.findByRole('switch', { name: '会话推送失败：企业微信' });
+  expect(wecomSwitch).toBeChecked();
+  expect(screen.getByRole('switch', { name: '会话推送失败：站内' })).toBeChecked();
+
+  await userEvent.click(wecomSwitch);
+  await userEvent.click(screen.getByRole('button', { name: /保存通知配置/ }));
+
+  await waitFor(() => expect(saved.prefs?.items).toContainEqual({
+    type: 'CONVERSATION_DISPATCH_FAILED', inApp: true, wecom: false, dingtalk: false, feishu: false,
+  }));
+});

@@ -233,6 +233,53 @@ class NotifyServiceTest {
     }
 
     @Test
+    void conversationDispatchFailureDeliversWecomWithoutPreferenceRow() {
+        NotifyChannel wecomChannel = mock(NotifyChannel.class);
+        when(wecomChannel.name()).thenReturn("wecom");
+        when(wecomChannel.deliver(any())).thenReturn(true);
+        NotifyService withWecom = new NotifyService(notificationDao, prefDao,
+                List.of(inAppChannel, wecomChannel));
+        when(prefDao.findByUserAndType(1L, 10L, "CONVERSATION_DISPATCH_FAILED")).thenReturn(null);
+
+        NotifyEvent event = new NotifyEvent();
+        event.setTenantId(1L);
+        event.setType("CONVERSATION_DISPATCH_FAILED");
+        event.setTitle("会话推送失败");
+        event.setContent("「会话」\n失败原因");
+        event.setRecipientIds(List.of(10L));
+
+        withWecom.notify(event);
+
+        verify(inAppChannel).deliver(any());
+        verify(wecomChannel).deliver(any());
+    }
+
+    @Test
+    void conversationDispatchFailureHonorsExplicitWecomOff() {
+        // 默认开启只兜底「没有偏好行」；用户显式关闭后不得再投递。
+        NotifyChannel wecomChannel = mock(NotifyChannel.class);
+        when(wecomChannel.name()).thenReturn("wecom");
+        when(wecomChannel.deliver(any())).thenReturn(true);
+        NotifyService withWecom = new NotifyService(notificationDao, prefDao,
+                List.of(inAppChannel, wecomChannel));
+        NotifyPrefDO pref = new NotifyPrefDO();
+        pref.setInApp(1);
+        pref.setWecom(0);
+        when(prefDao.findByUserAndType(1L, 10L, "CONVERSATION_DISPATCH_FAILED")).thenReturn(pref);
+
+        NotifyEvent event = new NotifyEvent();
+        event.setTenantId(1L);
+        event.setType("CONVERSATION_DISPATCH_FAILED");
+        event.setTitle("会话推送失败");
+        event.setRecipientIds(List.of(10L));
+
+        withWecom.notify(event);
+
+        verify(inAppChannel).deliver(any());
+        verify(wecomChannel, never()).deliver(any());
+    }
+
+    @Test
     void notifyWithoutRelatedLinksKeepsTheSnapshotColumnEmpty() {
         NotifyEvent event = new NotifyEvent();
         event.setTenantId(1L);

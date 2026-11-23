@@ -22,20 +22,22 @@
         <result column="delivery_error" property="deliveryError"/>
         <result column="last_dispatch_at" property="lastDispatchAt"/>
         <result column="dispatch_attempt" property="dispatchAttempt"/>
+        <result column="auto_redelivery_count" property="autoRedeliveryCount"/>
         <result column="gmt_create" property="gmtCreate"/>
     </resultMap>
 
     <sql id="Base_Column_List">
         id, tenant_id, conversation_id, direction, content, external_msg_id, request_id, source_context, submitted_user_id,
         status, error, source_inbound_turn_id, delivery_status, delivery_attempt,
-        delivery_available_at, delivery_error, last_dispatch_at, dispatch_attempt, gmt_create
+        delivery_available_at, delivery_error, last_dispatch_at, dispatch_attempt,
+        auto_redelivery_count, gmt_create
     </sql>
 
     <sql id="Turn_Column_List">
         t.id, t.tenant_id, t.conversation_id, t.direction, t.content, t.external_msg_id,
         t.request_id, t.source_context, t.submitted_user_id, t.status, t.error, t.source_inbound_turn_id,
         t.delivery_status, t.delivery_attempt, t.delivery_available_at, t.delivery_error,
-        t.last_dispatch_at, t.dispatch_attempt, t.gmt_create
+        t.last_dispatch_at, t.dispatch_attempt, t.auto_redelivery_count, t.gmt_create
     </sql>
 
     <!-- Only unfinished turns, keyset-paged: historical conversations do not grow this scan. -->
@@ -133,10 +135,10 @@
         LIMIT 1
     </select>
 
-    <!-- 重试重置：只有最新失败轮次能被恢复为 QUEUED，并把自动重投次数与错误一起清空。 -->
+    <!-- 重试重置：保留单调派发代次，只清空错误与本次自动重投预算。 -->
     <update id="resetFailedInboundForRetry">
         UPDATE agent_conversation_turn
-        SET status = 'QUEUED', error = NULL, dispatch_attempt = 0
+        SET status = 'QUEUED', error = NULL, auto_redelivery_count = 0
         WHERE tenant_id = #{tenantId}
           AND conversation_id = #{conversationId}
           AND id = #{id}
@@ -254,7 +256,8 @@
     <update id="claimStaleDispatchAttemptIfProcessing">
         UPDATE agent_conversation_turn
         SET last_dispatch_at = NOW(),
-            dispatch_attempt = dispatch_attempt + 1
+            dispatch_attempt = dispatch_attempt + 1,
+            auto_redelivery_count = auto_redelivery_count + 1
         WHERE tenant_id = #{tenantId}
           AND conversation_id = #{conversationId}
           AND id = #{id}

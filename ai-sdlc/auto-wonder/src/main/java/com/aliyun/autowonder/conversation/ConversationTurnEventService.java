@@ -46,9 +46,23 @@ public class ConversationTurnEventService {
             String eventType, String payloadFragment) {
         // Serialize critical side effects against cancellation/re-dispatch of this turn.
         AgentConversationTurnDO turn = turnDao.findByConversationTurnForUpdate(tenantId, conversationId, turnId);
-        if (turn == null || !"PROCESSING".equals(turn.getStatus())
-                || dispatchAttempt <= 0 || !Integer.valueOf(dispatchAttempt).equals(turn.getDispatchAttempt())) return;
-        persistEvent(tenantId, executorId, conversationId, turnId, dispatchAttempt, eventSeq,
+        if (turn == null || !"PROCESSING".equals(turn.getStatus())) {
+            log.warn("conversation event rejected: no active turn tenantId={} conversationId={} turnId={}",
+                    tenantId, conversationId, turnId);
+            return;
+        }
+        int effectiveAttempt = effectiveDispatchAttempt(dispatchAttempt, turn);
+        if (effectiveAttempt <= 0) {
+            log.warn("conversation event rejected: no dispatch generation conversationId={} turnId={}",
+                    conversationId, turnId);
+            return;
+        }
+        if (isStaleAttempt(dispatchAttempt, turn)) {
+            log.warn("conversation event rejected: stale attempt conversationId={} turnId={} attempt={}",
+                    conversationId, turnId, dispatchAttempt);
+            return;
+        }
+        persistEvent(tenantId, executorId, conversationId, turnId, effectiveAttempt, eventSeq,
                 chunkIndex, chunkCount, eventType, payloadFragment, true);
     }
 
@@ -78,11 +92,27 @@ public class ConversationTurnEventService {
             return;
         }
 
-        // Old runtimes omit attempt (0); keep their existing behavior during rolling upgrades.
-        if (dispatchAttempt > 0 && turn.getDispatchAttempt() != null
-                && turn.getDispatchAttempt() > 0 && dispatchAttempt != turn.getDispatchAttempt()) {
+        int effectiveAttempt = effectiveDispatchAttempt(dispatchAttempt, turn);
+        if (effectiveAttempt <= 0) {
+            log.warn("conversation event rejected: no dispatch generation conversationId={} turnId={}",
+                    conversationId, turnId);
+            return;
+        }
+        if (isStaleAttempt(dispatchAttempt, turn)) {
             log.warn("conversation event rejected: stale attempt conversationId={} turnId={} attempt={}",
                     conversationId, turnId, dispatchAttempt);
+            return;
+        }
+
+        boolean singleChunk = chunkCount <= 1;
+        if ("status".equals(eventType) && singleChunk && payloadFragment != null) {
+            updateCliSessionRefIfPresent(tenantId, conversationId, payloadFragment);
+            if (sameStatusAsLatest(tenantId, conversationId, turnId, payloadFragment)) {
+                return;
+            }
+        }
+        if (skipDuplicateAcrossGenerations(tenantId, conversationId, turnId, effectiveAttempt,
+                eventSeq, chunkIndex, chunkCount, eventType, payloadFragment)) {
             return;
         }
 
@@ -90,7 +120,7 @@ public class ConversationTurnEventService {
         event.setTenantId(tenantId);
         event.setConversationId(conversationId);
         event.setTurnId(turnId);
-        event.setDispatchAttempt(dispatchAttempt);
+        event.setDispatchAttempt(effectiveAttempt);
         event.setEventSeq(eventSeq);
         event.setChunkIndex(chunkIndex);
         event.setChunkCount(chunkCount);
@@ -98,10 +128,10 @@ public class ConversationTurnEventService {
         event.setPayloadFragment(payloadFragment);
         eventDao.insertChunkIfAbsent(event);
 
-        if (chunkCount <= 1 || allChunksPresent(tenantId, turnId, dispatchAttempt, eventSeq, chunkCount)) {
+        if (chunkCount <= 1 || allChunksPresent(tenantId, turnId, effectiveAttempt, eventSeq, chunkCount)) {
             String assembled = chunkCount <= 1 ? payloadFragment
-                    : assemblePayload(eventDao.listLogicalEventChunks(tenantId, turnId, dispatchAttempt, eventSeq));
-            if ("status".equals(eventType) && assembled != null) {
+                    : assemblePayload(eventDao.listLogicalEventChunks(tenantId, turnId, effectiveAttempt, eventSeq));
+            if ("status".equals(eventType) && assembled != null && !singleChunk) {
                 updateCliSessionRefIfPresent(tenantId, conversationId, assembled);
             }
             String questionStatus;
@@ -118,7 +148,97 @@ public class ConversationTurnEventService {
                     ? PlatformEventProjection.payload(eventType,assembled):assembled;
             String publicType=PlatformConversationChannel.CHANNEL.equals(conv.getChannel())
                     && ("thinking".equals(eventType)||"thinking_delta".equals(eventType))?"status":eventType;
-            publishToBrowser(tenantId, conversationId, turnId, dispatchAttempt, eventSeq, publicType, publicPayload);
+            publishToBrowser(tenantId, conversationId, turnId, effectiveAttempt, eventSeq, publicType, publicPayload);
+        }
+    }
+
+    private int effectiveDispatchAttempt(int frameAttempt, AgentConversationTurnDO turn) {
+        if (frameAttempt > 0) return frameAttempt;
+        return turn.getDispatchAttempt() == null ? 0 : turn.getDispatchAttempt();
+    }
+
+    private boolean isStaleAttempt(int frameAttempt, AgentConversationTurnDO turn) {
+        return frameAttempt > 0 && turn.getDispatchAttempt() != null
+                && turn.getDispatchAttempt() > 0 && frameAttempt != turn.getDispatchAttempt();
+    }
+
+    private boolean sameStatusAsLatest(long tenantId, long conversationId, long turnId, String payload) {
+        String status = statusOf(payload);
+        if (status == null) return false;
+        AgentConversationTurnEventDO latest = eventDao.findLatestStatusEvent(tenantId, conversationId, turnId);
+        if (latest == null || latest.getChunkCount() == null || latest.getChunkCount() > 1) return false;
+        return status.equals(statusOf(latest.getPayloadFragment()));
+    }
+
+    private String statusOf(String payload) {
+        try {
+            return JSON.parseObject(payload).getString("status");
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * 回放旧代次时按序号逐分片比对：当前代次尚未开始写入时，完全相同的分片跳过；
+     * 一旦当前代次已有该序号分片，后续分片（含相同内容）照常写入，保证事件能收齐。
+     * 首个不同分片只在当前代次未开始时回填它之前的相同前缀，绝不复制尚未回放的后续分片。
+     *
+     * shortcut: 只与最近一个分片齐全的旧代次比对；更早的残缺事件不参与判重.
+     */
+    private boolean skipDuplicateAcrossGenerations(long tenantId, long conversationId, long turnId,
+            int effectiveAttempt, long eventSeq, int chunkIndex, int chunkCount,
+            String eventType, String payloadFragment) {
+        List<AgentConversationTurnEventDO> earlier = eventDao.listChunksBeforeAttempt(
+                tenantId, turnId, effectiveAttempt, eventSeq);
+        if (earlier.isEmpty()) return false;
+        java.util.Map<Integer, List<AgentConversationTurnEventDO>> byAttempt = new java.util.TreeMap<>(
+                java.util.Comparator.reverseOrder());
+        for (var row : earlier) {
+            byAttempt.computeIfAbsent(row.getDispatchAttempt(), ignored -> new java.util.ArrayList<>()).add(row);
+        }
+        for (var chunks : byAttempt.values()) {
+            var head = chunks.get(0);
+            if (head.getChunkCount() == null || head.getChunkCount() != chunkCount
+                    || chunks.size() != chunkCount) continue;
+            AgentConversationTurnEventDO match = null;
+            for (var chunk : chunks) {
+                if (chunk.getChunkIndex() != null && chunk.getChunkIndex() == chunkIndex) {
+                    match = chunk;
+                    break;
+                }
+            }
+            if (match == null) return false;
+            boolean same = java.util.Objects.equals(match.getEventType(), eventType)
+                    && java.util.Objects.equals(match.getPayloadFragment(), payloadFragment);
+            if (chunkCount <= 1) return same;
+            boolean started = !eventDao.listLogicalEventChunks(
+                    tenantId, turnId, effectiveAttempt, eventSeq).isEmpty();
+            if (same) return !started;
+            if (!started) {
+                backfillEarlierPrefix(tenantId, conversationId, turnId, effectiveAttempt, eventSeq,
+                        chunkCount, chunkIndex, chunks);
+            }
+            return false;
+        }
+        return false;
+    }
+
+    private void backfillEarlierPrefix(long tenantId, long conversationId, long turnId,
+            int effectiveAttempt, long eventSeq, int chunkCount, int frameChunkIndex,
+            List<AgentConversationTurnEventDO> earlierChunks) {
+        for (var chunk : earlierChunks) {
+            if (chunk.getChunkIndex() == null || chunk.getChunkIndex() >= frameChunkIndex) continue;
+            AgentConversationTurnEventDO copy = new AgentConversationTurnEventDO();
+            copy.setTenantId(tenantId);
+            copy.setConversationId(conversationId);
+            copy.setTurnId(turnId);
+            copy.setDispatchAttempt(effectiveAttempt);
+            copy.setEventSeq(eventSeq);
+            copy.setChunkIndex(chunk.getChunkIndex());
+            copy.setChunkCount(chunkCount);
+            copy.setEventType(chunk.getEventType());
+            copy.setPayloadFragment(chunk.getPayloadFragment());
+            eventDao.insertChunkIfAbsent(copy);
         }
     }
 
@@ -158,7 +278,13 @@ public class ConversationTurnEventService {
      */
     public List<AgentConversationTurnEventDO> listEventsByTurn(long tenantId, long conversationId,
             long turnId) {
-        return eventDao.listByTurn(tenantId, conversationId, turnId, MAX_TURN_EVENTS);
+        AgentConversationTurnDO turn = turnDao.findByConversationTurn(tenantId, conversationId, turnId);
+        Integer currentAttempt = turn == null ? null : turn.getDispatchAttempt();
+        if (currentAttempt == null || currentAttempt <= 0
+                || eventDao.existsEarlierGenerationEvent(tenantId, turnId, currentAttempt) == null) {
+            return eventDao.listByTurn(tenantId, conversationId, turnId, MAX_TURN_EVENTS);
+        }
+        return projectCurrentGeneration(tenantId, conversationId, turnId, currentAttempt);
     }
 
     public record EventPage(List<AgentConversationTurnEventDO> rows, long nextAfterId, boolean hasMore) {}
@@ -167,11 +293,89 @@ public class ConversationTurnEventService {
             long afterId, int requestedLimit) {
         int limit = Math.max(1, Math.min(500, requestedLimit));
         long cursor = Math.max(0, afterId);
+        if (cursor == 0) {
+            AgentConversationTurnDO turn = turnDao.findByConversationTurn(
+                    tenantId, conversationId, turnId);
+            Integer currentAttempt = turn == null ? null : turn.getDispatchAttempt();
+            if (currentAttempt != null && currentAttempt > 0
+                    && eventDao.existsEarlierGenerationEvent(tenantId, turnId, currentAttempt) != null) {
+                // 首屏一次性给出去重后的完整投影；后续游标按真实 id 只取新事件。
+                List<AgentConversationTurnEventDO> merged = projectCurrentGeneration(
+                        tenantId, conversationId, turnId, currentAttempt);
+                long next = cursor;
+                for (var row : merged) {
+                    if (row.getId() != null && row.getId() > next) next = row.getId();
+                }
+                return new EventPage(merged, next, false);
+            }
+        }
         List<AgentConversationTurnEventDO> rows = eventDao.listByTurnAfter(
                 tenantId, conversationId, turnId, cursor, limit + 1);
         boolean more = rows.size() > limit;
         List<AgentConversationTurnEventDO> page = List.copyOf(rows.subList(0, Math.min(rows.size(), limit)));
         return new EventPage(page, page.isEmpty() ? cursor : page.get(page.size() - 1).getId(), more);
+    }
+
+    /**
+     * 重试后按当前代次出数：每个序号优先取分片齐全的当前代次事件；当前代次缺失
+     * 或分片不全时回退到最近一个完整旧代次，并投影为当前代次；status 只取当前代次。
+     */
+    private List<AgentConversationTurnEventDO> projectCurrentGeneration(long tenantId,
+            long conversationId, long turnId, int currentAttempt) {
+        List<AgentConversationTurnEventDO> content = eventDao.listByTurnExcludingStatus(
+                tenantId, conversationId, turnId, MAX_TURN_EVENTS);
+        java.util.Map<Long, java.util.Map<Integer, List<AgentConversationTurnEventDO>>> bySeqAttempt =
+                new java.util.TreeMap<>();
+        for (var row : content) {
+            bySeqAttempt.computeIfAbsent(row.getEventSeq(), ignored -> new java.util.TreeMap<>(
+                    java.util.Comparator.reverseOrder()))
+                    .computeIfAbsent(row.getDispatchAttempt(), ignored -> new java.util.ArrayList<>())
+                    .add(row);
+        }
+        List<AgentConversationTurnEventDO> merged = new java.util.ArrayList<>();
+        for (var attempts : bySeqAttempt.values()) {
+            List<AgentConversationTurnEventDO> chosen = null;
+            for (var chunks : attempts.values()) {
+                var head = chunks.get(0);
+                if (head.getChunkCount() != null && chunks.size() == head.getChunkCount()) {
+                    chosen = chunks;
+                    break;
+                }
+            }
+            if (chosen == null) continue;
+            int attempt = chosen.get(0).getDispatchAttempt();
+            for (var chunk : chosen) {
+                merged.add(attempt == currentAttempt ? chunk : project(chunk, currentAttempt));
+            }
+        }
+        for (var row : eventDao.listStatusByTurn(tenantId, conversationId, turnId, MAX_TURN_EVENTS)) {
+            if (row.getDispatchAttempt() != null && row.getDispatchAttempt() == currentAttempt) {
+                merged.add(row);
+            }
+        }
+        merged.sort(java.util.Comparator
+                .comparingLong(AgentConversationTurnEventDO::getEventSeq)
+                .thenComparingInt(row -> row.getChunkIndex() == null ? 0 : row.getChunkIndex())
+                .thenComparingLong(row -> row.getId() == null ? 0 : row.getId()));
+        return merged.size() > MAX_TURN_EVENTS
+                ? List.copyOf(merged.subList(merged.size() - MAX_TURN_EVENTS, merged.size()))
+                : merged;
+    }
+
+    private AgentConversationTurnEventDO project(AgentConversationTurnEventDO source, int dispatchAttempt) {
+        AgentConversationTurnEventDO copy = new AgentConversationTurnEventDO();
+        copy.setId(source.getId());
+        copy.setTenantId(source.getTenantId());
+        copy.setConversationId(source.getConversationId());
+        copy.setTurnId(source.getTurnId());
+        copy.setDispatchAttempt(dispatchAttempt);
+        copy.setEventSeq(source.getEventSeq());
+        copy.setChunkIndex(source.getChunkIndex());
+        copy.setChunkCount(source.getChunkCount());
+        copy.setEventType(source.getEventType());
+        copy.setPayloadFragment(source.getPayloadFragment());
+        copy.setGmtCreate(source.getGmtCreate());
+        return copy;
     }
 
     public EventPage listPlatformEventsByTurnPage(long tenantId, long conversationId, long turnId,

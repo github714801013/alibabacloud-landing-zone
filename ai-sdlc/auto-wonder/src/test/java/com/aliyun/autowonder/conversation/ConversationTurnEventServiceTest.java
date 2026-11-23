@@ -2,6 +2,7 @@ package com.aliyun.autowonder.conversation;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.util.Collections;
 import java.util.List;
@@ -367,6 +368,324 @@ class ConversationTurnEventServiceTest {
                 "{\"data\":{\"requestId\":\"req-1\"}}");
 
         verify(publisher).publish(anyLong(), eq(10L), anyLong(), anyInt(), anyLong(), anyString(), anyString());
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"FAILED", "CANCELED"})
+    void terminalTurnRejectsReliableEventWithoutInsertOrPush(String status) {
+        AgentConversationTurnDO turn = new AgentConversationTurnDO();
+        turn.setId(20L);
+        turn.setStatus(status);
+        turn.setDispatchAttempt(2);
+        when(turnDao.findByConversationTurnForUpdate(1L, 10L, 20L)).thenReturn(turn);
+
+        service.persistReliableEvent(1L, 50L, 10L, 20L, 2, 1L, 0, 1, "status",
+                "{\"status\":\"running\"}");
+
+        verifyNoInteractions(eventDao, publisher, elicitationService);
+    }
+
+    @Test
+    void legacyZeroAttemptIsStoredUnderCurrentGeneration() {
+        activeTurn(3);
+
+        service.persistEvent(1L, 50L, 10L, 20L, 0, 1L, 0, 1, "text", "{\"content\":\"hi\"}");
+
+        assertEquals(3, captureInserted().getDispatchAttempt());
+    }
+
+    @Test
+    void identicalStatusHeartbeatIsPersistedAndPushedOnce() {
+        activeTurn(1);
+        String running = "{\"status\":\"running\",\"sessionId\":\"A\"}";
+        when(eventDao.findLatestStatusEvent(1L, 10L, 20L))
+                .thenReturn(null)
+                .thenReturn(event(1, 1L, 0, 1, "status", running));
+
+        service.persistEvent(1L, 50L, 10L, 20L, 1, 1L, 0, 1, "status", running);
+        service.persistEvent(1L, 50L, 10L, 20L, 1, 2L, 0, 1, "status", running);
+
+        verify(eventDao, times(1)).insertChunkIfAbsent(any());
+        verify(publisher, times(1)).publish(anyLong(), eq(10L), anyLong(), anyInt(), anyLong(),
+                anyString(), anyString());
+    }
+
+    /** 票 01-2：10 条完全相同的可靠 status=running 帧只落 1 行、只推 1 次，且都不抛异常（发送方照常回执）。 */
+    @Test
+    void tenIdenticalReliableStatusFramesProduceSingleRowAndPush() {
+        AgentConversationDO conv = new AgentConversationDO();
+        conv.setExecutorId(50L);
+        when(convDao.findById(1L, 10L)).thenReturn(conv);
+        AgentConversationTurnDO turn = new AgentConversationTurnDO();
+        turn.setId(20L);
+        turn.setStatus("PROCESSING");
+        turn.setDispatchAttempt(2);
+        when(turnDao.findByConversationTurnForUpdate(1L, 10L, 20L)).thenReturn(turn);
+        when(turnDao.findProcessingInbound(1L, 10L)).thenReturn(turn);
+        String running = "{\"status\":\"running\"}";
+        when(eventDao.findLatestStatusEvent(1L, 10L, 20L))
+                .thenReturn(null, event(2, 1L, 0, 1, "status", running));
+
+        for (int seq = 1; seq <= 10; seq++) {
+            service.persistReliableEvent(1L, 50L, 10L, 20L, 2, seq, 0, 1, "status", running);
+        }
+
+        verify(eventDao, times(1)).insertChunkIfAbsent(any());
+        verify(publisher, times(1)).publish(anyLong(), eq(10L), anyLong(), anyInt(), anyLong(),
+                anyString(), anyString());
+    }
+
+    @Test
+    void sameRunningWithNewSessionIdUpdatesRefWithoutInvalidatingCurrentRow() {
+        activeTurn(1);
+        when(eventDao.findLatestStatusEvent(1L, 10L, 20L)).thenReturn(event(1, 1L, 0, 1, "status",
+                "{\"status\":\"running\",\"sessionId\":\"A\"}"));
+
+        service.persistEvent(1L, 50L, 10L, 20L, 1, 1L, 0, 1, "status",
+                "{\"status\":\"running\",\"sessionId\":\"B\"}");
+
+        verify(convDao).updateCliSessionRef(1L, 10L, "B");
+        verify(eventDao, never()).insertChunkIfAbsent(any());
+        verifyNoInteractions(publisher);
+    }
+
+    @Test
+    void differentStatusValueIsPersistedAndPushed() {
+        activeTurn(1);
+        when(eventDao.findLatestStatusEvent(1L, 10L, 20L))
+                .thenReturn(event(1, 1L, 0, 1, "status", "{\"status\":\"running\"}"));
+
+        service.persistEvent(1L, 50L, 10L, 20L, 1, 2L, 0, 1, "status",
+                "{\"status\":\"success\"}");
+
+        verify(eventDao).insertChunkIfAbsent(any());
+        verify(publisher).publish(anyLong(), eq(10L), anyLong(), anyInt(), anyLong(), anyString(),
+                anyString());
+    }
+
+    @Test
+    void identicalCrossGenerationChunkIsSkipped() {
+        activeTurn(4);
+        when(eventDao.listChunksBeforeAttempt(1L, 20L, 4, 1L))
+                .thenReturn(List.of(event(3, 1L, 0, 1, "text", "{\"content\":\"hi\"}")));
+
+        service.persistEvent(1L, 50L, 10L, 20L, 4, 1L, 0, 1, "text", "{\"content\":\"hi\"}");
+
+        verify(eventDao, never()).insertChunkIfAbsent(any());
+        verifyNoInteractions(publisher);
+    }
+
+    @Test
+    void differingCrossGenerationChunkIsWrittenToCurrentGeneration() {
+        activeTurn(4);
+        when(eventDao.listChunksBeforeAttempt(1L, 20L, 4, 1L))
+                .thenReturn(List.of(event(3, 1L, 0, 1, "text", "{\"content\":\"old\"}")));
+
+        service.persistEvent(1L, 50L, 10L, 20L, 4, 1L, 0, 1, "text", "{\"content\":\"new\"}");
+
+        AgentConversationTurnEventDO inserted = captureInserted();
+        assertEquals(4, inserted.getDispatchAttempt());
+        assertEquals("{\"content\":\"new\"}", inserted.getPayloadFragment());
+    }
+
+    @Test
+    void differingLaterChunkBackfillsOnlyTheIdenticalPrefixFromEarlierGeneration() {
+        activeTurn(4);
+        when(eventDao.listChunksBeforeAttempt(1L, 20L, 4, 1L)).thenReturn(List.of(
+                event(3, 1L, 0, 2, "text", "{\"content\":\"old"),
+                event(3, 1L, 1, 2, "text", "\"}")));
+        when(eventDao.listLogicalEventChunks(1L, 20L, 4, 1L)).thenReturn(List.of());
+
+        service.persistEvent(1L, 50L, 10L, 20L, 4, 1L, 0, 2, "text", "{\"content\":\"old");
+        service.persistEvent(1L, 50L, 10L, 20L, 4, 1L, 1, 2, "text", "\"changed\"}");
+
+        ArgumentCaptor<AgentConversationTurnEventDO> inserted =
+                ArgumentCaptor.forClass(AgentConversationTurnEventDO.class);
+        verify(eventDao, times(2)).insertChunkIfAbsent(inserted.capture());
+        assertEquals(0, inserted.getAllValues().get(0).getChunkIndex());
+        assertEquals("{\"content\":\"old", inserted.getAllValues().get(0).getPayloadFragment());
+        assertEquals(1, inserted.getAllValues().get(1).getChunkIndex());
+        assertEquals("\"changed\"}", inserted.getAllValues().get(1).getPayloadFragment());
+    }
+
+    /** 当前代次一旦开始写该序号，后续分片即使与旧代次相同也要写入，否则事件永远收不齐。 */
+    @Test
+    void identicalChunkIsStillWrittenOnceCurrentGenerationStarted() {
+        activeTurn(4);
+        when(eventDao.listChunksBeforeAttempt(1L, 20L, 4, 1L)).thenReturn(List.of(
+                event(3, 1L, 0, 2, "text", "{\"content\":\"old"),
+                event(3, 1L, 1, 2, "text", "\"}")));
+        when(eventDao.listLogicalEventChunks(1L, 20L, 4, 1L))
+                .thenReturn(List.of(),
+                        List.of(event(4, 1L, 0, 2, "text", "{\"content\":\"new")));
+
+        service.persistEvent(1L, 50L, 10L, 20L, 4, 1L, 0, 2, "text", "{\"content\":\"new");
+        service.persistEvent(1L, 50L, 10L, 20L, 4, 1L, 1, 2, "text", "\"}");
+
+        ArgumentCaptor<AgentConversationTurnEventDO> inserted =
+                ArgumentCaptor.forClass(AgentConversationTurnEventDO.class);
+        verify(eventDao, times(2)).insertChunkIfAbsent(inserted.capture());
+        assertEquals(1, inserted.getAllValues().get(1).getChunkIndex());
+        assertEquals("\"}", inserted.getAllValues().get(1).getPayloadFragment());
+    }
+
+    /** 可靠通道的分片 status：分片没齐时不更新会话引用，也不推送。 */
+    @Test
+    void reliableChunkedStatusUpdatesSessionRefOnlyAfterAllChunksArrive() {
+        AgentConversationDO conv = new AgentConversationDO();
+        conv.setExecutorId(50L);
+        when(convDao.findById(1L, 10L)).thenReturn(conv);
+        AgentConversationTurnDO turn = new AgentConversationTurnDO();
+        turn.setId(20L);
+        turn.setStatus("PROCESSING");
+        turn.setDispatchAttempt(2);
+        when(turnDao.findByConversationTurnForUpdate(1L, 10L, 20L)).thenReturn(turn);
+        when(turnDao.findProcessingInbound(1L, 10L)).thenReturn(turn);
+        String part1 = "{\"sessionId\":\"S\",\"status\":\"run";
+        String part2 = "ning\"}";
+        AgentConversationTurnEventDO first = event(2, 5L, 0, 2, "status", part1);
+        when(eventDao.listLogicalEventChunks(1L, 20L, 2, 5L))
+                .thenReturn(List.of(),
+                        List.of(first, event(2, 5L, 1, 2, "status", part2)));
+
+        service.persistReliableEvent(1L, 50L, 10L, 20L, 2, 5L, 0, 2, "status", part1);
+        verify(convDao, never()).updateCliSessionRef(anyLong(), anyLong(), anyString());
+        verifyNoInteractions(publisher);
+
+        service.persistReliableEvent(1L, 50L, 10L, 20L, 2, 5L, 1, 2, "status", part2);
+        verify(convDao).updateCliSessionRef(1L, 10L, "S");
+        verify(publisher).publish(anyLong(), eq(10L), anyLong(), anyInt(), anyLong(), anyString(),
+                anyString());
+    }
+
+    @Test
+    void readProjectsEarlierCompletePrefixIntoCurrentGeneration() {
+        AgentConversationTurnDO turn = new AgentConversationTurnDO();
+        turn.setDispatchAttempt(4);
+        when(turnDao.findByConversationTurn(1L, 10L, 20L)).thenReturn(turn);
+        when(eventDao.existsEarlierGenerationEvent(1L, 20L, 4)).thenReturn(1);
+        when(eventDao.listByTurnExcludingStatus(1L, 10L, 20L,
+                ConversationTurnEventService.MAX_TURN_EVENTS)).thenReturn(List.of(
+                event(3, 1L, 0, 1, "text", "{\"content\":\"one\"}"),
+                event(3, 2L, 0, 1, "text", "{\"content\":\"two\"}"),
+                event(4, 3L, 0, 1, "text", "{\"content\":\"three\"}")));
+        when(eventDao.listStatusByTurn(1L, 10L, 20L,
+                ConversationTurnEventService.MAX_TURN_EVENTS)).thenReturn(List.of(
+                event(3, 9L, 0, 1, "status", "{\"status\":\"running\"}"),
+                event(4, 10L, 0, 1, "status", "{\"status\":\"success\"}")));
+
+        List<AgentConversationTurnEventDO> rows = service.listEventsByTurn(1L, 10L, 20L);
+
+        assertEquals(List.of(1L, 2L, 3L, 10L),
+                rows.stream().map(AgentConversationTurnEventDO::getEventSeq).toList());
+        assertTrue(rows.stream().allMatch(row -> row.getDispatchAttempt() == 4));
+        assertEquals("{\"content\":\"one\"}", rows.get(0).getPayloadFragment());
+    }
+
+    /** 票 04-3：旧代次 1..5、当前代次 4..8，读接口返回 1..8 且全部投影为当前代次。 */
+    @Test
+    void overlappingSequencePrefersCurrentGenerationAndMergesPrefix() {
+        AgentConversationTurnDO turn = new AgentConversationTurnDO();
+        turn.setDispatchAttempt(4);
+        when(turnDao.findByConversationTurn(1L, 10L, 20L)).thenReturn(turn);
+        when(eventDao.existsEarlierGenerationEvent(1L, 20L, 4)).thenReturn(1);
+        java.util.List<AgentConversationTurnEventDO> rows = new java.util.ArrayList<>();
+        for (long seq = 1; seq <= 5; seq++) {
+            rows.add(event(3, seq, 0, 1, "text", "{\"generation\":\"old\"}"));
+        }
+        for (long seq = 4; seq <= 8; seq++) {
+            rows.add(event(4, seq, 0, 1, "text", "{\"generation\":\"new\"}"));
+        }
+        when(eventDao.listByTurnExcludingStatus(1L, 10L, 20L,
+                ConversationTurnEventService.MAX_TURN_EVENTS)).thenReturn(rows);
+        when(eventDao.listStatusByTurn(1L, 10L, 20L,
+                ConversationTurnEventService.MAX_TURN_EVENTS)).thenReturn(List.of());
+
+        List<AgentConversationTurnEventDO> merged = service.listEventsByTurn(1L, 10L, 20L);
+
+        assertEquals(List.of(1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L),
+                merged.stream().map(AgentConversationTurnEventDO::getEventSeq).toList());
+        assertTrue(merged.stream().allMatch(row -> row.getDispatchAttempt() == 4));
+        assertEquals("{\"generation\":\"new\"}", merged.get(3).getPayloadFragment());
+        assertEquals("{\"generation\":\"old\"}", merged.get(2).getPayloadFragment());
+    }
+
+    @Test
+    void partialCurrentGenerationFallsBackToCompleteEarlierEvent() {
+        AgentConversationTurnDO turn = new AgentConversationTurnDO();
+        turn.setDispatchAttempt(4);
+        when(turnDao.findByConversationTurn(1L, 10L, 20L)).thenReturn(turn);
+        when(eventDao.existsEarlierGenerationEvent(1L, 20L, 4)).thenReturn(1);
+        when(eventDao.listByTurnExcludingStatus(1L, 10L, 20L,
+                ConversationTurnEventService.MAX_TURN_EVENTS)).thenReturn(List.of(
+                event(3, 1L, 0, 2, "text", "{\"content\":\"old"),
+                event(3, 1L, 1, 2, "text", "\"}"),
+                event(4, 1L, 0, 2, "text", "{\"content\":\"new")));
+        when(eventDao.listStatusByTurn(1L, 10L, 20L,
+                ConversationTurnEventService.MAX_TURN_EVENTS)).thenReturn(List.of());
+
+        List<AgentConversationTurnEventDO> rows = service.listEventsByTurn(1L, 10L, 20L);
+
+        assertEquals(2, rows.size());
+        assertEquals(List.of("{\"content\":\"old", "\"}"),
+                rows.stream().map(AgentConversationTurnEventDO::getPayloadFragment).toList());
+        assertTrue(rows.stream().allMatch(row -> row.getDispatchAttempt() == 4));
+    }
+
+    @Test
+    void initialPageReturnsFullProjectionAndRawCursor() {
+        AgentConversationTurnDO turn = new AgentConversationTurnDO();
+        turn.setDispatchAttempt(4);
+        when(turnDao.findByConversationTurn(1L, 10L, 20L)).thenReturn(turn);
+        when(eventDao.existsEarlierGenerationEvent(1L, 20L, 4)).thenReturn(1);
+        AgentConversationTurnEventDO earlier = event(3, 1L, 0, 1, "text", "{}");
+        earlier.setId(7L);
+        AgentConversationTurnEventDO current = event(4, 2L, 0, 1, "text", "{}");
+        current.setId(9L);
+        when(eventDao.listByTurnExcludingStatus(1L, 10L, 20L,
+                ConversationTurnEventService.MAX_TURN_EVENTS)).thenReturn(List.of(earlier, current));
+        when(eventDao.listStatusByTurn(1L, 10L, 20L,
+                ConversationTurnEventService.MAX_TURN_EVENTS)).thenReturn(List.of());
+
+        ConversationTurnEventService.EventPage page =
+                service.listEventsByTurnPage(1L, 10L, 20L, 0L, 500);
+
+        assertEquals(2, page.rows().size());
+        assertEquals(9L, page.nextAfterId());
+        assertFalse(page.hasMore());
+    }
+
+    private AgentConversationTurnEventDO event(int attempt, long seq, int chunkIndex, int chunkCount,
+            String eventType, String payload) {
+        AgentConversationTurnEventDO event = new AgentConversationTurnEventDO();
+        event.setTenantId(1L);
+        event.setConversationId(10L);
+        event.setTurnId(20L);
+        event.setDispatchAttempt(attempt);
+        event.setEventSeq(seq);
+        event.setChunkIndex(chunkIndex);
+        event.setChunkCount(chunkCount);
+        event.setEventType(eventType);
+        event.setPayloadFragment(payload);
+        return event;
+    }
+
+    private AgentConversationTurnEventDO captureInserted() {
+        ArgumentCaptor<AgentConversationTurnEventDO> inserted =
+                ArgumentCaptor.forClass(AgentConversationTurnEventDO.class);
+        verify(eventDao).insertChunkIfAbsent(inserted.capture());
+        return inserted.getValue();
+    }
+
+    private void activeTurn(int attempt) {
+        AgentConversationDO conv = new AgentConversationDO();
+        conv.setExecutorId(50L);
+        when(convDao.findById(1L, 10L)).thenReturn(conv);
+        AgentConversationTurnDO turn = new AgentConversationTurnDO();
+        turn.setId(20L);
+        turn.setStatus("PROCESSING");
+        turn.setDispatchAttempt(attempt);
+        when(turnDao.findProcessingInbound(1L, 10L)).thenReturn(turn);
     }
 
     private void activeTurn() {

@@ -35,5 +35,32 @@ public interface AgentConversationTurnEventDao {
             @Param("tenantId") Long tenantId, @Param("conversationId") Long conversationId,
             @Param("turnId") Long turnId, @Param("afterId") long afterId, @Param("limit") int limit);
 
+    /** 最近一条 status 事件，用于相同状态心跳去重 */
+    AgentConversationTurnEventDO findLatestStatusEvent(@Param("tenantId") Long tenantId,
+            @Param("conversationId") Long conversationId, @Param("turnId") Long turnId);
+
+    /** 该序号在指定代次之前的全部分片，按代次倒序、分片顺序返回 */
+    List<AgentConversationTurnEventDO> listChunksBeforeAttempt(@Param("tenantId") Long tenantId,
+            @Param("turnId") Long turnId, @Param("dispatchAttempt") int dispatchAttempt,
+            @Param("eventSeq") long eventSeq);
+
+    /** 非 status 事件，供读侧按序号合并当前代次与旧代次 */
+    List<AgentConversationTurnEventDO> listByTurnExcludingStatus(@Param("tenantId") Long tenantId,
+            @Param("conversationId") Long conversationId, @Param("turnId") Long turnId,
+            @Param("limit") int limit);
+
+    /** status 事件，读侧只投影当前代次 */
+    List<AgentConversationTurnEventDO> listStatusByTurn(@Param("tenantId") Long tenantId,
+            @Param("conversationId") Long conversationId, @Param("turnId") Long turnId,
+            @Param("limit") int limit);
+
+    /** 轮次最近一条事件时间，用于重投前的新鲜度判断 */
+    Date findLatestEventTime(@Param("tenantId") Long tenantId,
+            @Param("conversationId") Long conversationId, @Param("turnId") Long turnId);
+
+    /** 是否存在指定代次之前的旧事件 */
+    Integer existsEarlierGenerationEvent(@Param("tenantId") Long tenantId,
+            @Param("turnId") Long turnId, @Param("dispatchAttempt") int dispatchAttempt);
+
     int deleteExpiredBatch(@Param("cutoff") Date cutoff, @Param("limit") int limit);
 }
