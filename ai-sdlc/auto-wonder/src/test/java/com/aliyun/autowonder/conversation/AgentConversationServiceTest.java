@@ -3777,6 +3777,47 @@ class AgentConversationServiceTest {
     }
 
     @Test
+    void cancelAckTimeoutFlushesPendingTurnEventsBeforeFinalizing() {
+        ConversationRuntimePresence presence = mock(ConversationRuntimePresence.class);
+        when(presence.isExecutorOnline(9L)).thenReturn(true);
+        when(presence.supportsProtocolFeature(eq(9L), anyString())).thenReturn(true);
+        AgentConversationService target = serviceWithPresence(presence);
+        target.setCancelAckTimeoutSeconds(3600);
+        ConversationTurnEventIngestQueue queue = mock(ConversationTurnEventIngestQueue.class);
+        target.setConversationTurnEventIngestQueue(queue);
+        AgentConversationDO conv = existingConversationWithSession();
+        when(convDao.findById(1L, 77L)).thenReturn(conv);
+        when(turnDao.findByConversationTurn(1L, 77L, 55L)).thenReturn(processingInboundTurn(77L));
+        when(turnDao.updateInboundStatusIfProcessing(1L, 77L, 55L, "CANCELED", null)).thenReturn(1);
+        target.requestTurnCancel(1L, 77L, 55L);
+        commitTransactionSynchronizations();
+        target.handleCancelAckTimeout(conv, 55L);
+        // 顺序本身即需求：flush 必须先于轮次终结，否则批次会随轮次终结被丢弃。
+        InOrder order = inOrder(queue, turnDao);
+        order.verify(queue).flushAndWait(1L, 55L);
+        order.verify(turnDao).updateInboundStatusIfProcessing(1L, 77L, 55L, "CANCELED", null);
+    }
+
+    @Test
+    void questionExpiryTimeoutFlushesPendingTurnEventsBeforeLockingTurn() {
+        AgentConversationService target = serviceWithPresence(mock(ConversationRuntimePresence.class));
+        ConversationTurnEventIngestQueue queue = mock(ConversationTurnEventIngestQueue.class);
+        target.setConversationTurnEventIngestQueue(queue);
+        AgentConversationDO conv = existingConversationWithSession();
+        AgentConversationTurnDO turn = processingInboundTurn(77L);
+        turn.setDispatchAttempt(2);
+        turn.setSourceContext("{\"questionExpiryStop\":{\"attempt\":2,\"executorId\":9,\"requestedAt\":1}}");
+        when(turnDao.findByConversationTurnForUpdate(1L, 77L, 55L)).thenReturn(turn);
+        when(turnDao.updateInboundStatusIfProcessing(1L, 77L, 55L, "CANCELED", null)).thenReturn(1);
+        target.handleQuestionExpiryTimeout(conv, 55L, 2);
+        // flush 必须先于取锁读行：若移回 finalizeTurnCancelLocked，持锁事务内同步 drain 会自锁。
+        InOrder order = inOrder(queue, turnDao);
+        order.verify(queue).flushAndWait(1L, 55L);
+        order.verify(turnDao).findByConversationTurnForUpdate(1L, 77L, 55L);
+        order.verify(turnDao).updateInboundStatusIfProcessing(1L, 77L, 55L, "CANCELED", null);
+    }
+
+    @Test
     void clarificationChannelInjectsCurrentTurnAttachmentsIntoRuntimePrompt() {
         AgentConversationDO conv = existingConversationWithSession();
         conv.setChannel(WorkitemClarificationConversationService.CHANNEL);

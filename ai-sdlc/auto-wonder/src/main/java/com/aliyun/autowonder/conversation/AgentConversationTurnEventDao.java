@@ -9,6 +9,16 @@ import java.util.List;
 public interface AgentConversationTurnEventDao {
     int insertChunkIfAbsent(AgentConversationTurnEventDO event);
 
+    /** 多行 INSERT IGNORE，依赖 uk_turn_event_chunk 保证重投幂等。 */
+    int insertChunksIfAbsent(@Param("events") List<AgentConversationTurnEventDO> events);
+
+    /** 按批合并取这些序号在指定代次及之前的全部已有分片，供批内去重与组装判定。 */
+    List<AgentConversationTurnEventDO> listChunksForSeqsUpToAttempt(
+            @Param("tenantId") Long tenantId,
+            @Param("turnId") Long turnId,
+            @Param("dispatchAttempt") int dispatchAttempt,
+            @Param("eventSeqs") java.util.Collection<Long> eventSeqs);
+
     List<AgentConversationTurnEventDO> listLogicalEventChunks(
             @Param("tenantId") Long tenantId,
             @Param("turnId") Long turnId,

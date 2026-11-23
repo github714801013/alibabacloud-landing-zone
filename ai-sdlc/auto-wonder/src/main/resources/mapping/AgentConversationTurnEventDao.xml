@@ -25,6 +25,33 @@
         (#{tenantId}, #{conversationId}, #{turnId}, #{dispatchAttempt}, #{eventSeq}, #{chunkIndex}, #{chunkCount}, #{eventType}, #{payloadFragment})
     </insert>
 
+    <!-- 批量落库：多行 INSERT IGNORE，重复分片由 uk_turn_event_chunk 幂等忽略。 -->
+    <insert id="insertChunksIfAbsent">
+        INSERT IGNORE INTO agent_conversation_turn_event
+        (tenant_id, conversation_id, turn_id, dispatch_attempt, event_seq, chunk_index, chunk_count, event_type, payload_fragment)
+        VALUES
+        <foreach collection="events" item="event" separator=",">
+            (#{event.tenantId}, #{event.conversationId}, #{event.turnId}, #{event.dispatchAttempt},
+             #{event.eventSeq}, #{event.chunkIndex}, #{event.chunkCount}, #{event.eventType}, #{event.payloadFragment})
+        </foreach>
+    </insert>
+
+    <!--
+      批内去重合并查询：一次取回批内序号的当前代次与旧代次分片，
+      替代逐条 listChunksBeforeAttempt / listLogicalEventChunks。
+    -->
+    <select id="listChunksForSeqsUpToAttempt" resultMap="BaseResultMap">
+        SELECT * FROM agent_conversation_turn_event
+        WHERE tenant_id = #{tenantId}
+          AND turn_id = #{turnId}
+          AND dispatch_attempt &lt;= #{dispatchAttempt}
+          AND event_seq IN
+        <foreach collection="eventSeqs" item="seq" open="(" separator="," close=")">
+            #{seq}
+        </foreach>
+        ORDER BY dispatch_attempt DESC, chunk_index ASC
+    </select>
+
     <select id="listLogicalEventChunks" resultMap="BaseResultMap">
         SELECT * FROM agent_conversation_turn_event
         WHERE tenant_id = #{tenantId}

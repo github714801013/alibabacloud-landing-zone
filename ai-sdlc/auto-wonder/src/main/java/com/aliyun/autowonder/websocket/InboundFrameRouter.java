@@ -49,6 +49,7 @@ public class InboundFrameRouter {
     private final ExecutorService executorService;
     private ScheduledTaskCapabilityGuard capabilityGuard;
     private ConversationTurnEventService conversationTurnEventService;
+    private com.aliyun.autowonder.conversation.ConversationTurnEventIngestQueue conversationTurnEventIngestQueue;
     private com.aliyun.autowonder.conversation.ConversationAnswerDeliveryService answerDeliveryService;
     @Autowired(required = false)
     public void setAnswerDeliveryService(com.aliyun.autowonder.conversation.ConversationAnswerDeliveryService service) {
@@ -68,6 +69,12 @@ public class InboundFrameRouter {
     @Autowired(required = false)
     public void setConversationTurnEventService(ConversationTurnEventService service) {
         this.conversationTurnEventService = service;
+    }
+
+    @Autowired(required = false)
+    public void setConversationTurnEventIngestQueue(
+            com.aliyun.autowonder.conversation.ConversationTurnEventIngestQueue queue) {
+        this.conversationTurnEventIngestQueue = queue;
     }
 
     @Autowired(required = false)
@@ -404,6 +411,9 @@ public class InboundFrameRouter {
                 }
                 break;
             case "CONVERSATION_TURN_ACK":
+                if (conversationTurnEventIngestQueue != null) {
+                    conversationTurnEventIngestQueue.flushAndWait(es.getTenantId(), json.getLongValue("turnId"));
+                }
                 if (answerDeliveryService != null) answerDeliveryService.turnTerminated(es.getTenantId(),es.getExecutorId(),
                         json.getLongValue("conversationId"),json.getLongValue("turnId"),json.getIntValue("dispatchAttempt"),json.getString("status"));
                 if (agentConversationService != null) {
@@ -432,7 +442,11 @@ public class InboundFrameRouter {
                             || (json.getIntValue("dispatchAttempt") > 0
                             && ("status".equals(json.getString("eventType"))
                             || (json.getString("eventType") != null && json.getString("eventType").startsWith("acp_elicitation"))))) {
-                    conversationTurnEventService.persistReliableEvent(es.getTenantId(), es.getExecutorId(),
+                        if (conversationTurnEventIngestQueue != null) {
+                            conversationTurnEventIngestQueue.flushAndWait(es.getTenantId(),
+                                    json.getLongValue("turnId"));
+                        }
+                        conversationTurnEventService.persistReliableEvent(es.getTenantId(), es.getExecutorId(),
                             json.getLongValue("conversationId"),
                             json.getLongValue("turnId"),
                             json.getIntValue("dispatchAttempt"),
@@ -442,16 +456,28 @@ public class InboundFrameRouter {
                             json.getString("eventType"),
                             json.getString("payloadFragment"));
                         confirmConversationDelivery(es, json);
+                    } else if (conversationTurnEventIngestQueue != null) {
+                        conversationTurnEventIngestQueue.offer(
+                                new com.aliyun.autowonder.conversation.ConversationTurnEventIngestQueue.Event(
+                                        es.getTenantId(), es.getExecutorId(),
+                                        json.getLongValue("conversationId"),
+                                        json.getLongValue("turnId"),
+                                        json.getIntValue("dispatchAttempt"),
+                                        json.getLongValue("eventSeq"),
+                                        json.getIntValue("chunkIndex"),
+                                        json.getIntValue("chunkCount"),
+                                        json.getString("eventType"),
+                                        json.getString("payloadFragment")), es);
                     } else {
-                    conversationTurnEventService.persistEvent(es.getTenantId(), es.getExecutorId(),
-                            json.getLongValue("conversationId"),
-                            json.getLongValue("turnId"),
-                            json.getIntValue("dispatchAttempt"),
-                            json.getLongValue("eventSeq"),
-                            json.getIntValue("chunkIndex"),
-                            json.getIntValue("chunkCount"),
-                            json.getString("eventType"),
-                            json.getString("payloadFragment"));
+                        conversationTurnEventService.persistEvent(es.getTenantId(), es.getExecutorId(),
+                                json.getLongValue("conversationId"),
+                                json.getLongValue("turnId"),
+                                json.getIntValue("dispatchAttempt"),
+                                json.getLongValue("eventSeq"),
+                                json.getIntValue("chunkIndex"),
+                                json.getIntValue("chunkCount"),
+                                json.getString("eventType"),
+                                json.getString("payloadFragment"));
                     }
                 }
                 break;

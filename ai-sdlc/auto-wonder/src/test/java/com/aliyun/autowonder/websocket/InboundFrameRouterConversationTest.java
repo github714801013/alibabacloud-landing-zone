@@ -150,6 +150,35 @@ class InboundFrameRouterConversationTest {
     }
 
     @Test
+    void ordinaryTurnEventIsQueuedAndReliableEventFlushesFirst() {
+        ExecutorSession es = new ExecutorSession(9L, 3L, 1L, mock(Session.class));
+        com.aliyun.autowonder.conversation.ConversationTurnEventService eventService =
+                mock(com.aliyun.autowonder.conversation.ConversationTurnEventService.class);
+        com.aliyun.autowonder.conversation.ConversationTurnEventIngestQueue queue =
+                mock(com.aliyun.autowonder.conversation.ConversationTurnEventIngestQueue.class);
+        router.setConversationTurnEventService(eventService);
+        router.setConversationTurnEventIngestQueue(queue);
+
+        router.route(es, "{\"type\":\"CONVERSATION_TURN_EVENT\",\"conversationId\":77,\"turnId\":55,"
+                + "\"dispatchAttempt\":1,\"eventSeq\":1,\"chunkIndex\":0,\"chunkCount\":1,"
+                + "\"eventType\":\"text\",\"payloadFragment\":\"hi\"}");
+
+        verify(queue).offer(any(com.aliyun.autowonder.conversation.ConversationTurnEventIngestQueue.Event.class),
+                eq(es));
+        verifyNoInteractions(eventService);
+
+        router.route(es, "{\"type\":\"CONVERSATION_TURN_EVENT\",\"conversationId\":77,\"turnId\":55,"
+                + "\"dispatchAttempt\":1,\"conversationDeliveryProtocolVersion\":1,"
+                + "\"eventSeq\":2,\"chunkIndex\":0,\"chunkCount\":1,"
+                + "\"eventType\":\"status\",\"payloadFragment\":\"{\\\"status\\\":\\\"running\\\"}\"}");
+
+        var ordered = inOrder(queue, eventService);
+        ordered.verify(queue).flushAndWait(1L, 55L);
+        ordered.verify(eventService).persistReliableEvent(1L, 9L, 77L, 55L, 1, 2L, 0, 1,
+                "status", "{\"status\":\"running\"}");
+    }
+
+    @Test
     void routesRuntimeMcpConnectionTestResult() {
         ExecutorSession es = new ExecutorSession(9L, 3L, 1L, mock(Session.class));
 

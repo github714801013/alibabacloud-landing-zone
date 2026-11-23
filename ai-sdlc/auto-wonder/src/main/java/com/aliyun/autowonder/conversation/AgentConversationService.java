@@ -104,6 +104,7 @@ public class AgentConversationService {
     private long workflowCancellationCursor;
     private com.aliyun.autowonder.user.UserDao userDao;
     private AgentConversationTurnEventDao turnEventDao;
+    private ConversationTurnEventIngestQueue conversationTurnEventIngestQueue;
 
     @Autowired
     void setWorkflowDao(com.aliyun.autowonder.squad.workflow.SquadWorkflowDao workflowDao) {
@@ -118,6 +119,21 @@ public class AgentConversationService {
     @Autowired(required = false)
     void setTurnEventDao(AgentConversationTurnEventDao turnEventDao) {
         this.turnEventDao = turnEventDao;
+    }
+
+    @Autowired(required = false)
+    void setConversationTurnEventIngestQueue(ConversationTurnEventIngestQueue queue) {
+        this.conversationTurnEventIngestQueue = queue;
+    }
+
+    /**
+     * 平台侧终结不经过执行器 ACK，须在进入锁定事务前落库该轮次待写事件：
+     * 批次内可能包含需要再次锁定轮次行的交互事件，不能在持锁事务内同步 drain。
+     */
+    private void flushTurnEvents(Long tenantId, Long turnId) {
+        if (conversationTurnEventIngestQueue != null && tenantId != null && turnId != null) {
+            conversationTurnEventIngestQueue.flushAndWait(tenantId, turnId);
+        }
     }
 
     private boolean workflowMayRun(AgentConversationDO conv) {
@@ -146,6 +162,7 @@ public class AgentConversationService {
         for (var turn : turns) {
             workflowCancellationCursor = turn.getId();
             try {
+                flushTurnEvents(turn.getTenantId(), turn.getId());
                 withConversationLockEffects(conversationLockName(turn.getTenantId(),
                         turn.getConversationId()), () -> {
                     var conv = convDao.findById(turn.getTenantId(), turn.getConversationId());
@@ -940,6 +957,7 @@ public class AgentConversationService {
     }
 
     void handleQuestionExpiryTimeout(AgentConversationDO conv, Long turnId, int attempt) {
+        flushTurnEvents(conv.getTenantId(), turnId);
         Runnable finalize = () -> withConversationLockEffects(conversationLockName(conv.getTenantId(), conv.getId()), () -> {
             var current = turnDao.findByConversationTurnForUpdate(conv.getTenantId(), conv.getId(), turnId);
             if (current == null || !java.util.Objects.equals(current.getDispatchAttempt(), attempt)
@@ -1143,6 +1161,7 @@ public class AgentConversationService {
             // Runtime 已应答取消（ack 路径会先移除定时器），无需兜底。
             return;
         }
+        flushTurnEvents(conv.getTenantId(), turnId);
         log.warn("conversation cancel ack timeout conversationId={} turnId={}",
                 conv.getId(), turnId);
         try {
@@ -1265,6 +1284,7 @@ public class AgentConversationService {
 
     private void recoverStaleTurn(AgentConversationTurnDO stale, boolean activityReported,
             Set<Long> activeConversationTurnIds, Date cutoff) {
+        flushTurnEvents(stale.getTenantId(), stale.getId());
         withConversationLockEffects(conversationLockName(stale.getTenantId(),
                 stale.getConversationId()), () -> {
             AgentConversationDO conv = convDao.findById(stale.getTenantId(), stale.getConversationId());
