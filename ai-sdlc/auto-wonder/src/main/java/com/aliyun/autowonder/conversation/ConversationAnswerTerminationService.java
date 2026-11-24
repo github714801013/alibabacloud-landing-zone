@@ -20,7 +20,7 @@ public class ConversationAnswerTerminationService {
         this.conversations=conversations;this.dao=dao;this.transport=transport;
     }
     @org.springframework.beans.factory.annotation.Autowired(required = false)
-    public void setEventIngestQueue(ConversationTurnEventIngestQueue eventIngestQueue) {
+    public void setEventIngestQueue(@Lazy ConversationTurnEventIngestQueue eventIngestQueue) {
         this.eventIngestQueue=eventIngestQueue;
     }
     @Transactional(propagation=Propagation.REQUIRES_NEW)
