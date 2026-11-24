@@ -233,5 +233,11 @@
     "failedDetail": "请检查网络连接后重试。",
     "retry": "重试",
     "retrying": "重试中…"
+  },
+  "quote": {
+    "pill": "引用此内容",
+    "cardLabel": "引用内容",
+    "remove": "移除引用",
+    "truncated": "引用内容已截断"
   }
 }

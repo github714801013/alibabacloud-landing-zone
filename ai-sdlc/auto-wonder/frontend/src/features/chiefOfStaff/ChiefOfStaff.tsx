@@ -7,11 +7,14 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Alert, Button, Input, Spin, Switch, Tag, message } from 'antd';
+import type { TextAreaRef } from 'antd/es/input/TextArea';
 import { CloseOutlined, HistoryOutlined, CopyOutlined, PictureOutlined, StopOutlined, ArrowUpOutlined, PlusOutlined, HolderOutlined, LeftOutlined, RightOutlined, FullscreenOutlined, CompressOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useAuthStore } from '@/shared/auth/store';
 import { useRealtime } from '@/shared/realtime/useRealtime';
 import { useLocale } from '@/shared/i18n/LocaleProvider';
 import { MarkdownView } from '@/shared/ui/MarkdownView';
+import { composeQuotedContent } from '@/shared/ui/quote-block';
+import { QuoteCard, QuotePill, useTextQuote } from '@/shared/ui/TextQuote';
 import { ChiefTurnEvents } from './ChiefTurnEvents';
 import { ChiefSetupPanel } from './ChiefSetupPanel';
 import { ChiefGuidedSetup } from './ChiefGuidedSetup';
@@ -104,6 +107,7 @@ export function ChiefOfStaff({ hideLauncher = false }: { hideLauncher?: boolean 
 function Assistant({ userId, workspaceId, hideLauncher }: { userId: number; workspaceId: number; hideLauncher: boolean }) {
   const { t } = useTranslation('chiefOfStaff');
   const { t: workitemT } = useTranslation('workitem');
+  const { t: tShared } = useTranslation('shared');
   const location = useLocation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -151,6 +155,7 @@ function Assistant({ userId, workspaceId, hideLauncher }: { userId: number; work
   const pendingResize = useRef(false);
   const followLatest = useRef(true);
   const scroll = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<TextAreaRef>(null);
   const planNodes = useRef(new Map<string, HTMLElement>());
   const followContent = useCallback(() => {
     const element = scroll.current;
@@ -382,7 +387,8 @@ function Assistant({ userId, workspaceId, hideLauncher }: { userId: number; work
     onError: (error: Error) => { void message.error(error.message); } });
   const submit = useMutation({ mutationFn: async (preset: string | void) => {
     const text = preset ?? draft;
-    if (!setup.data?.agentId || !setup.data.ready || (!text.trim() && !images.length)) return;
+    const body = text.trim();
+    if (!setup.data?.agentId || !setup.data.ready || (!body && !images.length && !quote)) return;
     if (preset !== undefined) setDraft(preset);
     let id = prefs.conversationId;
     if (id === null) {
@@ -391,14 +397,15 @@ function Assistant({ userId, workspaceId, hideLauncher }: { userId: number; work
       if (current.user?.id !== userId || current.currentWorkspace?.id !== workspaceId) return;
       setPrefs(p => ({ ...p, conversationId: id }));
     }
-    const content = text.trim() ? text : t('imageOnlyMessage');
+    // 引用块与正文用空行分隔，保证渲染成独立引用段落；失败路径不清引用，可直接重试。
+    const content = composeQuotedContent(quote, body) || t('imageOnlyMessage');
     if (!pendingMessage.current || pendingMessage.current.content !== content || JSON.stringify(pendingMessage.current.imageIds) !== JSON.stringify(images.map(image => image.id))) pendingMessage.current = { content, id: reservedClientMessageId.current ?? createUuidV4(), path: context ? location.pathname : null, imageIds: images.map(image => image.id) };
     followLatest.current = true;
     const pending = pendingMessage.current;
     if (pending.imageIds.length) await api.sendMessage(id, pending.content, pending.id, pending.path, pending.imageIds);
     else await api.sendMessage(id, pending.content, pending.id, pending.path);
     const sent = { conversationId: id, clientMessageId: pending.id };
-    pendingMessage.current = null; reservedClientMessageId.current = null; setDraft(''); setImages([]); setHistory(false); refresh();
+    pendingMessage.current = null; reservedClientMessageId.current = null; setDraft(''); setImages([]); removeQuote(); setHistory(false); refresh();
     emitGuideEvent({ type: 'send-succeeded', ...sent });
   }, onError: (error: Error) => { void message.error(error.message); emitGuideEvent({ type: 'send-failed' }); },
     onSettled: () => { scenarioSending.current = false; } });
@@ -517,6 +524,13 @@ function Assistant({ userId, workspaceId, hideLauncher }: { userId: number; work
   }, [conversation.data?.turns, plans.data]);
   const pendingPlans = useMemo(() => (plans.data ?? []).filter(plan => plan.status === PENDING).sort(planOrder), [plans.data]);
   const composerVisible = !history && !guideConfiguring && !(guided && (guideRuntime.stage === 4 || guideRuntime.reviewing));
+  const { quote, truncated, pill, acceptPill, removeQuote } = useTextQuote({
+    containerRef: scroll,
+    enabled: open && composerVisible && !!setup.data?.ready && !conversation.data?.archivedAt && !conversation.error
+      && !submit.isPending && !upload.isPending && !processing,
+    resetKey: prefs.conversationId,
+    onAccept: () => inputRef.current?.focus(),
+  });
   const pendingNoticeVisible = composerVisible && pendingPlans.length > 0 && !conversation.data?.archivedAt;
   function copyMessage(content: string) {
     void copyTextToClipboard(content).then(ok => {
@@ -569,6 +583,7 @@ function Assistant({ userId, workspaceId, hideLauncher }: { userId: number; work
           <Button type="text" icon={<PlusOutlined />} aria-label={t('newConversation')} disabled={submit.isPending || upload.isPending} onClick={() => { setPrefs(p => ({ ...p, conversationId: null })); setDraft(''); setImages([]); setRename(null); pendingMessage.current = null; setHistory(false); }} />
           <Button type="text" icon={<CloseOutlined />} aria-label={t('collapse')} onClick={() => { setOpen(false); setCommand(null); }} /></div>}
       </header>
+      <QuotePill pill={pill} label={tShared('quote.pill')} onAccept={acceptPill} />
       {!guided && <div className="aw-chief-context"><span>{t('contextHeader', { page: contextLabel })}</span><Switch size="small" checked={context} onChange={setContext} aria-label={t('pageContext')} /></div>}
       <div ref={scroll} onScroll={() => { const el = scroll.current; if (el) followLatest.current = el.scrollHeight - el.scrollTop - el.clientHeight < 100; }} className="aw-chief-body" aria-live="polite">
         <div className="aw-chief-body-inner">
@@ -612,14 +627,14 @@ function Assistant({ userId, workspaceId, hideLauncher }: { userId: number; work
             onNavigateExecutors={() => navigate('/executors')}
           />}
           {!prefs.conversationId && setup.data?.ready && <ChiefWelcome
-              disabled={!canContinue || !!draft.trim() || images.length > 0}
+              disabled={!canContinue || !!draft.trim() || images.length > 0 || !!quote}
               onOptimize={() => {
-                if (scenarioSending.current || !canContinue || draftRef.current.trim() || imagesRef.current.length) return;
+                if (scenarioSending.current || !canContinue || draftRef.current.trim() || imagesRef.current.length || quote) return;
                 scenarioSending.current = true;
                 submit.mutate(t('scenarios.optimizePrompt'));
               }}
               onInitialize={() => {
-                if (scenarioSending.current || !canContinue || draftRef.current.trim() || imagesRef.current.length) return;
+                if (scenarioSending.current || !canContinue || draftRef.current.trim() || imagesRef.current.length || quote) return;
                 scenarioSending.current = true;
                 submit.mutate(guideT('prompt.initial'));
               }} />}
@@ -628,16 +643,16 @@ function Assistant({ userId, workspaceId, hideLauncher }: { userId: number; work
               : <><Input aria-label={t('rename')} value={rename} onChange={e => setRename(e.target.value)} maxLength={255} /><Button disabled={!rename.trim()} onClick={() => perform.mutate(async () => { await api.patchConversation(prefs.conversationId!, { title: rename }); setRename(null); })}>{t('save')}</Button></>}
             <Button size="small" onClick={() => perform.mutate(() => api.patchConversation(prefs.conversationId!, { archived: !conversation.data!.archivedAt }))}>{conversation.data.archivedAt ? t('restore') : t('archive')}</Button>
           </div>}
-          {conversation.data?.turns.filter(turn => !hiddenFailedOutbound.has(turn.id)).map(turn => <section key={turn.id} className={`aw-chief-message ${turn.direction === INBOUND ? 'aw-chief-user' : ''}`}>
-            <div className="aw-chief-message-heading">
+          {conversation.data?.turns.filter(turn => !hiddenFailedOutbound.has(turn.id)).map(turn => <section key={turn.id} data-quote-message className={`aw-chief-message ${turn.direction === INBOUND ? 'aw-chief-user' : ''}`}>
+            <div className="aw-chief-message-heading" data-quote-ignore>
               {turn.direction !== INBOUND && <div className="aw-chief-secondary">{t('name')}</div>}
               <div className="aw-chief-message-actions"><Button type="text" size="small" icon={<CopyOutlined />} aria-label={t('copyMessage')} title={t('copyMessage')} onClick={() => copyMessage(turn.content)} /></div>
             </div>
-            {turn.direction === INBOUND ? <><p>{turn.content}</p><ChiefTurnEvents key={`${prefs.conversationId}:${turn.id}`} onContentChange={followContent} onSettledQuestions={recordSettledQuestions} scope={scopedKey} conversationId={prefs.conversationId!} turnId={turn.id} processing={processing && turn.id === conversation.data?.processingTurnId}
+            {turn.direction === INBOUND ? <><p>{turn.content}</p><div data-quote-ignore><ChiefTurnEvents key={`${prefs.conversationId}:${turn.id}`} onContentChange={followContent} onSettledQuestions={recordSettledQuestions} scope={scopedKey} conversationId={prefs.conversationId!} turnId={turn.id} processing={processing && turn.id === conversation.data?.processingTurnId}
                 questionHistory={conversation.data?.questionHistory ?? conversation.data?.answerDeliveries}
                 canContinue={canContinue} onContinue={entry => {
                   if (canContinue) setDraft(current => appendQuestionContext(current, turn.content, entry));
-                }} /></>
+                }} /></div></>
               : turnNotices.get(turn.id)?.[0] ?? <MarkdownView content={turn.content} copyCodeBlocks />}
             {!!turn.images?.length && <div className="aw-chief-images">{turn.images.map(image => <a key={image.id} href={image.url} target="_blank" rel="noreferrer"><img src={image.url} alt={image.name} /></a>)}</div>}
             <div className="aw-chief-message-actions"><Button type="text" size="small" icon={<CopyOutlined />} aria-label={t('copyMessage')} title={t('copyMessage')} onClick={() => copyMessage(turn.content)} /></div>
@@ -666,15 +681,27 @@ function Assistant({ userId, workspaceId, hideLauncher }: { userId: number; work
         </div>}
       {composerVisible && <footer className="aw-chief-composer">
         <div className="aw-chief-composer-inner">
+        {quote && (
+          <div style={{ marginBottom: 8 }}>
+            <QuoteCard
+              quote={quote}
+              truncated={truncated}
+              label={tShared('quote.cardLabel')}
+              removeLabel={tShared('quote.remove')}
+              truncatedLabel={tShared('quote.truncated')}
+              onRemove={removeQuote}
+            />
+          </div>
+        )}
         <div className="aw-chief-input-shell" onPaste={event => { const files = filesFromClipboard(event.clipboardData).filter(file => file.type.startsWith('image/')); if (files.length && !upload.isPending && !submit.isPending && setup.data?.ready && !conversation.data?.archivedAt) { event.preventDefault(); upload.mutate(files); } }}>
           {!!images.length && <div className="aw-chief-images">{images.map(image => <div className="aw-chief-image-draft" key={image.id}><img src={image.url} alt={image.name} /><Button type="text" size="small" icon={<CloseOutlined />} aria-label={t('removeImage', { name: image.name })} onClick={() => setImages(current => current.filter(item => item.id !== image.id))} /></div>)}</div>}
-          <Input.TextArea aria-label={t('input')} value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && e.keyCode !== 229) { e.preventDefault(); if ((draft.trim() || images.length) && !submit.isPending && !upload.isPending && !processing && setup.data?.ready && !conversation.data?.archivedAt && !conversation.error) submit.mutate(); } }} placeholder={t('placeholder')} autoSize={{ minRows: 2, maxRows: 5 }} disabled={!setup.data?.ready || !!conversation.data?.archivedAt || !!conversation.error} />
+          <Input.TextArea ref={inputRef} aria-label={t('input')} value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && e.keyCode !== 229) { e.preventDefault(); if ((draft.trim() || images.length || quote) && !submit.isPending && !upload.isPending && !processing && setup.data?.ready && !conversation.data?.archivedAt && !conversation.error) submit.mutate(); } }} placeholder={t('placeholder')} autoSize={{ minRows: 2, maxRows: 5 }} disabled={!setup.data?.ready || !!conversation.data?.archivedAt || !!conversation.error} />
           <div className="aw-chief-input-tools">
             <input ref={filePicker} type="file" accept="image/png,image/jpeg,image/webp" multiple hidden aria-label={t('uploadImage')} onChange={e => { const files = Array.from(e.target.files || []); e.target.value = ''; if (files.length) upload.mutate(files); }} />
             <Button type="text" size="small" icon={<PictureOutlined />} aria-label={t('uploadImage')} loading={upload.isPending} disabled={!setup.data?.ready || submit.isPending || upload.isPending || !!conversation.data?.archivedAt} onClick={() => filePicker.current?.click()} />
             <span className="aw-chief-secondary">{t('privateSaved')}</span>
             {processing && conversation.data?.cancelSupported ? <Button className="aw-chief-send" type="text" shape="circle" size="small" icon={<StopOutlined />} aria-label={t('stop')} loading={perform.isPending} onClick={() => perform.mutate(() => api.cancelTurn(prefs.conversationId!, conversation.data!.processingTurnId!))} />
-              : <Button className="aw-chief-send" data-guide-target="send" type="primary" shape="circle" size="small" aria-label={t('send')} icon={<ArrowUpOutlined />} loading={submit.isPending} disabled={(!draft.trim() && !images.length) || upload.isPending || processing || !setup.data?.ready || !!conversation.data?.archivedAt || !!conversation.error} onClick={() => submit.mutate()} />}
+              : <Button className="aw-chief-send" data-guide-target="send" type="primary" shape="circle" size="small" aria-label={t('send')} icon={<ArrowUpOutlined />} loading={submit.isPending} disabled={(!draft.trim() && !images.length && !quote) || upload.isPending || processing || !setup.data?.ready || !!conversation.data?.archivedAt || !!conversation.error} onClick={() => submit.mutate()} />}
           </div>
         </div>
         </div>

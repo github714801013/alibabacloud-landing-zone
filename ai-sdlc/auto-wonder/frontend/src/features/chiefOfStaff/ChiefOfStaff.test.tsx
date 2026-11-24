@@ -6,6 +6,7 @@ import { MemoryRouter, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@/shared/auth/store';
 import { i18n } from '@/shared/i18n';
 import { ChiefOfStaff, wideResizeExit } from './ChiefOfStaff';
+import { selectText, stubRangeRect } from '@/test/selection';
 import * as api from './api';
 import { buildExecutorLaunchCommand, type ExecutorLaunchCommandVO } from '@/features/executor/api';
 import {
@@ -117,6 +118,47 @@ describe('Chief of Staff', () => {
     expect(screen.getByRole('button', { name: '初始化工作空间' })).toBeDisabled();
     expect(api.sendMessage).not.toHaveBeenCalled();
     expect(screen.getByRole('textbox', { name: '输入消息' })).toHaveValue('my draft');
+  });
+
+  it('sends the selected assistant reply as a markdown quote and clears it', async () => {
+    vi.mocked(api.getConversation).mockResolvedValue({
+      ...conversation,
+      turns: [{ id: 301, direction: 'OUT', content: '这是数字人的历史回复', status: 'COMPLETED', error: null, gmtCreate: '' }],
+    });
+    localStorage.setItem('chief-of-staff:7:1', JSON.stringify({ conversationId: 100 }));
+    stubRangeRect();
+    const user = userEvent.setup(); mount();
+    await user.click(screen.getByRole('button', { name: '打开 Chief of Staff' }));
+    const reply = await screen.findByText('这是数字人的历史回复');
+
+    selectText(reply);
+    await user.click(screen.getByRole('button', { name: '引用此内容' }));
+    await user.type(screen.getByRole('textbox', { name: '输入消息' }), '继续说明');
+    await user.click(screen.getByRole('button', { name: '发送' }));
+
+    await waitFor(() => expect(api.sendMessage).toHaveBeenCalledWith(
+      100, '> 这是数字人的历史回复\n\n继续说明', expect.any(String), '/workitems/128'));
+    await waitFor(() => expect(screen.queryByText('引用内容')).not.toBeInTheDocument());
+    expect(screen.getByRole('textbox', { name: '输入消息' })).toHaveValue('');
+  });
+
+  it('sends the quote alone when the draft is empty', async () => {
+    vi.mocked(api.getConversation).mockResolvedValue({
+      ...conversation,
+      turns: [{ id: 301, direction: 'OUT', content: '这是数字人的历史回复', status: 'COMPLETED', error: null, gmtCreate: '' }],
+    });
+    localStorage.setItem('chief-of-staff:7:1', JSON.stringify({ conversationId: 100 }));
+    stubRangeRect();
+    const user = userEvent.setup(); mount();
+    await user.click(screen.getByRole('button', { name: '打开 Chief of Staff' }));
+    const reply = await screen.findByText('这是数字人的历史回复');
+
+    selectText(reply);
+    await user.click(screen.getByRole('button', { name: '引用此内容' }));
+    await user.click(screen.getByRole('button', { name: '发送' }));
+
+    await waitFor(() => expect(api.sendMessage).toHaveBeenCalledWith(
+      100, '> 这是数字人的历史回复', expect.any(String), '/workitems/128'));
   });
 
   it('retains a failed scenario as a draft and retries with the same message id', async () => {

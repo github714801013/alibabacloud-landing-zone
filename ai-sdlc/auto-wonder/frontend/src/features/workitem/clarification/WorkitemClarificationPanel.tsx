@@ -18,6 +18,8 @@ import {
   StopOutlined, VerticalAlignBottomOutlined, PaperClipOutlined, ReloadOutlined,
 } from '@ant-design/icons';
 import { MarkdownView } from '@/shared/ui/MarkdownView';
+import { composeQuotedContent } from '@/shared/ui/quote-block';
+import { QuoteCard, QuotePill, useTextQuote } from '@/shared/ui/TextQuote';
 import { ResizeHandle } from '@/shared/ui/ResizeHandle';
 import { useIsMobile } from '@/shared/ui/useIsMobile';
 import { ApiError, ErrorCodes } from '@/shared/types/common';
@@ -208,6 +210,7 @@ export function WorkitemClarificationPanel({
   workitemTitle,
 }: WorkitemClarificationPanelProps) {
   const { t } = useTranslation('workitem');
+  const { t: tShared } = useTranslation('shared');
   const [previewArtifact, setPreviewArtifact] = useState<Artifact | null>(null);
 
   // 澄清数字人候选始终来自「小队 → 成员」选择器：交付进度只是执行历史，
@@ -639,6 +642,12 @@ export function WorkitemClarificationPanel({
   // 输入行整体禁用口径：发送门禁、附件选择/上传/移除共用，避免某一入口在回复中仍可用。
   const composerDisabled = isSubmittingCurrentConversation || isCreatingConversation || isReplying
     || isConversationLoading || conversationHistoryFailed || agentRestorePending;
+  const { quote, truncated, pill, acceptPill, removeQuote, restoreQuote } = useTextQuote({
+    containerRef: scrollRef,
+    enabled: canWrite && !composerDisabled,
+    resetKey: conversationId,
+    onAccept: () => composerRef.current?.focus(),
+  });
   // 只给最新一条失败的用户消息提供重试；会话仍在处理/排队时不显示。
   const retryableTurnId = useMemo(() => {
     if (!canWrite || composerDisabled) return null;
@@ -657,7 +666,7 @@ export function WorkitemClarificationPanel({
   const readyAttachments = pendingAttachments.filter((item) => !!item.attachment);
   // 上传中或上传失败的附件都不能随消息发送：宁可拦住，也不让消息静默丢附件。
   const hasBlockingAttachments = pendingAttachments.some((item) => !item.attachment);
-  const canSendMessage = inputValue.trim().length > 0 || readyAttachments.length > 0;
+  const canSendMessage = inputValue.trim().length > 0 || readyAttachments.length > 0 || quote != null;
 
   const addPendingFiles = useCallback((files: File[], info?: { containsDirectory?: boolean }) => {
     if (info?.containsDirectory) {
@@ -1234,7 +1243,9 @@ export function WorkitemClarificationPanel({
 
   const handleSend = useCallback(() => {
     cancelAutoSend();
-    const content = inputValue.trim();
+    const body = inputValue.trim();
+    // 引用块只随正文发送；发送失败时单独恢复引用，重试不会丢用户选好的内容。
+    const content = composeQuotedContent(quote, body);
     const submittedConversationId = conversationId;
     const currentAttachments = pendingAttachmentsRef.current;
     const attachmentIds = currentAttachments
@@ -1260,7 +1271,9 @@ export function WorkitemClarificationPanel({
       sendAttemptRef.current = attempt;
     }
     const { clientMessageId } = attempt;
+    const submittedQuote = quote;
     setInputValue('');
+    removeQuote();
     // R4: 自己发送消息时恢复底部跟随
     followBottomRef.current = true;
     setFollowBottom(true);
@@ -1275,7 +1288,10 @@ export function WorkitemClarificationPanel({
       })
       .catch(() => {
         if (conversationIdRef.current === submittedConversationId) {
-          setInputValue((current) => current || content);
+          setInputValue((current) => current || body);
+          if (submittedQuote) {
+            restoreQuote(submittedQuote);
+          }
         }
         message.error(i18n.t('workitem:clarification.sendFailed'));
       })
@@ -1287,7 +1303,8 @@ export function WorkitemClarificationPanel({
           return next;
         });
       });
-  }, [inputValue, conversationId, submitMutation, isSubmittingCurrentConversation, isReplying,
+  }, [inputValue, quote, removeQuote, restoreQuote, conversationId, submitMutation,
+    isSubmittingCurrentConversation, isReplying,
     isConversationLoading, conversationHistoryFailed, agentRestorePending,
     clearPendingAttachments, t, cancelAutoSend]);
 
@@ -1633,6 +1650,7 @@ export function WorkitemClarificationPanel({
 
   return (
     <div ref={panelRef} className={fullscreen ? 'aw-clarification-panel is-fullscreen' : 'aw-clarification-panel'} style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+      <QuotePill pill={pill} label={tShared('quote.pill')} onAccept={acceptPill} />
       <div
         data-testid="clarification-panel-header"
         style={{
@@ -1835,10 +1853,11 @@ export function WorkitemClarificationPanel({
                   // 字号/行高/颜色不会在回复落地时跳变（延续 f608cd4a4 的意图）。
                   // 尚未消除的差异：TurnBubble 多一行数字人名字灰标，流式区没有，
                   // 因此回复落地时内容仍会整体下移约一行，不是像素级等同。
-                  <div style={{ marginBottom: 16, display: 'flex' }}>
+                  <div data-quote-message style={{ marginBottom: 16, display: 'flex' }}>
                     <div style={{ minWidth: 0 }}>
                       <div
                         data-testid="clarification-streaming-bubble"
+                        data-quote-ignore
                         style={agentBlockStyle()}
                       >
                         <ConversationEventView
@@ -1990,6 +2009,18 @@ export function WorkitemClarificationPanel({
               </div>
             ) : null}
             <div ref={inputWrapRef} style={{ minWidth: 0, position: 'relative' }}>
+              {quote && (
+                <div style={{ marginBottom: 8 }}>
+                  <QuoteCard
+                    quote={quote}
+                    truncated={truncated}
+                    label={tShared('quote.cardLabel')}
+                    removeLabel={tShared('quote.remove')}
+                    truncatedLabel={tShared('quote.truncated')}
+                    onRemove={removeQuote}
+                  />
+                </div>
+              )}
               <SlashCommandPicker
                 commands={slashCommands}
                 query={slashQuery}
@@ -2189,6 +2220,7 @@ function TurnBubble({
     return (
       <div
         className="aw-clarify-msg"
+        data-quote-message
         style={{
           marginBottom: 16,
           display: 'flex',
@@ -2203,11 +2235,13 @@ function TurnBubble({
               （whiteSpace 由 MarkdownView 内部设为 normal，不继承气泡的 pre-wrap）。 */}
           <div data-testid="clarification-user-bubble" style={userBubbleStyle()}>
             {conversationId != null && turn.attachments && turn.attachments.length > 0 ? (
-              <SentAttachments
-                workitemId={workitemId}
-                conversationId={conversationId}
-                attachments={turn.attachments}
-              />
+              <div data-quote-ignore>
+                <SentAttachments
+                  workitemId={workitemId}
+                  conversationId={conversationId}
+                  attachments={turn.attachments}
+                />
+              </div>
             ) : null}
             {/* 纯附件消息没有文字内容：附件块就是整条消息，不渲染空 Markdown。 */}
             {hasContent ? <MarkdownView className="aw-clarify-md" content={turn.content} /> : null}
@@ -2232,8 +2266,9 @@ function TurnBubble({
   }
 
   return (
-    <div className="aw-clarify-msg" style={{ marginBottom: 16 }}>
+    <div className="aw-clarify-msg" data-quote-message style={{ marginBottom: 16 }}>
       <div
+        data-quote-ignore
         style={{
           fontSize: 13,
           color: CLARIFICATION_THEME.textMuted,

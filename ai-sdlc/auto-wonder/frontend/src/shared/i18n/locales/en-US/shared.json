@@ -233,5 +233,11 @@
     "failedDetail": "Check your network connection and try again.",
     "retry": "Retry",
     "retrying": "Retrying…"
+  },
+  "quote": {
+    "pill": "Quote",
+    "cardLabel": "Quoted content",
+    "remove": "Remove quote",
+    "truncated": "Quoted content truncated"
   }
 }

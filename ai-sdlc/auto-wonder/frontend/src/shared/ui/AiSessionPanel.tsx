@@ -2,10 +2,13 @@ import { i18n } from '@/shared/i18n';
 import { useTranslation } from 'react-i18next';
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { Alert, Input, Button, List, Typography, Space, Tag, Spin, message } from 'antd';
+import type { TextAreaRef } from 'antd/es/input/TextArea';
 import { SendOutlined } from '@ant-design/icons';
 import { apiClient } from '@/shared/api/client';
 import { useRealtime } from '@/shared/realtime/useRealtime';
 import { MarkdownView } from './MarkdownView';
+import { composeQuotedContent } from './quote-block';
+import { QuoteCard, QuotePill, useTextQuote } from './TextQuote';
 import { ResultPane } from './aiResult/ResultPane';
 import { rendererRegistry } from './aiResult/registry';
 import type { AiSession, AiSessionVOResponse, AiStreamEvent, AiSessionStatus } from '@/shared/types/ai';
@@ -54,6 +57,8 @@ export function AiSessionPanel({ scene, bizRefType, bizRefId, autoStartInput, on
   const [narrow, setNarrow] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  const feedRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<TextAreaRef>(null);
   const autoStartedRef = useRef(false);
   const composingRef = useRef(false);
   const sessionId = session?.id;
@@ -149,15 +154,17 @@ export function AiSessionPanel({ scene, bizRefType, bizRefId, autoStartInput, on
   }, [autoStartInput, createSession, loading, runWithAccess, session, t]);
 
   const handleSend = () => {
-    const text = input.trim();
-    if (!text || loading) return;
+    // 输入沿用乐观清空，但失败要回填草稿；引用只在成功后移除，保证失败可原样重试。
+    const content = composeQuotedContent(quote, input.trim());
+    if (!content || loading) return;
+    const submitted = input;
     void runWithAccess('READ_WRITE', t('ai.sendAction'), async () => {
       const previousSession = session;
       setInput('');
       setLoading(true);
       try {
         if (!session) {
-          await createSession(text);
+          await createSession(content);
         } else {
           setSession((prev) =>
             prev
@@ -166,14 +173,16 @@ export function AiSessionPanel({ scene, bizRefType, bizRefId, autoStartInput, on
                   status: 'QUEUED' as AiSessionStatus,
                   messages: [
                     ...prev.messages,
-                    { id: Date.now(), sessionId: prev.id, role: 'USER', content: text, gmtCreate: new Date().toISOString() },
+                    { id: Date.now(), sessionId: prev.id, role: 'USER', content, gmtCreate: new Date().toISOString() },
                   ],
                 }
               : prev,
           );
-          await apiClient.post(`/api/ai/sessions/${session.id}/messages`, { content: text });
+          await apiClient.post(`/api/ai/sessions/${session.id}/messages`, { content });
         }
+        removeQuote();
       } catch (error) {
+        setInput((current) => current || submitted);
         const errorMessage = error instanceof Error ? error.message : i18n.t('shared:ai.sendFailed');
         message.error(errorMessage);
         if (previousSession) {
@@ -203,6 +212,12 @@ export function AiSessionPanel({ scene, bizRefType, bizRefId, autoStartInput, on
   };
 
   const canSend = session ? session.status === 'WAIT_USER' : !autoStartInput;
+  const { quote, truncated, pill, acceptPill, removeQuote } = useTextQuote({
+    containerRef: feedRef,
+    enabled: canSend && !loading,
+    resetKey: sessionId,
+    onAccept: () => inputRef.current?.focus(),
+  });
   const messages = session?.messages ?? [];
 
   const isStructuredResultMessage = (content: string) => {
@@ -227,7 +242,7 @@ export function AiSessionPanel({ scene, bizRefType, bizRefId, autoStartInput, on
   const autoStartErrorText = autoStartError && ('key' in autoStartError ? t(autoStartError.key) : autoStartError.message);
   const chat = (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, minWidth: 0 }}>
-      <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
+      <div ref={feedRef} style={{ flex: 1, overflow: 'auto', padding: 16 }}>
         {!session && autoStartError && (
           <Alert
             type="error"
@@ -247,8 +262,8 @@ export function AiSessionPanel({ scene, bizRefType, bizRefId, autoStartInput, on
           dataSource={messages}
           renderItem={(msg) => (
             <List.Item style={{ border: 'none', padding: '8px 0' }}>
-              <div style={{ width: '100%' }}>
-                <Text strong type={msg.role === 'USER' ? 'success' : msg.role === 'AI' ? undefined : 'secondary'}>
+              <div style={{ width: '100%' }} data-quote-message>
+                <Text strong type={msg.role === 'USER' ? 'success' : msg.role === 'AI' ? undefined : 'secondary'} data-quote-ignore>
                   {msg.role === 'USER' ? t('ai.you') : msg.role === 'AI' ? 'AI' : t('ai.system')}
                 </Text>
                 <div style={{ marginTop: 4 }}>
@@ -278,8 +293,21 @@ export function AiSessionPanel({ scene, bizRefType, bizRefId, autoStartInput, on
         <div ref={bottomRef} />
       </div>
       <div style={{ padding: 12, borderTop: '1px solid var(--aw-border)' }}>
+        {quote && (
+          <div style={{ marginBottom: 8 }}>
+            <QuoteCard
+              quote={quote}
+              truncated={truncated}
+              label={t('quote.cardLabel')}
+              removeLabel={t('quote.remove')}
+              truncatedLabel={t('quote.truncated')}
+              onRemove={removeQuote}
+            />
+          </div>
+        )}
         <Space.Compact style={{ width: '100%' }}>
           <TextArea
+            ref={inputRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             placeholder={t('ai.input')}
@@ -310,6 +338,7 @@ export function AiSessionPanel({ scene, bizRefType, bizRefId, autoStartInput, on
 
   return (
     <div ref={rootRef} style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 400 }}>
+      <QuotePill pill={pill} label={t('quote.pill')} onAccept={acceptPill} />
       {session && (
         <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--aw-border)' }}>
           <Space>

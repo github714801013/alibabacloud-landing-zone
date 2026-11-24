@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { http, HttpResponse } from 'msw';
 import { server } from '@/test/mocks/server';
 import { PrdConversation } from './PrdConversation';
+import { selectText, stubRangeRect } from '@/test/selection';
 import { File as UploadFile } from 'node:buffer';
 
 vi.mock('@/features/workitem/clarification/SquadAgentSelector', () => ({ SquadAgentSelector: () => null }));
@@ -130,6 +131,83 @@ describe('PrdConversation API routing', () => {
     expect(await screen.findByText('已选中：#save')).toBeInTheDocument();
     view.unmount(); client.clear();
   });
+  it('quotes the selected reply into the next design message', async () => {
+    let submitted: unknown;
+    server.use(
+      http.get('/api/workitems/14/prd/conversation', () => ok({ id: 70, turns: [
+        { id: 1, direction: 'OUT', content: '设计稿第一版已经生成', status: 'COMPLETED' },
+      ] })),
+      http.get('/api/workitems/14/prd/conversation/70/events', () => ok([])),
+      http.post('/api/workitems/14/prd/conversation', async ({ request }) => { submitted = await request.json(); return ok(null); }),
+    );
+    stubRangeRect();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = render(<MemoryRouter initialEntries={['/?prdAgent=42&prdSquad=7']}>
+      <QueryClientProvider client={client}><PrdConversation workitemId="14" /></QueryClientProvider>
+    </MemoryRouter>);
+    const reply = await screen.findByText('设计稿第一版已经生成');
+    await userEvent.click(screen.getByRole('button', { name: 'Code only' }));
+    selectText(reply);
+    await userEvent.click(screen.getByRole('button', { name: '引用此内容' }));
+    await userEvent.type(screen.getByRole('textbox', { name: '设计对话' }), '按这个方向继续');
+    await userEvent.click(screen.getByRole('button', { name: /发\s*送/ }));
+
+    await waitFor(() => expect(submitted).toMatchObject({ content: '> 设计稿第一版已经生成\n\n按这个方向继续' }));
+    await waitFor(() => expect(screen.queryByText('引用内容')).not.toBeInTheDocument());
+    view.unmount(); client.clear();
+  });
+
+  it('sends the quote alone when the input is empty', async () => {
+    let submitted: unknown;
+    server.use(
+      http.get('/api/workitems/16/prd/conversation', () => ok({ id: 72, turns: [
+        { id: 1, direction: 'OUT', content: '设计稿第一版已经生成', status: 'COMPLETED' },
+      ] })),
+      http.get('/api/workitems/16/prd/conversation/72/events', () => ok([])),
+      http.post('/api/workitems/16/prd/conversation', async ({ request }) => { submitted = await request.json(); return ok(null); }),
+    );
+    stubRangeRect();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = render(<MemoryRouter initialEntries={['/?prdAgent=42&prdSquad=7']}>
+      <QueryClientProvider client={client}><PrdConversation workitemId="16" /></QueryClientProvider>
+    </MemoryRouter>);
+    const reply = await screen.findByText('设计稿第一版已经生成');
+    await userEvent.click(screen.getByRole('button', { name: 'Code only' }));
+    selectText(reply);
+    await userEvent.click(screen.getByRole('button', { name: '引用此内容' }));
+    await userEvent.click(screen.getByRole('button', { name: /发\s*送/ }));
+
+    await waitFor(() => expect(submitted).toMatchObject({ content: '> 设计稿第一版已经生成' }));
+    view.unmount(); client.clear();
+  });
+
+  it('keeps the quote when the design message fails to send', async () => {
+    server.use(
+      http.get('/api/workitems/15/prd/conversation', () => ok({ id: 71, turns: [
+        { id: 1, direction: 'OUT', content: '设计稿第一版已经生成', status: 'COMPLETED' },
+      ] })),
+      http.get('/api/workitems/15/prd/conversation/71/events', () => ok([])),
+      http.post('/api/workitems/15/prd/conversation', () => HttpResponse.json(
+        { success: false, code: 'SEND_FAILED', message: '发送失败', traceId: null, data: null }, { status: 500 },
+      )),
+    );
+    stubRangeRect();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = render(<MemoryRouter initialEntries={['/?prdAgent=42&prdSquad=7']}>
+      <QueryClientProvider client={client}><PrdConversation workitemId="15" /></QueryClientProvider>
+    </MemoryRouter>);
+    const reply = await screen.findByText('设计稿第一版已经生成');
+    await userEvent.click(screen.getByRole('button', { name: 'Code only' }));
+    selectText(reply);
+    await userEvent.click(screen.getByRole('button', { name: '引用此内容' }));
+    await userEvent.type(screen.getByRole('textbox', { name: '设计对话' }), '按这个方向继续');
+    await userEvent.click(screen.getByRole('button', { name: /发\s*送/ }));
+
+    await waitFor(() => expect(screen.getByText('引用内容')).toBeInTheDocument());
+    expect(screen.getByRole('textbox', { name: '设计对话' })).toHaveValue('按这个方向继续');
+    view.unmount(); client.clear();
+  });
+
   it('degrades safely when stored turns carry no or broken source context', async () => {
     server.use(
       http.get('/api/workitems/13/prd/conversation', () => ok({ id: 61, participants: { 7: 'Alice' }, turns: [

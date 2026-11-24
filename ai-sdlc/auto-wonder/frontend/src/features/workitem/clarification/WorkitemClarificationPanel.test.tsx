@@ -23,6 +23,8 @@ import { mockLatestClarificationConversation } from '@/test/mocks/clarificationL
 import type { ClarificationConversation } from './types';
 import { readClarifyView, writeClarifyView } from '../clarifyView';
 import { copyTextToClipboard } from '@/shared/lib/clipboard';
+import { useAuthStore } from '@/shared/auth/store';
+import { selectText, stubRangeRect } from '@/test/selection';
 import type { Artifact } from '@/shared/types/workitem';
 
 type RealtimeCallback = (event: { type: string; payload: unknown }) => void;
@@ -1009,6 +1011,87 @@ describe('WorkitemClarificationPanel', () => {
 
     await waitFor(() => expect(textarea).toHaveValue('请保留这条消息'));
     expect(await screen.findByText('消息发送失败，请重试')).toBeInTheDocument();
+  });
+
+  it('quotes the selected agent reply into the next message and clears it', async () => {
+    writeClarificationPrefill('100', { squadId: 9, agentId: 42 });
+    mockSquads();
+    mockConversationWithTurns(42);
+    useAuthStore.getState().setAccessLevel('ADMIN');
+    let submitted: unknown;
+    server.use(
+      http.post('/api/workitems/:workitemId/clarification-conversations/:conversationId/turns', async ({ request }) => {
+        submitted = await request.json();
+        return HttpResponse.json({ success: true, code: '0', message: '', traceId: null, data: null });
+      }),
+    );
+    stubRangeRect();
+    renderPanel();
+    const textarea = await screen.findByPlaceholderText('输入消息...');
+    const reply = await screen.findByText('好的，请说说你的想法');
+
+    selectText(reply);
+    fireEvent.click(screen.getByRole('button', { name: '引用此内容' }));
+    await typeComposer('按这个方向继续');
+    fireEvent.keyDown(textarea, { key: 'Enter', code: 'Enter', shiftKey: true });
+
+    await waitFor(() => expect(submitted).toMatchObject({ content: '> 好的，请说说你的想法\n\n按这个方向继续' }));
+    await waitFor(() => expect(screen.queryByText('引用内容')).not.toBeInTheDocument());
+    useAuthStore.setState({ accessLevel: null });
+  });
+
+  it('sends the quote alone when the composer is empty', async () => {
+    writeClarificationPrefill('100', { squadId: 9, agentId: 42 });
+    mockSquads();
+    mockConversationWithTurns(42);
+    useAuthStore.getState().setAccessLevel('ADMIN');
+    let submitted: unknown;
+    server.use(
+      http.post('/api/workitems/:workitemId/clarification-conversations/:conversationId/turns', async ({ request }) => {
+        submitted = await request.json();
+        return HttpResponse.json({ success: true, code: '0', message: '', traceId: null, data: null });
+      }),
+    );
+    stubRangeRect();
+    renderPanel();
+    const reply = await screen.findByText('好的，请说说你的想法');
+
+    selectText(reply);
+    fireEvent.click(screen.getByRole('button', { name: '引用此内容' }));
+    const sendButton = screen.getByRole('button', { name: '发送消息' });
+    expect(sendButton).toBeEnabled();
+    fireEvent.click(sendButton);
+
+    await waitFor(() => expect(submitted).toMatchObject({ content: '> 好的，请说说你的想法' }));
+    useAuthStore.setState({ accessLevel: null });
+  });
+
+  it('restores the quote when quoting a reply fails to send', async () => {
+    writeClarificationPrefill('100', { squadId: 9, agentId: 42 });
+    mockSquads();
+    mockConversationWithTurns(42);
+    useAuthStore.getState().setAccessLevel('ADMIN');
+    server.use(
+      http.post('/api/workitems/:workitemId/clarification-conversations/:conversationId/turns', () =>
+        HttpResponse.json(
+          { success: false, code: 'SEND_FAILED', message: '发送失败', traceId: null, data: null },
+          { status: 500 },
+        ),
+      ),
+    );
+    stubRangeRect();
+    renderPanel();
+    const textarea = await screen.findByPlaceholderText('输入消息...');
+    const reply = await screen.findByText('好的，请说说你的想法');
+
+    selectText(reply);
+    fireEvent.click(screen.getByRole('button', { name: '引用此内容' }));
+    await typeComposer('按这个方向继续');
+    fireEvent.keyDown(textarea, { key: 'Enter', code: 'Enter', shiftKey: true });
+
+    await waitFor(() => expect(textarea).toHaveValue('按这个方向继续'));
+    expect(screen.getByText('引用内容')).toBeInTheDocument();
+    useAuthStore.setState({ accessLevel: null });
   });
 
   it('renders backend IN and INBOUND turns as user messages', async () => {

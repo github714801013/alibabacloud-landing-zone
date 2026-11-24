@@ -8,6 +8,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AiSessionPanel } from './AiSessionPanel';
 import { useAuthStore } from '@/shared/auth/store';
 import { message } from 'antd';
+import { selectText, stubRangeRect } from '@/test/selection';
 
 const realtimeMock = vi.hoisted(() => ({
   onEvent: null as ((event: { payload: unknown }) => void) | null,
@@ -274,7 +275,8 @@ describe('AiSessionPanel', () => {
     await waitFor(() => {
       expect(screen.getByText('已完成')).toBeInTheDocument();
     });
-    expect(screen.queryByText('补充一下接口约束')).not.toBeInTheDocument();
+    // 会话已结束但发送失败：保留用户草稿，避免重新输入。
+    expect(screen.getByPlaceholderText(/输入/)).toHaveValue('补充一下接口约束');
   });
 
   it('refreshes WAIT_USER structured result when a realtime result event arrives', async () => {
@@ -387,6 +389,69 @@ describe('AiSessionPanel', () => {
     await new Promise((r) => setTimeout(r, 100));
     expect(createAttempts).toBe(0);
     expect(textarea).toHaveValue('候选词');
+  });
+
+  it('sends the selected message as a quote and clears it after success', async () => {
+    let submitted: unknown;
+    server.use(
+      http.get('/api/ai/sessions/100', () => HttpResponse.json({
+        success: true, code: '0', message: '', traceId: null,
+        data: {
+          id: 100, scene: 'CLARIFICATION', bizRefType: 'WORKITEM', bizRefId: 1,
+          status: 'WAIT_USER', resultJson: null, error: null, gmtCreate: '2026-01-01',
+          messages: [{ id: 1, sessionId: 100, role: 'AI', content: '请补充上下文', gmtCreate: '2026-01-01' }],
+        },
+      })),
+      http.post('/api/ai/sessions/100/messages', async ({ request }) => {
+        submitted = await request.json();
+        return HttpResponse.json({ success: true, code: '0', message: '', traceId: null, data: null });
+      }),
+    );
+    stubRangeRect();
+    renderPanel();
+    const user = userEvent.setup();
+    await user.type(screen.getByPlaceholderText(/输入/), '开始');
+    await user.click(screen.getByRole('button', { name: /发送/ }));
+    const reply = await screen.findByText('请补充上下文');
+
+    selectText(reply);
+    await user.click(screen.getByRole('button', { name: '引用此内容' }));
+    await user.type(screen.getByPlaceholderText(/输入/), '补充约束');
+    await user.click(screen.getByRole('button', { name: /发送/ }));
+
+    await waitFor(() => expect(submitted).toEqual({ content: '> 请补充上下文\n\n补充约束' }));
+    await waitFor(() => expect(screen.queryByText('引用内容')).not.toBeInTheDocument());
+    expect(screen.getByPlaceholderText(/输入/)).toHaveValue('');
+  });
+
+  it('restores the draft and keeps the quote when sending fails', async () => {
+    server.use(
+      http.get('/api/ai/sessions/100', () => HttpResponse.json({
+        success: true, code: '0', message: '', traceId: null,
+        data: {
+          id: 100, scene: 'CLARIFICATION', bizRefType: 'WORKITEM', bizRefId: 1,
+          status: 'WAIT_USER', resultJson: null, error: null, gmtCreate: '2026-01-01',
+          messages: [{ id: 1, sessionId: 100, role: 'AI', content: '请补充上下文', gmtCreate: '2026-01-01' }],
+        },
+      })),
+      http.post('/api/ai/sessions/100/messages', () => HttpResponse.json(
+        { success: false, code: '19003', message: 'AI会话非待确认状态', traceId: null, data: null }, { status: 409 },
+      )),
+    );
+    stubRangeRect();
+    renderPanel();
+    const user = userEvent.setup();
+    await user.type(screen.getByPlaceholderText(/输入/), '开始');
+    await user.click(screen.getByRole('button', { name: /发送/ }));
+    const reply = await screen.findByText('请补充上下文');
+
+    selectText(reply);
+    await user.click(screen.getByRole('button', { name: '引用此内容' }));
+    await user.type(screen.getByPlaceholderText(/输入/), '补充约束');
+    await user.click(screen.getByRole('button', { name: /发送/ }));
+
+    await waitFor(() => expect(screen.getByPlaceholderText(/输入/)).toHaveValue('补充约束'));
+    expect(screen.getByText('引用内容')).toBeInTheDocument();
   });
 
   it('does not send on Shift+Enter', async () => {

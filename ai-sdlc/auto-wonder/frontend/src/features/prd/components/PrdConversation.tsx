@@ -10,6 +10,8 @@ import { SquadAgentSelector } from '@/features/workitem/clarification/SquadAgent
 import type { SquadAgentSelection } from '@/features/workitem/clarification/SquadAgentSelector';
 import { createClientMessageId } from '@/features/workitem/clarification/api';
 import { MarkdownView } from '@/shared/ui/MarkdownView';
+import { composeQuotedContent } from '@/shared/ui/quote-block';
+import { QuoteCard, QuotePill, useTextQuote } from '@/shared/ui/TextQuote';
 import { ConversationEventView } from '@/features/workitem/clarification/ConversationEventView';
 import { assembleTurnEvents } from '@/features/workitem/clarification/hooks';
 import { buildTimeline } from '@/features/workitem/clarification/timeline';
@@ -51,6 +53,7 @@ export function PrdConversation({ workitemId, onDraftChange, suggestion, onPrevi
   onClearElement?: () => void;
 }) {
   const { t } = useTranslation('prd');
+  const { t: tShared } = useTranslation('shared');
   const [params, setParams] = useSearchParams();
   const agentId = Number(params.get('prdAgent'));
   const squadId = Number(params.get('prdSquad'));
@@ -99,6 +102,12 @@ export function PrdConversation({ workitemId, onDraftChange, suggestion, onPrevi
     refetchInterval: 2000,
   });
   const conversationId = history.data?.id;
+  const { quote, truncated, pill, acceptPill, removeQuote } = useTextQuote({
+    containerRef: feedRef,
+    enabled: !sending,
+    resetKey: conversationId,
+    onAccept: () => inputRef.current?.focus(),
+  });
   useEffect(() => {
     if (browserEdited.current || !history.data) return;
     for (const turn of [...history.data.turns].reverse()) {
@@ -162,6 +171,8 @@ export function PrdConversation({ workitemId, onDraftChange, suggestion, onPrevi
   }, [draftText, base, onPreview, onPrototype]);
   const send = async () => {
     followFeed.current = true;
+    // 引用块随正文提交，只有成功后才清空；失败时输入与引用都保留，便于原样重试。
+    const content = composeQuotedContent(quote, input.trim());
     setSending(true);
     try {
       const prepared = files.length ? (await apiClient.post<History>(`${base}/prepare`, { agentId: selection!.agentId })).data : null;
@@ -177,13 +188,14 @@ export function PrdConversation({ workitemId, onDraftChange, suggestion, onPrevi
           }],
         })).data.id);
       }
-      await apiClient.post(base, { agentId: selection!.agentId, content: input, clientMessageId: requestId, attachmentIds, browser,
+      await apiClient.post(base, { agentId: selection!.agentId, content, clientMessageId: requestId, attachmentIds, browser,
         ...(element ? { element } : {}) });
-      setInput(''); setFiles([]); setRequestId(createClientMessageId()); onClearElement?.(); await history.refetch();
+      setInput(''); removeQuote(); setFiles([]); setRequestId(createClientMessageId()); onClearElement?.(); await history.refetch();
     } catch (error) { message.error(error instanceof Error ? error.message : t('conversation.failed')); }
     finally { setSending(false); }
   };
   return <Space direction="vertical" style={{ width: '100%', padding: 16 }}>
+    <QuotePill pill={pill} label={tShared('quote.pill')} onAccept={acceptPill} />
     <details open={!selection?.agentId}><summary>{t('conversation.employee')}</summary>
       <SquadAgentSelector value={selection} onChange={setSelection} locked={sending || processing} />
     </details>
@@ -196,17 +208,21 @@ export function PrdConversation({ workitemId, onDraftChange, suggestion, onPrevi
       const el = event.currentTarget;
       followFeed.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
     }}>
-      {history.data?.turns.map(turn => <div key={turn.id} style={{ marginBottom: 16 }}>
-        <Tag>{isReply(turn) ? t('conversation.employee') : history.data?.participants?.[String(turn.submittedUserId)] ?? t('conversation.participant', { id: turn.submittedUserId ?? '' })}</Tag>
+      {history.data?.turns.map(turn => <div key={turn.id} data-quote-message style={{ marginBottom: 16 }}>
+        <Tag data-quote-ignore>{isReply(turn) ? t('conversation.employee') : history.data?.participants?.[String(turn.submittedUserId)] ?? t('conversation.participant', { id: turn.submittedUserId ?? '' })}</Tag>
         {isReply(turn) ? <>
           <MarkdownView content={designData(turn.content)?.changeLog || (designData(turn.content) ? t('conversation.previewUpdated') : turn.content)} />
         </> : <>
-          {turnElement(turn) && <div><Tag color="blue">{t('conversation.selectedElement', { label: elementLabel(turnElement(turn)!) })}</Tag></div>}
+          {turnElement(turn) && <div data-quote-ignore><Tag color="blue">{t('conversation.selectedElement', { label: elementLabel(turnElement(turn)!) })}</Tag></div>}
           <MarkdownView content={userMessage(turn)} />
         </>}
-        {history.data?.attachments?.[String(turn.id)]?.map(file => file.previewable
-          ? <PrdScreenshot key={file.id} name={file.name} source={`${base}/${conversationId}/attachments/${file.id}/preview`} />
-          : <Tag key={file.id}>{file.name}</Tag>)}
+        {!!history.data?.attachments?.[String(turn.id)]?.length && (
+          <div data-quote-ignore>
+            {history.data!.attachments![String(turn.id)].map(file => file.previewable
+              ? <PrdScreenshot key={file.id} name={file.name} source={`${base}/${conversationId}/attachments/${file.id}/preview`} />
+              : <Tag key={file.id}>{file.name}</Tag>)}
+          </div>
+        )}
         {turn.error && !isReply(turn) && <Alert type="error" closable message={turn.error} />}
       </div>)}
       {(processing || sending) && <Space><Spin size="small" />{t('conversation.working')}</Space>}
@@ -218,6 +234,16 @@ export function PrdConversation({ workitemId, onDraftChange, suggestion, onPrevi
       </Tag>
       {element.page && <Tag>{element.page}</Tag>}
     </Space>}
+    {quote && (
+      <QuoteCard
+        quote={quote}
+        truncated={truncated}
+        label={tShared('quote.cardLabel')}
+        removeLabel={tShared('quote.remove')}
+        truncatedLabel={tShared('quote.truncated')}
+        onRemove={removeQuote}
+      />
+    )}
     <Input.TextArea ref={inputRef} aria-label={t('conversation.title')} placeholder={t('conversation.inputHint')} value={input} rows={3} disabled={sending}
       onPaste={event => {
         const images = Array.from(event.clipboardData.files).filter(file => file.type.startsWith('image/'));
@@ -230,7 +256,7 @@ export function PrdConversation({ workitemId, onDraftChange, suggestion, onPrevi
     <Upload accept="image/*" multiple beforeUpload={file => { setFiles(previous => [...previous, file]); return false; }} showUploadList={false}>
       <Tooltip title={t('conversation.screenshot')}><Button type="text" aria-label={t('conversation.screenshot')} icon={<PaperClipOutlined />} disabled={sending} /></Tooltip>
     </Upload>
-    <Button type="primary" loading={sending} disabled={!selection?.agentId || !browserSelectionValid(browser) || (!input.trim() && !files.length)} onClick={() => void send()}>
+    <Button type="primary" loading={sending} disabled={!selection?.agentId || !browserSelectionValid(browser) || (!input.trim() && !files.length && !quote)} onClick={() => void send()}>
       {t('conversation.send')}
     </Button>
     </div>
