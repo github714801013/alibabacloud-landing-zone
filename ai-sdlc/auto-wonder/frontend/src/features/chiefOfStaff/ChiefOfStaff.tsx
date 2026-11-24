@@ -3,6 +3,7 @@ import { conversationNotice } from '@/features/workitem/clarification/conversati
 import { hiddenFailedOutboundTurnIds } from '@/features/workitem/clarification/hooks';
 import { AnswerDeliveryStatus } from "@/features/workitem/clarification/cards/AnswerDeliveryStatus";
 import { useTranslation } from 'react-i18next';
+import { i18n } from '@/shared/i18n';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -107,7 +108,6 @@ export function ChiefOfStaff({ hideLauncher = false }: { hideLauncher?: boolean 
 function Assistant({ userId, workspaceId, hideLauncher }: { userId: number; workspaceId: number; hideLauncher: boolean }) {
   const { t } = useTranslation('chiefOfStaff');
   const { t: workitemT } = useTranslation('workitem');
-  const { t: tShared } = useTranslation('shared');
   const location = useLocation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -583,7 +583,7 @@ function Assistant({ userId, workspaceId, hideLauncher }: { userId: number; work
           <Button type="text" icon={<PlusOutlined />} aria-label={t('newConversation')} disabled={submit.isPending || upload.isPending} onClick={() => { setPrefs(p => ({ ...p, conversationId: null })); setDraft(''); setImages([]); setRename(null); pendingMessage.current = null; setHistory(false); }} />
           <Button type="text" icon={<CloseOutlined />} aria-label={t('collapse')} onClick={() => { setOpen(false); setCommand(null); }} /></div>}
       </header>
-      <QuotePill pill={pill} label={tShared('quote.pill')} onAccept={acceptPill} />
+      <QuotePill pill={pill} label={i18n.t('shared:quote.pill')} onAccept={acceptPill} />
       {!guided && <div className="aw-chief-context"><span>{t('contextHeader', { page: contextLabel })}</span><Switch size="small" checked={context} onChange={setContext} aria-label={t('pageContext')} /></div>}
       <div ref={scroll} onScroll={() => { const el = scroll.current; if (el) followLatest.current = el.scrollHeight - el.scrollTop - el.clientHeight < 100; }} className="aw-chief-body" aria-live="polite">
         <div className="aw-chief-body-inner">
@@ -686,9 +686,9 @@ function Assistant({ userId, workspaceId, hideLauncher }: { userId: number; work
             <QuoteCard
               quote={quote}
               truncated={truncated}
-              label={tShared('quote.cardLabel')}
-              removeLabel={tShared('quote.remove')}
-              truncatedLabel={tShared('quote.truncated')}
+              label={i18n.t('shared:quote.cardLabel')}
+              removeLabel={i18n.t('shared:quote.remove')}
+              truncatedLabel={i18n.t('shared:quote.truncated')}
               onRemove={removeQuote}
             />
           </div>

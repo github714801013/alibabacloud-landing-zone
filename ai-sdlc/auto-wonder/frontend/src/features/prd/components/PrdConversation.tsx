@@ -5,6 +5,7 @@ import { Alert, Button, Input, Space, Spin, Upload, Tag, Tooltip, message } from
 import { PaperClipOutlined } from '@ant-design/icons';
 import type { TextAreaRef } from 'antd/es/input/TextArea';
 import { useTranslation } from 'react-i18next';
+import { i18n } from '@/shared/i18n';
 import { apiClient } from '@/shared/api/client';
 import { SquadAgentSelector } from '@/features/workitem/clarification/SquadAgentSelector';
 import type { SquadAgentSelection } from '@/features/workitem/clarification/SquadAgentSelector';
@@ -53,7 +54,6 @@ export function PrdConversation({ workitemId, onDraftChange, suggestion, onPrevi
   onClearElement?: () => void;
 }) {
   const { t } = useTranslation('prd');
-  const { t: tShared } = useTranslation('shared');
   const [params, setParams] = useSearchParams();
   const agentId = Number(params.get('prdAgent'));
   const squadId = Number(params.get('prdSquad'));
@@ -195,7 +195,7 @@ export function PrdConversation({ workitemId, onDraftChange, suggestion, onPrevi
     finally { setSending(false); }
   };
   return <Space direction="vertical" style={{ width: '100%', padding: 16 }}>
-    <QuotePill pill={pill} label={tShared('quote.pill')} onAccept={acceptPill} />
+    <QuotePill pill={pill} label={i18n.t('shared:quote.pill')} onAccept={acceptPill} />
     <details open={!selection?.agentId}><summary>{t('conversation.employee')}</summary>
       <SquadAgentSelector value={selection} onChange={setSelection} locked={sending || processing} />
     </details>
@@ -238,9 +238,9 @@ export function PrdConversation({ workitemId, onDraftChange, suggestion, onPrevi
       <QuoteCard
         quote={quote}
         truncated={truncated}
-        label={tShared('quote.cardLabel')}
-        removeLabel={tShared('quote.remove')}
-        truncatedLabel={tShared('quote.truncated')}
+        label={i18n.t('shared:quote.cardLabel')}
+        removeLabel={i18n.t('shared:quote.remove')}
+        truncatedLabel={i18n.t('shared:quote.truncated')}
         onRemove={removeQuote}
       />
     )}

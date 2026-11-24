@@ -210,7 +210,6 @@ export function WorkitemClarificationPanel({
   workitemTitle,
 }: WorkitemClarificationPanelProps) {
   const { t } = useTranslation('workitem');
-  const { t: tShared } = useTranslation('shared');
   const [previewArtifact, setPreviewArtifact] = useState<Artifact | null>(null);
 
   // 澄清数字人候选始终来自「小队 → 成员」选择器：交付进度只是执行历史，
@@ -1650,7 +1649,7 @@ export function WorkitemClarificationPanel({
 
   return (
     <div ref={panelRef} className={fullscreen ? 'aw-clarification-panel is-fullscreen' : 'aw-clarification-panel'} style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      <QuotePill pill={pill} label={tShared('quote.pill')} onAccept={acceptPill} />
+      <QuotePill pill={pill} label={i18n.t('shared:quote.pill')} onAccept={acceptPill} />
       <div
         data-testid="clarification-panel-header"
         style={{
@@ -2014,9 +2013,9 @@ export function WorkitemClarificationPanel({
                   <QuoteCard
                     quote={quote}
                     truncated={truncated}
-                    label={tShared('quote.cardLabel')}
-                    removeLabel={tShared('quote.remove')}
-                    truncatedLabel={tShared('quote.truncated')}
+                    label={i18n.t('shared:quote.cardLabel')}
+                    removeLabel={i18n.t('shared:quote.remove')}
+                    truncatedLabel={i18n.t('shared:quote.truncated')}
                     onRemove={removeQuote}
                   />
                 </div>
