@@ -133,14 +133,6 @@ public class ExecutorWsEndpoint {
             }
         }
 
-        try {
-            WsSpringContext.getBean(com.aliyun.autowonder.conversation.ConversationTurnEventIngestQueue.class)
-                    .flushExecutor(executorSession.getExecutorId());
-        } catch (RuntimeException flushFailure) {
-            log.warn("conversation event flush on close failed executorId={}",
-                    executorSession.getExecutorId(), flushFailure);
-        }
-
         log.info("executor disconnected executorId={}", executorSession.getExecutorId());
     }
 

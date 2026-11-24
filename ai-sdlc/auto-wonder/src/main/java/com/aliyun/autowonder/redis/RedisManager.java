@@ -18,6 +18,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 public class RedisManager extends AbstractRedisManager {
 
@@ -438,8 +439,13 @@ public class RedisManager extends AbstractRedisManager {
     }
 
     public void ensureConsumerGroup(String stream, String group) {
+        ensureConsumerGroup(stream, group, StreamEntryID.LAST_ENTRY);
+    }
+
+    /** 指定起始位点创建消费者组；起始位点传 0-0 可把建组前已写入的条目一并投递。 */
+    public void ensureConsumerGroup(String stream, String group, StreamEntryID startId) {
         try (Jedis jedis = jedisPool.getResource()) {
-            jedis.xgroupCreate(stream, group, StreamEntryID.LAST_ENTRY, true);
+            jedis.xgroupCreate(stream, group, startId, true);
         } catch (JedisDataException e) {
             if (e.getMessage() != null && e.getMessage().contains("BUSYGROUP")) {
                 return;
@@ -493,6 +499,45 @@ public class RedisManager extends AbstractRedisManager {
                             .end(new StreamEntryID(messageId))
                             .count(1));
             return entries == null || entries.isEmpty() ? 1L : entries.get(0).getDeliveredTimes();
+        }
+    }
+
+    /** Stream 未删除条目数；包含已投递未确认与未投递两类。 */
+    public long xlen(String key) {
+        try (Jedis jedis = jedisPool.getResource()) {
+            return jedis.xlen(key);
+        }
+    }
+
+    /** 从小到大读取最早的最多 count 条条目，用于计算未落库事件的最老年龄。 */
+    public List<StreamEntry> xrange(String stream, int count) {
+        try (Jedis jedis = jedisPool.getResource()) {
+            return jedis.xrange(stream, new StreamEntryID(0L, 0L),
+                    new StreamEntryID(Long.MAX_VALUE, Long.MAX_VALUE), count);
+        }
+    }
+
+    /** 移除 ZSET 成员；成员不存在时为空操作。 */
+    public void zrem(String key, String member) {
+        try (Jedis jedis = jedisPool.getResource()) {
+            jedis.zrem(key, member);
+        }
+    }
+
+    /**
+     * 按分数升序返回最多 count 个成员及其分数（活跃轮次按最后写入时间排序）；
+     * 跳过前 offset 个成员，供恢复扫描翻页避免低分成员长期占满单批。
+     */
+    public Set<Tuple> zrangeByScoreWithScores(String key, int offset, int count) {
+        try (Jedis jedis = jedisPool.getResource()) {
+            return jedis.zrangeByScoreWithScores(key, 0d, Double.MAX_VALUE, offset, count);
+        }
+    }
+
+    /** 成员分数；成员不存在时返回 {@code null}。 */
+    public Double zscore(String key, String member) {
+        try (Jedis jedis = jedisPool.getResource()) {
+            return jedis.zscore(key, member);
         }
     }
 

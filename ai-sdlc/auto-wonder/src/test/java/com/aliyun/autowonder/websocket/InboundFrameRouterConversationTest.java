@@ -150,8 +150,11 @@ class InboundFrameRouterConversationTest {
     }
 
     @Test
-    void ordinaryTurnEventIsQueuedAndReliableEventFlushesFirst() {
-        ExecutorSession es = new ExecutorSession(9L, 3L, 1L, mock(Session.class));
+    void ordinaryTurnEventIsQueuedAndReliableEventFlushesFirst() throws Exception {
+        Session ws = mock(Session.class);
+        javax.websocket.RemoteEndpoint.Basic basic = mock(javax.websocket.RemoteEndpoint.Basic.class);
+        when(ws.getBasicRemote()).thenReturn(basic);
+        ExecutorSession es = new ExecutorSession(9L, 3L, 1L, ws);
         com.aliyun.autowonder.conversation.ConversationTurnEventService eventService =
                 mock(com.aliyun.autowonder.conversation.ConversationTurnEventService.class);
         com.aliyun.autowonder.conversation.ConversationTurnEventIngestQueue queue =
@@ -159,14 +162,23 @@ class InboundFrameRouterConversationTest {
         router.setConversationTurnEventService(eventService);
         router.setConversationTurnEventIngestQueue(queue);
         when(queue.flushAndWait(1L, 55L)).thenReturn(true);
+        when(queue.offer(any(com.aliyun.autowonder.conversation.ConversationTurnEventIngestQueue.Event.class),
+                eq(es))).thenReturn(true);
 
         router.route(es, "{\"type\":\"CONVERSATION_TURN_EVENT\",\"conversationId\":77,\"turnId\":55,"
-                + "\"dispatchAttempt\":1,\"eventSeq\":1,\"chunkIndex\":0,\"chunkCount\":1,"
+                + "\"dispatchAttempt\":1,\"conversationDeliveryProtocolVersion\":1,"
+                + "\"eventSeq\":1,\"chunkIndex\":0,\"chunkCount\":1,"
                 + "\"eventType\":\"text\",\"payloadFragment\":\"hi\"}");
 
         verify(queue).offer(any(com.aliyun.autowonder.conversation.ConversationTurnEventIngestQueue.Event.class),
                 eq(es));
         verifyNoInteractions(eventService);
+        var sent = org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(basic).sendText(sent.capture());
+        var bufferedAck = com.aliyun.autowonder.json.JSON.parseObject(sent.getValue());
+        assertEquals("CONVERSATION_DELIVERY_ACK", bufferedAck.getString("type"));
+        assertEquals("CONVERSATION_TURN_EVENT", bufferedAck.getString("frameType"));
+        assertEquals(1L, bufferedAck.getLongValue("eventSeq"));
 
         router.route(es, "{\"type\":\"CONVERSATION_TURN_EVENT\",\"conversationId\":77,\"turnId\":55,"
                 + "\"dispatchAttempt\":1,\"conversationDeliveryProtocolVersion\":1,"
@@ -177,6 +189,51 @@ class InboundFrameRouterConversationTest {
         ordered.verify(queue).flushAndWait(1L, 55L);
         ordered.verify(eventService).persistReliableEvent(1L, 9L, 77L, 55L, 1, 2L, 0, 1,
                 "status", "{\"status\":\"running\"}");
+    }
+
+    @Test
+    void bufferedRejectionSendsNoDeliveryAck() throws Exception {
+        ExecutorSession es = mock(ExecutorSession.class);
+        when(es.getTenantId()).thenReturn(1L);
+        when(es.getExecutorId()).thenReturn(9L);
+        com.aliyun.autowonder.conversation.ConversationTurnEventService eventService =
+                mock(com.aliyun.autowonder.conversation.ConversationTurnEventService.class);
+        com.aliyun.autowonder.conversation.ConversationTurnEventIngestQueue queue =
+                mock(com.aliyun.autowonder.conversation.ConversationTurnEventIngestQueue.class);
+        when(queue.offer(any(com.aliyun.autowonder.conversation.ConversationTurnEventIngestQueue.Event.class),
+                eq(es))).thenReturn(false);
+        router.setConversationTurnEventService(eventService);
+        router.setConversationTurnEventIngestQueue(queue);
+
+        router.route(es, "{\"type\":\"CONVERSATION_TURN_EVENT\",\"conversationId\":77,\"turnId\":55,"
+                + "\"dispatchAttempt\":1,\"conversationDeliveryProtocolVersion\":1,"
+                + "\"eventSeq\":1,\"chunkIndex\":0,\"chunkCount\":1,"
+                + "\"eventType\":\"text\",\"payloadFragment\":\"hi\"}");
+
+        verify(es, never()).sendText(anyString());
+        verifyNoInteractions(eventService);
+    }
+
+    @Test
+    void reliableEventDefersWhenFlushIsNotConfirmed() throws Exception {
+        ExecutorSession es = mock(ExecutorSession.class);
+        when(es.getTenantId()).thenReturn(1L);
+        when(es.getExecutorId()).thenReturn(9L);
+        com.aliyun.autowonder.conversation.ConversationTurnEventService eventService =
+                mock(com.aliyun.autowonder.conversation.ConversationTurnEventService.class);
+        com.aliyun.autowonder.conversation.ConversationTurnEventIngestQueue queue =
+                mock(com.aliyun.autowonder.conversation.ConversationTurnEventIngestQueue.class);
+        when(queue.flushAndWait(1L, 55L)).thenReturn(false);
+        router.setConversationTurnEventService(eventService);
+        router.setConversationTurnEventIngestQueue(queue);
+
+        router.route(es, "{\"type\":\"CONVERSATION_TURN_EVENT\",\"conversationId\":77,\"turnId\":55,"
+                + "\"dispatchAttempt\":1,\"conversationDeliveryProtocolVersion\":1,"
+                + "\"eventSeq\":2,\"chunkIndex\":0,\"chunkCount\":1,"
+                + "\"eventType\":\"status\",\"payloadFragment\":\"{\\\"status\\\":\\\"running\\\"}\"}");
+
+        verifyNoInteractions(eventService);
+        verify(es, never()).sendText(anyString());
     }
 
     @Test

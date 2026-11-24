@@ -87,6 +87,13 @@ autowonder:
       timeout-minutes: ${AUTOWONDER_CONVERSATION_ELICITATION_TIMEOUT_MINUTES:30}
       delivery-timeout-seconds: ${AUTOWONDER_CONVERSATION_ELICITATION_DELIVERY_TIMEOUT_SECONDS:300}
       delivery-sweep-ms: ${AUTOWONDER_CONVERSATION_ELICITATION_DELIVERY_SWEEP_MS:1000}
+    event-buffer:
+      # 每轮事件缓冲的滑动时效：每次写入刷新，排空后立即删除；超时未落库的条目过期丢弃。
+      ttl-seconds: ${AUTOWONDER_CONVERSATION_EVENT_BUFFER_TTL_SECONDS:3600}
+      # 单轮未落库条目上限：达到即拒绝并以 1013 背压等待执行器重投，不堆进 JVM 内存。
+      max-entries-per-turn: ${AUTOWONDER_CONVERSATION_EVENT_BUFFER_MAX_ENTRIES_PER_TURN:5000}
+      # 异步落库线程数：每轮次串行、不同轮次并发；可靠事件与轮次终结还会在调用方线程同步排空，线程占用应计入 AW_DB_POOL_MAX。
+      drain-threads: ${AUTOWONDER_CONVERSATION_EVENT_BUFFER_DRAIN_THREADS:4}
   squad:
     workflow:
       cancel-interval-ms: ${AUTOWONDER_SQUAD_WORKFLOW_CANCEL_INTERVAL_MS:30000}
@@ -100,12 +107,17 @@ autowonder:
   websocket:
     inbound:
       # 入站帧线程池容量：进度帧突发打满会以 1013 关闭执行器连接。
-      # 线程总数（control + result）应低于 AW_DB_POOL_MAX，否则排空积压时会集中等待数据库连接。
+      # 线程总数（control + result + conversation）应低于 AW_DB_POOL_MAX，否则排空积压时会集中等待数据库连接。
       control-threads: ${AUTOWONDER_WEBSOCKET_INBOUND_CONTROL_THREADS:32}
       result-threads: ${AUTOWONDER_WEBSOCKET_INBOUND_RESULT_THREADS:8}
+      # 会话帧独立通道：按轮次保序，不占用 dispatch 的线程与配额；超限同样 1013 断连重投。
+      conversation-threads: ${AUTOWONDER_WEBSOCKET_INBOUND_CONVERSATION_THREADS:8}
       # 队列上限同时用于两个线程池的排队容量；单帧最大 256KB，2048 在最坏情况下约滞留 512MB。
       max-pending: ${AUTOWONDER_WEBSOCKET_INBOUND_MAX_PENDING:2048}
       max-pending-per-dispatch: ${AUTOWONDER_WEBSOCKET_INBOUND_MAX_PENDING_PER_DISPATCH:64}
+      # 会话通道配额与 dispatch 独立核算：按单帧 256KB 估算，全局 2048 最坏再增约 512MB，单轮 1024 含在全局内。
+      max-pending-conversation: ${AUTOWONDER_WEBSOCKET_INBOUND_MAX_PENDING_CONVERSATION:2048}
+      max-pending-per-turn: ${AUTOWONDER_WEBSOCKET_INBOUND_MAX_PENDING_PER_TURN:1024}
   runtime:
     recommended-version: ${AUTOWONDER_RUNTIME_RECOMMENDED_VERSION:0.3.43}
     # 全局自动升级开关：开启后服务端发现执行器版本落后就自动下发升级指令。默认开启；

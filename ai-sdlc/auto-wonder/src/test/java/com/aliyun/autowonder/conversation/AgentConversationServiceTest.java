@@ -2111,6 +2111,30 @@ class AgentConversationServiceTest {
         verify(transport, never()).send(any(), any(), any(), any(), any());
     }
 
+    /** 事件还在 Redis 缓冲里没落库：活跃集合的最后写入时间同样视为轮次存活，不能重投。 */
+    @Test
+    void bufferedRecentWriteSuppressesStaleRedelivery() {
+        Date cutoff = new Date(1_000L);
+        AgentConversationTurnDO stale = processingInboundTurn(77L);
+        when(turnDao.listStaleProcessingInboundByExecutor(1L, 9L, cutoff, 100))
+                .thenReturn(java.util.List.of(stale));
+        when(convDao.findById(1L, 77L)).thenReturn(existingConversationWithSession());
+        AgentConversationTurnEventDao eventDao = mock(AgentConversationTurnEventDao.class);
+        when(eventDao.findLatestEventTime(1L, 77L, 55L))
+                .thenReturn(new Date(System.currentTimeMillis() - 10 * 60_000L));
+        svc.setTurnEventDao(eventDao);
+        ConversationTurnEventIngestQueue queue = mock(ConversationTurnEventIngestQueue.class);
+        when(queue.latestActiveWriteMillis(1L, 55L)).thenReturn(System.currentTimeMillis());
+        svc.setConversationTurnEventIngestQueue(queue);
+
+        svc.recoverStaleTurnsForExecutor(1L, 9L, java.util.Set.of(), true, cutoff, 100);
+        commitTransactionSynchronizations();
+
+        verify(turnDao, never()).claimStaleDispatchAttemptIfProcessing(anyLong(), anyLong(),
+                anyLong(), any());
+        verify(transport, never()).send(any(), any(), any(), any(), any());
+    }
+
     /** 换执行器后的首个心跳要留 60 秒宽限，避免原执行器的回执仍在路上时被重投。 */
     @Test
     void replacedExecutorRecoveryWaitsSixtySecondGrace() {

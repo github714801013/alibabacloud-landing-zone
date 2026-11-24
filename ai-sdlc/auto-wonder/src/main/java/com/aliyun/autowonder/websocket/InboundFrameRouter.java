@@ -34,6 +34,9 @@ public class InboundFrameRouter {
     private static final java.util.Set<String> DISPATCH_FRAME_TYPES = java.util.Set.of(
             "TASK_ACK", "TASK_PROGRESS", "TASK_RESULT", "TASK_BUSY", "TASK_PAUSED",
             "TASK_PAUSE_FAILED", "TASK_GUIDANCE_ACK", "ARTIFACT_UPLOADED", "TASK_HANDOFF");
+    // 对话帧按 turn 串行处理：既要保持事件与 ACK 的到达顺序，也不能让同步落库/等待占住 WebSocket 读线程。
+    private static final java.util.Set<String> CONVERSATION_TURN_FRAME_TYPES = java.util.Set.of(
+            "CONVERSATION_TURN_EVENT", "CONVERSATION_TURN_ACK", "CONVERSATION_ELICITATION_REPLY_ACK");
 
     private final DispatchService dispatchService;
     private final ArtifactService artifactService;
@@ -204,7 +207,10 @@ public class InboundFrameRouter {
             return;
         }
         long dispatchId = json.getLongValue("dispatchId");
-        if (frameScheduler != null && dispatchId > 0 && DISPATCH_FRAME_TYPES.contains(type)) {
+        long turnId = json.getLongValue("turnId");
+        if (frameScheduler != null && turnId > 0 && CONVERSATION_TURN_FRAME_TYPES.contains(type)) {
+            frameScheduler.dispatchConversation(es, turnId, type, () -> routeFrame(es, json));
+        } else if (frameScheduler != null && dispatchId > 0 && DISPATCH_FRAME_TYPES.contains(type)) {
             frameScheduler.dispatch(es, dispatchId, type, () -> routeFrame(es, json));
         } else {
             routeFrame(es, json);
@@ -442,10 +448,12 @@ public class InboundFrameRouter {
                 break;
             case "CONVERSATION_TURN_EVENT":
                 if (conversationTurnEventService != null) {
-                    if (json.getIntValue("conversationDeliveryProtocolVersion") == 1
-                            || (json.getIntValue("dispatchAttempt") > 0
-                            && ("status".equals(json.getString("eventType"))
-                            || (json.getString("eventType") != null && json.getString("eventType").startsWith("acp_elicitation"))))) {
+                    String eventType = json.getString("eventType");
+                    // 可靠事件按类型判定：状态心跳与交互请求必须先行落库；其余分片（含 protocol v1）
+                    // 只要求写入事件缓冲即确认，由消费者异步批量落库。
+                    boolean reliable = "status".equals(eventType)
+                            || (eventType != null && eventType.startsWith("acp_elicitation"));
+                    if (reliable) {
                         if (conversationTurnEventIngestQueue != null
                                 && !conversationTurnEventIngestQueue.flushAndWait(es.getTenantId(),
                                 json.getLongValue("turnId"))) {
@@ -465,7 +473,7 @@ public class InboundFrameRouter {
                             json.getString("payloadFragment"));
                         confirmConversationDelivery(es, json);
                     } else if (conversationTurnEventIngestQueue != null) {
-                        conversationTurnEventIngestQueue.offer(
+                        boolean buffered = conversationTurnEventIngestQueue.offer(
                                 new com.aliyun.autowonder.conversation.ConversationTurnEventIngestQueue.Event(
                                         es.getTenantId(), es.getExecutorId(),
                                         json.getLongValue("conversationId"),
@@ -476,6 +484,9 @@ public class InboundFrameRouter {
                                         json.getIntValue("chunkCount"),
                                         json.getString("eventType"),
                                         json.getString("payloadFragment")), es);
+                        if (buffered) {
+                            confirmConversationDelivery(es, json);
+                        }
                     } else {
                     conversationTurnEventService.persistEvent(es.getTenantId(), es.getExecutorId(),
                             json.getLongValue("conversationId"),

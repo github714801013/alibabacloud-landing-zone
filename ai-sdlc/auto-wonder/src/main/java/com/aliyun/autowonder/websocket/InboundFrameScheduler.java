@@ -24,7 +24,7 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 
-/** Preserve dispatch frame order without holding the WebSocket reader or unrelated ACKs. */
+/** Preserve dispatch and conversation frame order without holding the WebSocket reader or unrelated ACKs. */
 @Component
 public class InboundFrameScheduler {
     private static final Logger log = LoggerFactory.getLogger(InboundFrameScheduler.class);
@@ -32,36 +32,62 @@ public class InboundFrameScheduler {
     private final Executor results;
     private final Executor controls;
     private final Executor heartbeatTasks;
+    private final Executor conversationTasks;
     private final int capacity;
     private final int perDispatchCapacity;
+    private final int conversationCapacity;
+    private final int perTurnCapacity;
     private final Map<Key, ArrayDeque<Pending>> queues = new HashMap<>();
     private int pendingCount;
     private int pendingHeartbeatCount;
+    private int pendingConversationCount;
 
     @Autowired
     public InboundFrameScheduler(SessionRegistry sessions,
             @Value("${autowonder.websocket.inbound.control-threads:32}") int controlThreads,
             @Value("${autowonder.websocket.inbound.result-threads:8}") int resultThreads,
+            @Value("${autowonder.websocket.inbound.conversation-threads:8}") int conversationThreads,
             @Value("${autowonder.websocket.inbound.max-pending:2048}") int maxPending,
-            @Value("${autowonder.websocket.inbound.max-pending-per-dispatch:64}") int maxPendingPerDispatch) {
+            @Value("${autowonder.websocket.inbound.max-pending-per-dispatch:64}") int maxPendingPerDispatch,
+            @Value("${autowonder.websocket.inbound.max-pending-conversation:2048}") int maxPendingConversation,
+            @Value("${autowonder.websocket.inbound.max-pending-per-turn:1024}") int maxPendingPerTurn) {
         this(sessions, pool("ws-result", resultThreads, maxPending),
                 pool("ws-control", controlThreads, maxPending),
-                ThreadPoolManager.asyncTaskThreadPool, maxPending, maxPendingPerDispatch);
+                ThreadPoolManager.asyncTaskThreadPool,
+                pool("ws-conversation", conversationThreads, maxPendingConversation),
+                maxPending, maxPendingPerDispatch, maxPendingConversation, maxPendingPerTurn);
     }
 
     InboundFrameScheduler(SessionRegistry sessions, Executor results, Executor controls,
             Executor heartbeatTasks, int capacity) {
-        this(sessions, results, controls, heartbeatTasks, capacity, capacity);
+        this(sessions, results, controls, heartbeatTasks, controls, capacity, capacity, capacity, capacity);
     }
 
     InboundFrameScheduler(SessionRegistry sessions, Executor results, Executor controls,
             Executor heartbeatTasks, int capacity, int perDispatchCapacity) {
+        this(sessions, results, controls, heartbeatTasks, controls, capacity, perDispatchCapacity,
+                capacity, capacity);
+    }
+
+    InboundFrameScheduler(SessionRegistry sessions, Executor results, Executor controls,
+            Executor heartbeatTasks, int capacity, int perDispatchCapacity,
+            int conversationCapacity, int perTurnCapacity) {
+        this(sessions, results, controls, heartbeatTasks, controls, capacity, perDispatchCapacity,
+                conversationCapacity, perTurnCapacity);
+    }
+
+    InboundFrameScheduler(SessionRegistry sessions, Executor results, Executor controls,
+            Executor heartbeatTasks, Executor conversationTasks, int capacity, int perDispatchCapacity,
+            int conversationCapacity, int perTurnCapacity) {
         this.sessions = sessions;
         this.results = results;
         this.controls = controls;
         this.heartbeatTasks = heartbeatTasks;
+        this.conversationTasks = conversationTasks;
         this.capacity = Math.max(1, capacity);
         this.perDispatchCapacity = Math.max(1, perDispatchCapacity);
+        this.conversationCapacity = Math.max(1, conversationCapacity);
+        this.perTurnCapacity = Math.max(1, perTurnCapacity);
     }
 
     private static ExecutorService pool(String name, int threads, int queueCapacity) {
@@ -76,11 +102,18 @@ public class InboundFrameScheduler {
     }
 
     public void dispatch(ExecutorSession session, long dispatchId, String type, Runnable action) {
-        submit(new Key(session.getTenantId(), dispatchId, false), session, type, action);
+        submit(new Key(session.getTenantId(), dispatchId, false, false), session, type, action);
+    }
+
+    /**
+     * 同一轮次的对话帧串行执行：事件与 ACK 保持到达顺序，同时不再占住 WebSocket 读线程。
+     */
+    public void dispatchConversation(ExecutorSession session, long turnId, String type, Runnable action) {
+        submit(new Key(session.getTenantId(), turnId, false, true), session, type, action);
     }
 
     public void heartbeat(ExecutorSession session, Runnable action) {
-        submit(new Key(session.getTenantId(), session.getExecutorId(), true), session, "HEARTBEAT", action);
+        submit(new Key(session.getTenantId(), session.getExecutorId(), true, false), session, "HEARTBEAT", action);
     }
 
     private void submit(Key key, ExecutorSession session, String type, Runnable action) {
@@ -107,29 +140,46 @@ public class InboundFrameScheduler {
                     return;
                 }
             }
-            // Trace pressure must not consume admission for unrelated heartbeat side effects.
-            int pending = key.heartbeat() ? pendingHeartbeatCount : pendingCount;
-            if (pending >= capacity) {
-                if (progress) {
-                    log.debug("inbound progress dropped executorId={} dispatchId={} pending={}",
-                            session.getExecutorId(), key.id(), pending);
-                    return;
+            if (key.conversation()) {
+                // 对话帧必须保序且不可丢：超过上限时关闭会话，由执行器重投（事件唯一键幂等）。
+                if (pendingConversationCount >= conversationCapacity) {
+                    rejectReason = "CONVERSATION_GLOBAL";
+                } else if (queue != null && queue.size() >= perTurnCapacity) {
+                    rejectReason = "CONVERSATION_TURN";
+                } else {
+                    if (queue == null) {
+                        queue = new ArrayDeque<>();
+                        queues.put(key, queue);
+                        start = true;
+                    }
+                    queue.addLast(item);
+                    changePendingCount(key, 1);
                 }
-                rejectReason = "GLOBAL";
-            } else if (!key.heartbeat() && queue != null && queue.size() >= perDispatchCapacity) {
-                // One slow dispatch must not exhaust the shared admission for every session.
-                rejectReason = "DISPATCH";
             } else {
-                if (queue == null) {
-                    queue = new ArrayDeque<>();
-                    queues.put(key, queue);
-                    start = true;
+                // Trace pressure must not consume admission for unrelated heartbeat side effects.
+                int pending = key.heartbeat() ? pendingHeartbeatCount : pendingCount;
+                if (pending >= capacity) {
+                    if (progress) {
+                        log.debug("inbound progress dropped executorId={} dispatchId={} pending={}",
+                                session.getExecutorId(), key.id(), pending);
+                        return;
+                    }
+                    rejectReason = "GLOBAL";
+                } else if (!key.heartbeat() && queue != null && queue.size() >= perDispatchCapacity) {
+                    // One slow dispatch must not exhaust the shared admission for every session.
+                    rejectReason = "DISPATCH";
+                } else {
+                    if (queue == null) {
+                        queue = new ArrayDeque<>();
+                        queues.put(key, queue);
+                        start = true;
+                    }
+                    queue.addLast(item);
+                    changePendingCount(key, 1);
                 }
-                queue.addLast(item);
-                changePendingCount(key, 1);
             }
         }
-        if (rejectReason != null) reject(session, key.heartbeat() ? 0 : key.id(), type, rejectReason);
+        if (rejectReason != null) reject(session, key, type, rejectReason);
         else if (start) schedule(key, item);
     }
 
@@ -153,6 +203,7 @@ public class InboundFrameScheduler {
     private void schedule(Key key, Pending item) {
         try {
             Executor executor = key.heartbeat() ? heartbeatTasks
+                    : key.conversation() ? conversationTasks
                     : ("TASK_RESULT".equals(item.type()) ? results : controls);
             executor.execute(
                     MdcAwareThreadPoolExecutor.wrap(() -> run(key, item), item.context()));
@@ -164,7 +215,7 @@ public class InboundFrameScheduler {
                 changePendingCount(key, -rejected.size());
             }
             rejected.stream().map(Pending::session).distinct()
-                    .forEach(session -> reject(session, key.heartbeat() ? 0 : key.id(), item.type(), "EXECUTOR"));
+                    .forEach(session -> reject(session, key, item.type(), "EXECUTOR"));
         }
     }
 
@@ -173,13 +224,13 @@ public class InboundFrameScheduler {
         try {
             if (isCurrent(item.session())) item.action().run();
         } catch (RuntimeException failure) {
-            log.error("inbound frame handling failed executorId={} dispatchId={} type={}",
-                    item.session().getExecutorId(), key.heartbeat() ? 0 : key.id(), item.type(), failure);
+            log.error("inbound frame handling failed executorId={} {}={} type={}",
+                    item.session().getExecutorId(), keyLabel(key), key.heartbeat() ? 0 : key.id(), item.type(), failure);
         } finally {
             long finished = System.nanoTime();
             if ("TASK_RESULT".equals(item.type()) || finished - started >= TimeUnit.SECONDS.toNanos(1)) {
-                log.info("inbound frame finished executorId={} dispatchId={} type={} queueMs={} processingMs={}",
-                        item.session().getExecutorId(), key.heartbeat() ? 0 : key.id(), item.type(),
+                log.info("inbound frame finished executorId={} {}={} type={} queueMs={} processingMs={}",
+                        item.session().getExecutorId(), keyLabel(key), key.heartbeat() ? 0 : key.id(), item.type(),
                         TimeUnit.NANOSECONDS.toMillis(started - item.enqueued()),
                         TimeUnit.NANOSECONDS.toMillis(finished - started));
             }
@@ -197,13 +248,18 @@ public class InboundFrameScheduler {
 
     private void changePendingCount(Key key, int delta) {
         if (key.heartbeat()) pendingHeartbeatCount += delta;
+        else if (key.conversation()) pendingConversationCount += delta;
         else pendingCount += delta;
     }
 
-    private void reject(ExecutorSession session, long dispatchId, String type, String reason) {
+    private static String keyLabel(Key key) {
+        return key.conversation() ? "turnId" : "dispatchId";
+    }
+
+    private void reject(ExecutorSession session, Key key, String type, String reason) {
         // No receipt: both legacy and V2 Runtime keep unacknowledged results for replay.
-        log.warn("inbound frame queue full executorId={} dispatchId={} type={} reason={}; closing session for replay",
-                session.getExecutorId(), dispatchId, type, reason);
+        log.warn("inbound frame queue full executorId={} {}={} type={} reason={}; closing session for replay",
+                session.getExecutorId(), keyLabel(key), key.heartbeat() ? 0 : key.id(), type, reason);
         try {
             session.getSession().close(new CloseReason(CloseReason.CloseCodes.getCloseCode(1013),
                     "inbound processing busy; retry"));
@@ -216,9 +272,10 @@ public class InboundFrameScheduler {
     public void shutdown() {
         if (results instanceof ExecutorService service) service.shutdown();
         if (controls instanceof ExecutorService service) service.shutdown();
+        if (conversationTasks instanceof ExecutorService service) service.shutdown();
     }
 
-    private record Key(long tenantId, long id, boolean heartbeat) {}
+    private record Key(long tenantId, long id, boolean heartbeat, boolean conversation) {}
     private record Pending(ExecutorSession session, String type, Runnable action, long enqueued,
                            Map<String, String> context) {}
 }

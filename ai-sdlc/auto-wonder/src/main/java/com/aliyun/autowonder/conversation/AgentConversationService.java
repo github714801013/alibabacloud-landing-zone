@@ -1338,7 +1338,13 @@ public class AgentConversationService {
             if (turnEventDao != null) {
                 Date latestEventAt = turnEventDao.findLatestEventTime(stale.getTenantId(),
                         stale.getConversationId(), stale.getId());
-                if (latestEventAt != null && System.currentTimeMillis() - latestEventAt.getTime()
+                long latestEventMillis = latestEventAt == null ? 0L : latestEventAt.getTime();
+                // 事件异步落库时数据库可能暂时看不到最新分片：活跃集合的最后写入时间同样代表轮次存活。
+                long latestBufferedMillis = conversationTurnEventIngestQueue == null ? 0L
+                        : conversationTurnEventIngestQueue.latestActiveWriteMillis(
+                                stale.getTenantId(), stale.getId());
+                long latestMillis = Math.max(latestEventMillis, latestBufferedMillis);
+                if (latestMillis > 0L && System.currentTimeMillis() - latestMillis
                         < TURN_EVENT_FRESHNESS_MILLIS) {
                     log.info("conversation stale turn recovery skipped: recent events "
                                     + "conversationId={} turnId={}",

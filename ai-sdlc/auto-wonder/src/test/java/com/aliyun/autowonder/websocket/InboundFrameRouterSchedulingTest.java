@@ -119,6 +119,44 @@ class InboundFrameRouterSchedulingTest {
     }
 
     @Test
+    void reliableConversationFrameIsHandledOffTheWebSocketReader() throws Exception {
+        var router = new InboundFrameRouter(mock(DispatchService.class), mock(ArtifactService.class),
+                mock(PresenceManager.class), mock(HandoffService.class), mock(DispatchDrainScheduler.class),
+                mock(DispatchPauseService.class), mock(GuidanceService.class));
+        var conversations = mock(com.aliyun.autowonder.conversation.ConversationTurnEventService.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(router, "conversationTurnEventService", conversations);
+        var websocket = mock(Session.class);
+        when(websocket.getId()).thenReturn("session");
+        when(websocket.isOpen()).thenReturn(true);
+        var session = new ExecutorSession(1, 10, 100, websocket);
+        var registry = mock(SessionRegistry.class);
+        when(registry.isCurrent(session)).thenReturn(true);
+        var persistStarted = new CountDownLatch(1);
+        var releasePersist = new CountDownLatch(1);
+        doAnswer(call -> {
+            persistStarted.countDown();
+            assertTrue(releasePersist.await(10, TimeUnit.SECONDS));
+            return null;
+        }).when(conversations).persistReliableEvent(anyLong(), anyLong(), anyLong(), anyLong(),
+                anyInt(), anyLong(), anyInt(), anyInt(), anyString(), anyString());
+        try (var reader = Executors.newSingleThreadExecutor();
+             var controls = Executors.newSingleThreadExecutor()) {
+            router.setFrameScheduler(new InboundFrameScheduler(registry, controls, controls, controls, 16));
+            var routeReturned = reader.submit(() -> router.route(session,
+                    "{\"type\":\"CONVERSATION_TURN_EVENT\",\"conversationId\":1,\"turnId\":55,"
+                            + "\"dispatchAttempt\":1,\"eventSeq\":1,\"chunkIndex\":0,\"chunkCount\":1,"
+                            + "\"eventType\":\"status\",\"payloadFragment\":\"{}\"}"));
+            // 读线程只负责入队，落库阻塞必须发生在调度线程上。
+            routeReturned.get(2, TimeUnit.SECONDS);
+            assertTrue(persistStarted.await(2, TimeUnit.SECONDS));
+        } finally {
+            releasePersist.countDown();
+        }
+        verify(conversations, timeout(2000)).persistReliableEvent(anyLong(), anyLong(), anyLong(), anyLong(),
+                anyInt(), anyLong(), anyInt(), anyInt(), anyString(), anyString());
+    }
+
+    @Test
     void replacedConnectionReceivesNoLateResultAckAndReplayUsesTheNewConnection() throws Exception {
         var coordinator = mock(DispatchResultCoordinator.class);
         var router = new InboundFrameRouter(mock(DispatchService.class), mock(ArtifactService.class),
