@@ -411,8 +411,12 @@ public class InboundFrameRouter {
                 }
                 break;
             case "CONVERSATION_TURN_ACK":
-                if (conversationTurnEventIngestQueue != null) {
-                    conversationTurnEventIngestQueue.flushAndWait(es.getTenantId(), json.getLongValue("turnId"));
+                if (conversationTurnEventIngestQueue != null
+                        && !conversationTurnEventIngestQueue.flushAndWait(es.getTenantId(),
+                        json.getLongValue("turnId"))) {
+                    log.warn("conversation turn ack deferred: pending events not persisted tenantId={} turnId={}",
+                            es.getTenantId(), json.getLongValue("turnId"));
+                    break;
                 }
                 if (answerDeliveryService != null) answerDeliveryService.turnTerminated(es.getTenantId(),es.getExecutorId(),
                         json.getLongValue("conversationId"),json.getLongValue("turnId"),json.getIntValue("dispatchAttempt"),json.getString("status"));
@@ -442,11 +446,15 @@ public class InboundFrameRouter {
                             || (json.getIntValue("dispatchAttempt") > 0
                             && ("status".equals(json.getString("eventType"))
                             || (json.getString("eventType") != null && json.getString("eventType").startsWith("acp_elicitation"))))) {
-                        if (conversationTurnEventIngestQueue != null) {
-                            conversationTurnEventIngestQueue.flushAndWait(es.getTenantId(),
-                                    json.getLongValue("turnId"));
+                        if (conversationTurnEventIngestQueue != null
+                                && !conversationTurnEventIngestQueue.flushAndWait(es.getTenantId(),
+                                json.getLongValue("turnId"))) {
+                            log.warn("reliable conversation event deferred: pending events not persisted "
+                                            + "tenantId={} turnId={}",
+                                    es.getTenantId(), json.getLongValue("turnId"));
+                            break;
                         }
-                        conversationTurnEventService.persistReliableEvent(es.getTenantId(), es.getExecutorId(),
+                    conversationTurnEventService.persistReliableEvent(es.getTenantId(), es.getExecutorId(),
                             json.getLongValue("conversationId"),
                             json.getLongValue("turnId"),
                             json.getIntValue("dispatchAttempt"),
@@ -469,15 +477,15 @@ public class InboundFrameRouter {
                                         json.getString("eventType"),
                                         json.getString("payloadFragment")), es);
                     } else {
-                        conversationTurnEventService.persistEvent(es.getTenantId(), es.getExecutorId(),
-                                json.getLongValue("conversationId"),
-                                json.getLongValue("turnId"),
-                                json.getIntValue("dispatchAttempt"),
-                                json.getLongValue("eventSeq"),
-                                json.getIntValue("chunkIndex"),
-                                json.getIntValue("chunkCount"),
-                                json.getString("eventType"),
-                                json.getString("payloadFragment"));
+                    conversationTurnEventService.persistEvent(es.getTenantId(), es.getExecutorId(),
+                            json.getLongValue("conversationId"),
+                            json.getLongValue("turnId"),
+                            json.getIntValue("dispatchAttempt"),
+                            json.getLongValue("eventSeq"),
+                            json.getIntValue("chunkIndex"),
+                            json.getIntValue("chunkCount"),
+                            json.getString("eventType"),
+                            json.getString("payloadFragment"));
                     }
                 }
                 break;

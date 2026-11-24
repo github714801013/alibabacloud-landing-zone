@@ -158,6 +158,7 @@ class InboundFrameRouterConversationTest {
                 mock(com.aliyun.autowonder.conversation.ConversationTurnEventIngestQueue.class);
         router.setConversationTurnEventService(eventService);
         router.setConversationTurnEventIngestQueue(queue);
+        when(queue.flushAndWait(1L, 55L)).thenReturn(true);
 
         router.route(es, "{\"type\":\"CONVERSATION_TURN_EVENT\",\"conversationId\":77,\"turnId\":55,"
                 + "\"dispatchAttempt\":1,\"eventSeq\":1,\"chunkIndex\":0,\"chunkCount\":1,"

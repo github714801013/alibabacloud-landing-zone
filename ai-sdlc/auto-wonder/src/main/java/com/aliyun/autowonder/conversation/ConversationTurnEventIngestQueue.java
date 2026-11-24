@@ -40,6 +40,7 @@ public class ConversationTurnEventIngestQueue {
     private static final int DRAIN_THREADS = 4;
     private static final int MAX_BATCH_ATTEMPTS = 3;
     private static final long RETRY_BACKOFF_MS = 1000L;
+    static final long FLUSH_WAIT_TIMEOUT_MS = 5000L;
 
     private final ConversationTurnEventService eventService;
     private final ScheduledExecutorService scheduler;
@@ -88,32 +89,43 @@ public class ConversationTurnEventIngestQueue {
         }
     }
 
-    /** 同步落库该 turn 的全部待写事件；reliable 事件与轮次终结前调用。 */
-    public void flushAndWait(long tenantId, long turnId) {
+    /**
+     * 同步落库该 turn 的全部待写事件；reliable 事件与轮次终结前调用。
+     *
+     * @return 是否确认落库；批次失败、等待超时或中断时为 {@code false}，调用方不得继续
+     *         ACK/终结，应交给执行器重投与后续扫描重试。
+     */
+    public boolean flushAndWait(long tenantId, long turnId) {
         Key key = new Key(tenantId, turnId);
         TurnQueue turn = turns.get(key);
         if (turn == null) {
-            return;
+            return true;
         }
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(FLUSH_WAIT_TIMEOUT_MS);
         while (true) {
             synchronized (turn) {
                 if (turn.draining) {
+                    long remaining = deadline - System.nanoTime();
+                    if (remaining <= 0) {
+                        log.warn("conversation event flush wait timed out tenantId={} turnId={}",
+                                tenantId, turnId);
+                        return false;
+                    }
                     try {
-                        turn.wait();
+                        turn.wait(Math.max(1L, TimeUnit.NANOSECONDS.toMillis(remaining)));
                     } catch (InterruptedException interrupted) {
                         Thread.currentThread().interrupt();
-                        return;
+                        return false;
                     }
                     continue;
                 }
                 if (turn.pending.isEmpty()) {
-                    return;
+                    return true;
                 }
                 turn.draining = true;
                 turn.drainScheduled = true;
             }
-            drainLoop(key, turn);
-            return;
+            return drainLoop(key, turn);
         }
     }
 
@@ -146,42 +158,44 @@ public class ConversationTurnEventIngestQueue {
         drainLoop(key, turn);
     }
 
-    private void drainLoop(Key key, TurnQueue turn) {
+    /**
+     * @return 全部待写事件是否已确认落库；失败时丢弃尾部并关闭连接等待重投。
+     */
+    private boolean drainLoop(Key key, TurnQueue turn) {
         boolean failed = false;
-        while (true) {
-            List<Pending> batch;
-            synchronized (turn) {
-                if (turn.pending.isEmpty()) {
-                    turn.draining = false;
-                    turn.drainScheduled = false;
+        try {
+            while (true) {
+                List<Pending> batch;
+                synchronized (turn) {
+                    if (turn.pending.isEmpty()) {
+                        return true;
+                    }
+                    batch = new ArrayList<>(Math.min(BATCH_SIZE, turn.pending.size()));
+                    for (int i = 0; i < BATCH_SIZE && !turn.pending.isEmpty(); i++) {
+                        batch.add(turn.pending.pollFirst());
+                    }
                     turn.immediateRequested = false;
-                    turn.notifyAll();
-                    break;
                 }
-                batch = new ArrayList<>(Math.min(BATCH_SIZE, turn.pending.size()));
-                for (int i = 0; i < BATCH_SIZE && !turn.pending.isEmpty(); i++) {
-                    batch.add(turn.pending.pollFirst());
+                if (!writeBatch(key, turn, batch)) {
+                    failed = true;
+                    return false;
                 }
-                turn.immediateRequested = false;
             }
-            if (!writeBatch(key, turn, batch)) {
-                failed = true;
-                break;
-            }
-        }
-        if (failed) {
-            int dropped;
+        } finally {
+            int dropped = 0;
             long minPendingSeq = Long.MAX_VALUE;
             long maxPendingSeq = Long.MIN_VALUE;
             ExecutorSession droppedTail = null;
             synchronized (turn) {
-                dropped = turn.pending.size();
-                for (Pending pending : turn.pending) {
-                    minPendingSeq = Math.min(minPendingSeq, pending.event().eventSeq());
-                    maxPendingSeq = Math.max(maxPendingSeq, pending.event().eventSeq());
-                    droppedTail = pending.session();
+                if (failed) {
+                    dropped = turn.pending.size();
+                    for (Pending pending : turn.pending) {
+                        minPendingSeq = Math.min(minPendingSeq, pending.event().eventSeq());
+                        maxPendingSeq = Math.max(maxPendingSeq, pending.event().eventSeq());
+                        droppedTail = pending.session();
+                    }
+                    turn.pending.clear();
                 }
-                turn.pending.clear();
                 turn.draining = false;
                 turn.drainScheduled = false;
                 turn.immediateRequested = false;
@@ -194,18 +208,18 @@ public class ConversationTurnEventIngestQueue {
                 // 跨执行器恢复后，待写尾部可能是新连接的事件；只关失败批次的连接会让它们无重投。
                 closeSession(droppedTail, "conversation event pending dropped; retry");
             }
-        }
-        turns.computeIfPresent(key, (ignored, existing) -> {
-            if (existing != turn) {
-                return existing;
-            }
-            synchronized (turn) {
-                if (turn.pending.isEmpty() && !turn.draining && !turn.drainScheduled) {
-                    return null;
+            turns.computeIfPresent(key, (ignored, existing) -> {
+                if (existing != turn) {
+                    return existing;
                 }
-            }
-            return turn;
-        });
+                synchronized (turn) {
+                    if (turn.pending.isEmpty() && !turn.draining && !turn.drainScheduled) {
+                        return null;
+                    }
+                }
+                return turn;
+            });
+        }
     }
 
     /**

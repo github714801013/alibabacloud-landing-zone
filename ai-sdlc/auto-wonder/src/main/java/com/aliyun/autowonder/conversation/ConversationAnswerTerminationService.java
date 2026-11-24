@@ -14,12 +14,19 @@ public class ConversationAnswerTerminationService {
     private final AgentConversationService conversations;
     private final AgentConversationElicitationDao dao;
     private final ConversationTransport transport;
+    private ConversationTurnEventIngestQueue eventIngestQueue;
     public ConversationAnswerTerminationService(@Lazy AgentConversationService conversations,
             AgentConversationElicitationDao dao, ConversationTransport transport) {
         this.conversations=conversations;this.dao=dao;this.transport=transport;
     }
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setEventIngestQueue(ConversationTurnEventIngestQueue eventIngestQueue) {
+        this.eventIngestQueue=eventIngestQueue;
+    }
     @Transactional(propagation=Propagation.REQUIRES_NEW)
     public void terminate(AgentConversationElicitationDO row) {
+        // 待写事件未确认落库时不终结：交给执行器重投与后续扫描重试，避免终态后批次被拒而丢事件。
+        if (eventIngestQueue!=null && !eventIngestQueue.flushAndWait(row.getTenantId(),row.getTurnId())) return;
         conversations.acknowledgeTurn(row.getTenantId(),row.getExecutorId(),row.getConversationId(),row.getTurnId(),
                 "FAILED",SystemMessages.render("conversation.answer_delivery_unconfirmed",null,
                         "Answer delivery could not be confirmed"),null,null,null,row.getDispatchAttempt());

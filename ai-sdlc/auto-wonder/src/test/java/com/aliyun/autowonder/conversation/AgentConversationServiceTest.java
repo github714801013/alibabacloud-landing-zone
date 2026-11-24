@@ -3784,6 +3784,7 @@ class AgentConversationServiceTest {
         AgentConversationService target = serviceWithPresence(presence);
         target.setCancelAckTimeoutSeconds(3600);
         ConversationTurnEventIngestQueue queue = mock(ConversationTurnEventIngestQueue.class);
+        when(queue.flushAndWait(1L, 55L)).thenReturn(true);
         target.setConversationTurnEventIngestQueue(queue);
         AgentConversationDO conv = existingConversationWithSession();
         when(convDao.findById(1L, 77L)).thenReturn(conv);
@@ -3799,9 +3800,30 @@ class AgentConversationServiceTest {
     }
 
     @Test
+    void cancelAckTimeoutDefersFinalizationWhenFlushFails() {
+        ConversationRuntimePresence presence = mock(ConversationRuntimePresence.class);
+        when(presence.isExecutorOnline(9L)).thenReturn(true);
+        when(presence.supportsProtocolFeature(eq(9L), anyString())).thenReturn(true);
+        AgentConversationService target = serviceWithPresence(presence);
+        target.setCancelAckTimeoutSeconds(3600);
+        ConversationTurnEventIngestQueue queue = mock(ConversationTurnEventIngestQueue.class);
+        when(queue.flushAndWait(1L, 55L)).thenReturn(false);
+        target.setConversationTurnEventIngestQueue(queue);
+        AgentConversationDO conv = existingConversationWithSession();
+        when(convDao.findById(1L, 77L)).thenReturn(conv);
+        when(turnDao.findByConversationTurn(1L, 77L, 55L)).thenReturn(processingInboundTurn(77L));
+        target.requestTurnCancel(1L, 77L, 55L);
+        commitTransactionSynchronizations();
+        target.handleCancelAckTimeout(conv, 55L);
+        // 未确认落库时不得终结：轮次保持 PROCESSING，等待执行器重投与后续扫描重试。
+        verify(turnDao, never()).updateInboundStatusIfProcessing(1L, 77L, 55L, "CANCELED", null);
+    }
+
+    @Test
     void questionExpiryTimeoutFlushesPendingTurnEventsBeforeLockingTurn() {
         AgentConversationService target = serviceWithPresence(mock(ConversationRuntimePresence.class));
         ConversationTurnEventIngestQueue queue = mock(ConversationTurnEventIngestQueue.class);
+        when(queue.flushAndWait(1L, 55L)).thenReturn(true);
         target.setConversationTurnEventIngestQueue(queue);
         AgentConversationDO conv = existingConversationWithSession();
         AgentConversationTurnDO turn = processingInboundTurn(77L);

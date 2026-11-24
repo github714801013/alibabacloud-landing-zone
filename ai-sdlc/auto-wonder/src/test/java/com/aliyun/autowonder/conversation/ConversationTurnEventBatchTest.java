@@ -220,7 +220,7 @@ class ConversationTurnEventBatchTest {
 
         queue.offer(event(1L, 1, 0, 1, "text", "{\"a\":1}"), executorSession);
         queue.offer(event(2L, 1, 0, 1, "text", "{\"a\":2}"), executorSession);
-        queue.flushAndWait(1L, 20L);
+        assertTrue(queue.flushAndWait(1L, 20L));
 
         verify(service, times(1)).persistBatch(anyList());
         verify(service).persistBatch(argThat(events -> events.size() == 2));
@@ -306,7 +306,8 @@ class ConversationTurnEventBatchTest {
 
             assertTrue(written.await(2, TimeUnit.SECONDS), "50ms 定时批次应刷写单条待写事件");
             long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt);
-            assertTrue(elapsedMs < 1000, "50ms 定时批次不应超过 1s，实际 " + elapsedMs + "ms");
+            // 验收上界 100ms；测试额外留出 CI 线程调度余量，但须能拦住退化为 1s 批次的回归。
+            assertTrue(elapsedMs < 300, "50ms 定时批次不应超过 300ms，实际 " + elapsedMs + "ms");
             verify(service).persistBatch(argThat(events -> events.size() == 1));
         } finally {
             scheduler.shutdownNow();
@@ -338,10 +339,10 @@ class ConversationTurnEventBatchTest {
         });
         waiting.start();
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
-        while (waiting.getState() != Thread.State.WAITING && System.nanoTime() < deadline) {
+        while (waiting.getState() != Thread.State.TIMED_WAITING && System.nanoTime() < deadline) {
             Thread.sleep(10);
         }
-        assertEquals(Thread.State.WAITING, waiting.getState(), "第二个 flush 应等待在途批次");
+        assertEquals(Thread.State.TIMED_WAITING, waiting.getState(), "第二个 flush 应等待在途批次");
         assertFalse(secondReturned.await(100, TimeUnit.MILLISECONDS), "flushAndWait 不应越过在途批次返回");
 
         release.countDown();
@@ -349,6 +350,36 @@ class ConversationTurnEventBatchTest {
         waiting.join(5000);
         assertTrue(secondReturned.await(1, TimeUnit.SECONDS), "在途批次结束后 flushAndWait 应返回");
         verify(service, times(1)).persistBatch(anyList());
+    }
+
+    @Test
+    void flushAndWaitTimesOutWhenInFlightBatchDoesNotFinish() throws Exception {
+        ConversationTurnEventService service = mock(ConversationTurnEventService.class);
+        CountDownLatch writing = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        doAnswer(invocation -> {
+            writing.countDown();
+            release.await(30, TimeUnit.SECONDS);
+            return null;
+        }).when(service).persistBatch(anyList());
+        ConversationTurnEventIngestQueue queue = new ConversationTurnEventIngestQueue(
+                service, mock(ScheduledExecutorService.class));
+
+        queue.offer(event(1L), mock(ExecutorSession.class));
+        Thread draining = new Thread(() -> queue.flushAndWait(1L, 20L));
+        draining.setDaemon(true);
+        draining.start();
+        try {
+            assertTrue(writing.await(2, TimeUnit.SECONDS), "首个 flush 应进入批次写入");
+            long startedAt = System.nanoTime();
+            assertFalse(queue.flushAndWait(1L, 20L), "在途批次超过等待上限时不应继续等待");
+            long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt);
+            assertTrue(elapsedMs >= ConversationTurnEventIngestQueue.FLUSH_WAIT_TIMEOUT_MS - 200,
+                    "应等待到超时上限，实际 " + elapsedMs + "ms");
+        } finally {
+            release.countDown();
+        }
+        draining.join(5000);
     }
 
     @Test
@@ -380,7 +411,7 @@ class ConversationTurnEventBatchTest {
         when(executorSession.getSession()).thenReturn(wsSession);
 
         queue.offer(event(1L, 1, 0, 1, "text", "{\"a\":1}"), executorSession);
-        queue.flushAndWait(1L, 20L);
+        assertFalse(queue.flushAndWait(1L, 20L), "批次重试耗尽后 flushAndWait 应返回 false");
 
         verify(service, times(3)).persistBatch(anyList());
         verify(wsSession, times(1)).close(any(CloseReason.class));
