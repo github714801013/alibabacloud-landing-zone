@@ -137,9 +137,11 @@
           AND status IN ('EXPIRED','CANCELED','ANSWERED','DECLINED')
         ORDER BY id DESC LIMIT 100
     </select>
+    <!-- 平台工具提问卡的答案与最终回复同轮完成，不计入「同轮提问」的回复通知抑制。 -->
     <select id="countByTurn" resultType="int">
         SELECT COUNT(*) FROM agent_conversation_elicitation
         WHERE tenant_id = #{tenantId} AND turn_id = #{turnId}
+          AND request_id NOT LIKE #{excludedRequestIdPrefix}
     </select>
     <select id="listAnswerDeliveries" resultMap="BaseResultMap">
         SELECT * FROM (

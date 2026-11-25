@@ -1033,7 +1033,7 @@ class AgentConversationServiceTest {
         when(turnDao.insert(any())).thenReturn(1);
         var publisher = mock(org.springframework.context.ApplicationEventPublisher.class);
         var elicitations = mock(AgentConversationElicitationDao.class);
-        when(elicitations.countByTurn(1L, 55L)).thenReturn(0);
+        when(elicitations.countByTurn(1L, 55L, ConversationQuestionToolService.REQUEST_ID_PREFIX + "%")).thenReturn(0);
         svc.setEventPublisher(publisher);
         svc.setElicitationDao(elicitations);
 
@@ -1061,13 +1061,30 @@ class AgentConversationServiceTest {
         when(turnDao.insert(any())).thenReturn(1);
         var publisher = mock(org.springframework.context.ApplicationEventPublisher.class);
         var elicitations = mock(AgentConversationElicitationDao.class);
-        when(elicitations.countByTurn(1L, 55L)).thenReturn(1);
+        when(elicitations.countByTurn(1L, 55L, ConversationQuestionToolService.REQUEST_ID_PREFIX + "%")).thenReturn(1);
         svc.setEventPublisher(publisher);
         svc.setElicitationDao(elicitations);
 
         svc.acknowledgeTurn(1L, 9L, 77L, 55L, "SUCCESS", null, "reply-md", null);
 
         verifyNoInteractions(publisher);
+    }
+
+    /** 执行器结束轮次后，挂起的提问卡已无人接收：必须立即结算并唤醒工具等待线程。 */
+    @Test
+    void ackTerminalSettlesPendingQuestionsSoTheToolWaitEndsImmediately() {
+        ConversationElicitationService elicitationService = mock(ConversationElicitationService.class);
+        svc.setConversationElicitationService(elicitationService);
+        java.util.List<AgentConversationElicitationDO> settled = canceledCards();
+        when(elicitationService.settlePendingForTurn(1L, 77L, 55L)).thenReturn(settled);
+        stubAckSettlement(existingConversationWithSession(), "SUCCESS", 701L);
+
+        svc.acknowledgeTurn(1L, 9L, 77L, 55L, "SUCCESS", null, "reply-md", null);
+
+        verify(elicitationService).settlePendingForTurn(1L, 77L, 55L);
+        verify(elicitationService, never()).notifyCanceled(any());
+        commitTransactionSynchronizations();
+        verify(elicitationService).notifyCanceled(settled);
     }
 
     @Test

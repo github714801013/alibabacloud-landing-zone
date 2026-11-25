@@ -45,8 +45,17 @@ class AgentConversationElicitationDaoTest {
         answered.setStatus("ANSWERED");
         dao.insertIfAbsent(answered);
 
-        assertEquals(2, dao.countByTurn(TENANT, TURN));
-        assertEquals(0, dao.countByTurn(TENANT, TURN + 1));
+        assertEquals(2, dao.countByTurn(TENANT, TURN, ConversationQuestionToolService.REQUEST_ID_PREFIX + "%"));
+        assertEquals(0, dao.countByTurn(TENANT, TURN + 1, ConversationQuestionToolService.REQUEST_ID_PREFIX + "%"));
+    }
+
+    /** 平台提问工具的答案与最终回复同轮完成，不能算作需要单独通知的“同轮提问”。 */
+    @Test
+    void countByTurnIgnoresPlatformToolQuestions() {
+        dao.insertIfAbsent(pending("mcpq-tool"));
+        dao.insertIfAbsent(pending("acp-card"));
+
+        assertEquals(1, dao.countByTurn(TENANT, TURN, ConversationQuestionToolService.REQUEST_ID_PREFIX + "%"));
     }
 
     @Test

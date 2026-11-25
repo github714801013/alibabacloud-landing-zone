@@ -741,6 +741,8 @@ public class AgentConversationService {
                         conversationId, turnId);
                 return null;
             }
+            // 轮次已终结，同轮挂起的提问不可能再被回答：立即结算并唤醒平台侧工具等待线程。
+            cancelPendingElicitations(tenantId, conversationId, turnId);
             // 只有真正终结了本轮（finalized == 1）才记录用量，重放/被拒绝的 ACK 不重复计费。
             if (conversationUsageService != null) {
                 conversationUsageService.recordTurnUsage(tenantId, conv, turnId, usage);
@@ -844,7 +846,8 @@ public class AgentConversationService {
     }
 
     private boolean hasQuestionInTurn(Long tenantId, Long turnId) {
-        return elicitationDao != null && elicitationDao.countByTurn(tenantId, turnId) > 0;
+        return elicitationDao != null && elicitationDao.countByTurn(tenantId, turnId,
+                ConversationQuestionToolService.REQUEST_ID_PREFIX + "%") > 0;
     }
 
     private void publishCanceledStatusEvent(Long tenantId, Long conversationId, Long turnId) {
