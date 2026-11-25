@@ -177,6 +177,7 @@ public class ConversationQuestionToolService {
         CompletableFuture<Map<String, Object>> future = new CompletableFuture<>();
         pending.put(key(conversationId, requestId), future);
         try {
+            // shortcut: check-then-act 在跨实例并发下仍可能落两张 PENDING；需要严格单卡时给会话行加锁。
             if (!elicitationDao.listPendingByConversation(tenantId, conversationId).isEmpty()) {
                 throw BizException.keyed(ErrorCode.CONFLICT, "conversation.question_pending", null,
                         "a question is already waiting in this conversation");
@@ -270,10 +271,23 @@ public class ConversationQuestionToolService {
             return current == null ? answerPayload(STATUS_EXPIRED, null)
                     : answerPayload(current.getStatus(), current.getAnswerJson());
         } catch (InterruptedException e) {
+            cancelOnInterrupt(tenantId, conversationId, turnId, requestId);
             Thread.currentThread().interrupt();
             return answerPayload("CANCELED", null);
         } catch (ExecutionException e) {
             return answerPayload("CANCELED", null);
+        }
+    }
+
+    /** 请求线程被中断时不落终态，卡片会挂到 30 分钟过期任务并可能连带停止整轮。 */
+    private void cancelOnInterrupt(long tenantId, long conversationId, long turnId, String requestId) {
+        try {
+            if (elicitationDao.settleIfPending(tenantId, conversationId, requestId, "CANCELED", null) == 1) {
+                notifyResolved(tenantId, conversationId, turnId, requestId, "CANCELED");
+            }
+        } catch (RuntimeException e) {
+            log.warn("question card cancel on interrupt failed conversationId={} requestId={}: {}",
+                    conversationId, requestId, e.getMessage());
         }
     }
 
@@ -340,13 +354,8 @@ public class ConversationQuestionToolService {
     }
 
     private static String messageOf(List<Question> questions) {
+        // parseQuestions 已保证题干非空，不产生系统兜底文案。
         String first = questions.get(0).question;
-        if (first == null || first.isBlank()) {
-            first = questions.get(0).header;
-        }
-        if (first == null) {
-            first = "需要你的确认";
-        }
         return first.length() > 1024 ? first.substring(0, 1024) : first;
     }
 
@@ -357,7 +366,9 @@ public class ConversationQuestionToolService {
             Question question = questions.get(i);
             String name = "q" + (i + 1);
             Map<String, Object> field = new LinkedHashMap<>();
-            field.put("title", question.header == null ? "问题" + (i + 1) : question.header);
+            if (question.header != null && !question.header.isBlank()) {
+                field.put("title", question.header);
+            }
             field.put("description", descriptionOf(question));
             if (question.multiSelect) {
                 field.put("type", "array");
@@ -371,7 +382,6 @@ public class ConversationQuestionToolService {
         }
         Map<String, Object> root = new LinkedHashMap<>();
         root.put("type", "object");
-        root.put("title", "需要你的确认");
         root.put("properties", properties);
         root.put("required", required);
         return JSON.toJSONString(root);
@@ -382,7 +392,7 @@ public class ConversationQuestionToolService {
         StringBuilder builder = new StringBuilder(question.question == null ? "" : question.question);
         for (Option option : question.options) {
             if (option.description != null && !option.description.isBlank()) {
-                builder.append('\n').append(option.label).append(':').append(option.description);
+                builder.append('\n').append(option.label).append(": ").append(option.description);
             }
         }
         return builder.toString();
@@ -423,7 +433,7 @@ public class ConversationQuestionToolService {
     }
 
     private static List<Option> parseOptions(Object raw) {
-        if (!(raw instanceof List<?> list) || list.isEmpty()) {
+        if (!(raw instanceof List<?> list) || list.size() < 2 || list.size() > 4) {
             throw new BizException(ErrorCode.MCP_TOOL_ARGUMENT_INVALID);
         }
         List<Option> options = new ArrayList<>();

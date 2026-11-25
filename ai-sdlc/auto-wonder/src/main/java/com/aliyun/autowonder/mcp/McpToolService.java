@@ -4449,12 +4449,16 @@ public class McpToolService {
                 required("label"),
                 prop("label", "string", "Option label shown to the user."),
                 prop("description", "string", "One-line hint shown next to the label."));
+        Map<String, Object> options = arrayProp("options", option,
+                "2-4 choices. Never add an 'Other' option.");
+        options.put("minItems", 2);
+        options.put("maxItems", 4);
         Map<String, Object> question = schema(
                 required("question", "options"),
                 prop("header", "string", "Short field title (max 12 characters)."),
                 prop("question", "string", "The question body shown above the options."),
                 prop("multiSelect", "boolean", "True to let the user pick more than one option."),
-                arrayProp("options", option, "2-4 choices. Never add an 'Other' option."));
+                options);
         Map<String, Object> questions = new LinkedHashMap<>();
         questions.put("name", "questions");
         questions.put("type", "array");

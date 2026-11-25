@@ -914,6 +914,35 @@ class ConversationElicitationServiceTest {
         verifyNoFrameSent();
     }
 
+    /** 工具卡片没有执行器侧挂起请求：取消只唤醒平台等待者，不发执行器帧。 */
+    @Test
+    void cancelTurnWakesToolCardWithoutExecutorFrame() {
+        ConversationQuestionToolService questionTool = mock(ConversationQuestionToolService.class);
+        service.setQuestionTool(questionTool);
+        when(dao.listPendingByTurn(1L, 100L)).thenReturn(List.of(pending("mcpq-1", 100L)));
+        when(dao.settleIfPending(anyLong(), anyLong(), anyString(), anyString(), any())).thenReturn(1);
+
+        cancelTurn(service);
+
+        verify(questionTool).wake(10L, "mcpq-1", "CANCELED", null);
+        verifyNoFrameSent();
+    }
+
+    /** 装配了工具服务也不能影响执行器上行卡片的原有取消链路。 */
+    @Test
+    void cancelTurnStillFramesExecutorCardWhenToolServicePresent() {
+        ConversationQuestionToolService questionTool = mock(ConversationQuestionToolService.class);
+        service.setQuestionTool(questionTool);
+        when(dao.listPendingByTurn(1L, 100L)).thenReturn(List.of(pending("req-1", 100L)));
+        when(dao.settleIfPending(anyLong(), anyLong(), anyString(), anyString(), any())).thenReturn(1);
+
+        cancelTurn(service);
+
+        verify(questionTool, never()).wake(anyLong(), anyString(), anyString(), any());
+        verify(transport).sendElicitationReply(any(AgentConversationDO.class), eq(100L),
+                eq("req-1"), eq("cancel"), isNull());
+    }
+
     /** 取消路径不能因为一张卡片投递失败就放弃剩下的：轮次取消随后就会执行。 */
     @Test
     void cancelTurnContinuesAfterOneDeliveryFailure() {

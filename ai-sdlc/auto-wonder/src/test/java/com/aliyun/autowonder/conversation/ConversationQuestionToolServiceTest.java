@@ -26,6 +26,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -165,6 +166,75 @@ class ConversationQuestionToolServiceTest {
     }
 
     @Test
+    void waitTimeoutSettlesCardExpiredAndReturnsExpired() {
+        setField("waitSeconds", 1);
+        when(elicitationDao.insertIfAbsent(any())).thenReturn(1);
+        when(elicitationDao.settleIfPending(eq(1L), eq(10L), any(), eq("EXPIRED"), isNull()))
+                .thenReturn(1);
+
+        Map<String, Object> result = service.ask(principal(), args());
+
+        assertEquals("expired", result.get("status"));
+        assertFalse(result.containsKey("answers"));
+        verify(elicitationDao).settleIfPending(eq(1L), eq(10L), any(), eq("EXPIRED"), isNull());
+        verify(browserEventPublisher).publishServerEvent(eq(1L), eq(10L), eq(20L),
+                eq("acp_elicitation_resolved"), any());
+    }
+
+    @Test
+    void askRejectsWhenInstanceWaiterLimitReached() {
+        setField("waiters", new java.util.concurrent.atomic.AtomicInteger(100));
+
+        BizException failure = assertThrows(BizException.class, () -> service.ask(principal(), args()));
+
+        assertEquals(ErrorCode.CONFLICT.getCode(), failure.getCode());
+        verify(elicitationDao, never()).insertIfAbsent(any());
+    }
+
+    @Test
+    void interruptedRequestCancelsCardAndReturnsCanceled() throws Exception {
+        AtomicReference<String> requestId = new AtomicReference<>();
+        when(elicitationDao.insertIfAbsent(any())).thenAnswer(invocation -> {
+            requestId.set(invocation.<AgentConversationElicitationDO>getArgument(0).getRequestId());
+            return 1;
+        });
+        when(elicitationDao.settleIfPending(eq(1L), eq(10L), any(), eq("CANCELED"), isNull()))
+                .thenReturn(1);
+        ExecutorService pool = Executors.newSingleThreadExecutor();
+        try {
+            Future<Map<String, Object>> waiting = pool.submit(() -> service.ask(principal(), args()));
+            long deadline = System.currentTimeMillis() + 2000;
+            while (requestId.get() == null && System.currentTimeMillis() < deadline) {
+                Thread.sleep(10);
+            }
+            assertNotNull(requestId.get());
+            pool.shutdownNow();
+            Map<String, Object> result = waiting.get(2, TimeUnit.SECONDS);
+            assertEquals("canceled", result.get("status"));
+            verify(elicitationDao).settleIfPending(1L, 10L, requestId.get(), "CANCELED", null);
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    void askRejectsOptionCountOutsideTwoToFour() {
+        Map<String, Object> oneOption = Map.of("questions", List.of(Map.of(
+                "header", "栏", "question", "只有一个选项",
+                "options", List.of(Map.of("label", "A")))));
+        Map<String, Object> fiveOptions = Map.of("questions", List.of(Map.of(
+                "header", "栏", "question", "五个选项",
+                "options", List.of(Map.of("label", "A"), Map.of("label", "B"),
+                        Map.of("label", "C"), Map.of("label", "D"), Map.of("label", "E")))));
+
+        assertEquals(ErrorCode.MCP_TOOL_ARGUMENT_INVALID.getCode(),
+                assertThrows(BizException.class, () -> service.ask(principal(), oneOption)).getCode());
+        assertEquals(ErrorCode.MCP_TOOL_ARGUMENT_INVALID.getCode(),
+                assertThrows(BizException.class, () -> service.ask(principal(), fiveOptions)).getCode());
+        verify(elicitationDao, never()).insertIfAbsent(any());
+    }
+
+    @Test
     void askFailsWhenCardInsertConflicts() {
         when(elicitationDao.insertIfAbsent(any())).thenReturn(0);
 
@@ -216,6 +286,17 @@ class ConversationQuestionToolServiceTest {
         }
     }
 
+    /** 覆盖上限与超时这类非公开配置字段，避免为此在生产代码开 setter。 */
+    private void setField(String name, Object value) {
+        try {
+            java.lang.reflect.Field field = ConversationQuestionToolService.class.getDeclaredField(name);
+            field.setAccessible(true);
+            field.set(service, value);
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
     private static String splitHint(String description) {
         // 前端 splitOptionHints 以「<label>: <说明>」行承载选项说明。
         return description.substring(description.indexOf("方案A:") + "方案A:".length()).trim();
@@ -227,7 +308,7 @@ class ConversationQuestionToolServiceTest {
                         Map.of("label", "方案A", "description", "先做后端"),
                         Map.of("label", "方案B"))),
                 Map.of("header", "附加", "question", "附加项", "multiSelect", true,
-                        "options", List.of(Map.of("label", "选项B")))));
+                        "options", List.of(Map.of("label", "选项B"), Map.of("label", "选项C")))));
     }
 
     private static McpAccessTokenService.Principal principal() {

@@ -1070,6 +1070,48 @@ class McpToolServiceTest {
     }
 
     @Test
+    void questionToolIsListedOnlyWhenServiceReportsAvailable() {
+        var questionTool = mock(com.aliyun.autowonder.conversation.ConversationQuestionToolService.class);
+        ReflectionTestUtils.setField(service, "questionTool", questionTool);
+        var conversation = new McpAccessTokenService.Principal(WORKSPACE_ID, USER_ID, 88L,
+                WorkspaceAccessLevel.READ_WRITE, McpAccessTokenService.CredentialType.CONVERSATION,
+                new McpAccessTokenService.ExecutionScope(11, 12, 3, 14, 15, 16));
+
+        when(questionTool.isAvailable(conversation)).thenReturn(true);
+        assertTrue(service.listTools(conversation).stream()
+                .map(McpToolVO::getName).anyMatch("autowonder.ask_user_question"::equals));
+
+        when(questionTool.isAvailable(conversation)).thenReturn(false);
+        assertFalse(service.listTools(conversation).stream()
+                .map(McpToolVO::getName).anyMatch("autowonder.ask_user_question"::equals));
+    }
+
+    @Test
+    void questionToolCallDelegatesToAskService() {
+        var questionTool = mock(com.aliyun.autowonder.conversation.ConversationQuestionToolService.class);
+        ReflectionTestUtils.setField(service, "questionTool", questionTool);
+        var conversation = new McpAccessTokenService.Principal(WORKSPACE_ID, USER_ID, 88L,
+                WorkspaceAccessLevel.READ_WRITE, McpAccessTokenService.CredentialType.CONVERSATION,
+                new McpAccessTokenService.ExecutionScope(11, 12, 3, 14, 15, 16));
+        Map<String, Object> args = Map.of("questions", List.of(Map.of("question", "选哪个",
+                "options", List.of(Map.of("label", "A"), Map.of("label", "B")))));
+        Map<String, Object> answer = Map.of("status", "answered", "answers", Map.of("q1", "A"));
+        when(questionTool.ask(conversation, args)).thenReturn(answer);
+
+        assertEquals(answer, service.call(conversation, "autowonder.ask_user_question", args));
+    }
+
+    @Test
+    void questionToolCallFailsClosedWhenServiceMissing() {
+        var conversation = new McpAccessTokenService.Principal(WORKSPACE_ID, USER_ID, 88L,
+                WorkspaceAccessLevel.READ_WRITE, McpAccessTokenService.CredentialType.CONVERSATION,
+                new McpAccessTokenService.ExecutionScope(11, 12, 3, 14, 15, 16));
+
+        assertEquals(ErrorCode.NO_PERMISSION.getCode(), assertThrows(BizException.class,
+                () -> service.call(conversation, "autowonder.ask_user_question", Map.of())).getCode());
+    }
+
+    @Test
     void installBundledOnboardingSkillReusesExisting() {
         var harness = mock(com.aliyun.autowonder.harness.HarnessToolService.class);
         ReflectionTestUtils.setField(service, "harnessToolService", harness);
