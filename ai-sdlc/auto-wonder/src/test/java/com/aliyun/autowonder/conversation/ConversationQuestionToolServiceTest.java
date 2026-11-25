@@ -25,8 +25,10 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -128,7 +130,72 @@ class ConversationQuestionToolServiceTest {
         assertFalse(service.isAvailable(principal()));
     }
 
+    @Test
+    void askFailsClosedWhenExecutorOffline() {
+        when(runtimePresence.isExecutorOnline(7L)).thenReturn(false);
+
+        assertFalse(service.isAvailable(principal()));
+        assertThrows(BizException.class, () -> service.ask(principal(), args()));
+    }
+
+    @Test
+    void fourQuestionsMergeIntoOneCardWithFourAnswerKeys() throws Exception {
+        Map<String, Object> four = Map.of("questions", List.of(
+                question("一"), question("二"), question("三"), question("四")));
+        Map<String, Object> result = askAndWake(four, "ANSWERED",
+                "{\"q1\":\"A\",\"q2\":\"A\",\"q3\":\"A\",\"q4\":\"A\"}");
+
+        JSONObject answers = (JSONObject) result.get("answers");
+        assertEquals(4, answers.size());
+        ArgumentCaptor<AgentConversationElicitationDO> card =
+                ArgumentCaptor.forClass(AgentConversationElicitationDO.class);
+        verify(elicitationDao, times(1)).insertIfAbsent(card.capture());
+        assertEquals(4, JSON.parseObject(card.getValue().getSchemaJson())
+                .getJSONObject("properties").size());
+    }
+
+    @Test
+    void askRejectsMoreThanFourQuestionsWithoutCreatingCard() {
+        Map<String, Object> five = Map.of("questions", List.of(
+                question("一"), question("二"), question("三"), question("四"), question("五")));
+
+        BizException failure = assertThrows(BizException.class, () -> service.ask(principal(), five));
+        assertEquals(ErrorCode.MCP_TOOL_ARGUMENT_INVALID.getCode(), failure.getCode());
+        verify(elicitationDao, never()).insertIfAbsent(any());
+    }
+
+    @Test
+    void askFailsWhenCardInsertConflicts() {
+        when(elicitationDao.insertIfAbsent(any())).thenReturn(0);
+
+        BizException failure = assertThrows(BizException.class, () -> service.ask(principal(), args()));
+        assertEquals(ErrorCode.CONFLICT.getCode(), failure.getCode());
+    }
+
+    @Test
+    void publishAnswerPushesResolvedEvent() {
+        service.publishAnswer(1L, 10L, 20L, "mcpq-x", "ANSWERED", "{\"q1\":\"A\"}");
+
+        ArgumentCaptor<String> type = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<String> payload = ArgumentCaptor.forClass(String.class);
+        verify(browserEventPublisher).publishServerEvent(eq(1L), eq(10L), eq(20L),
+                type.capture(), payload.capture());
+        assertEquals("acp_elicitation_resolved", type.getValue());
+        assertTrue(payload.getValue().contains("\"status\":\"ANSWERED\""));
+        verify(redisManager).publish(eq("autowonder:question-answer"), any());
+    }
+
+    private static Map<String, Object> question(String text) {
+        return Map.of("header", "栏", "question", text,
+                "options", List.of(Map.of("label", "A"), Map.of("label", "B")));
+    }
+
     private Map<String, Object> askAndWake(String status, String answerJson) throws Exception {
+        return askAndWake(args(), status, answerJson);
+    }
+
+    private Map<String, Object> askAndWake(Map<String, Object> args, String status, String answerJson)
+            throws Exception {
         AtomicReference<String> requestId = new AtomicReference<>();
         when(elicitationDao.insertIfAbsent(any())).thenAnswer(invocation -> {
             requestId.set(invocation.<AgentConversationElicitationDO>getArgument(0).getRequestId());
@@ -136,7 +203,7 @@ class ConversationQuestionToolServiceTest {
         });
         ExecutorService pool = Executors.newSingleThreadExecutor();
         try {
-            Future<Map<String, Object>> waiting = pool.submit(() -> service.ask(principal(), args()));
+            Future<Map<String, Object>> waiting = pool.submit(() -> service.ask(principal(), args));
             long deadline = System.currentTimeMillis() + 2000;
             while (requestId.get() == null && System.currentTimeMillis() < deadline) {
                 Thread.sleep(10);

@@ -44,6 +44,7 @@ public class ConversationQuestionToolService {
 
     private static final Logger log = LoggerFactory.getLogger(ConversationQuestionToolService.class);
 
+    /** 回答跨实例广播频道；载荷为 conversationId/requestId/status/answerJson。 */
     private static final String REDIS_CHANNEL = "autowonder:question-answer";
     private static final String STATUS_PENDING = "PENDING";
     private static final String STATUS_ANSWERED = "ANSWERED";
@@ -65,8 +66,11 @@ public class ConversationQuestionToolService {
     private final ConversationBrowserEventPublisher browserEventPublisher;
     private final RedisManager redisManager;
 
+    /** 本实例等待中的工具调用数，对应每实例 100 个上限。 */
     private final AtomicInteger waiters = new AtomicInteger();
+    /** conversationId:requestId → 该卡片在本实例上的等待者。 */
     private final Map<String, CompletableFuture<Map<String, Object>>> pending = new ConcurrentHashMap<>();
+    /** 已占位的会话：同会话同时只允许一个待答提问。 */
     private final java.util.Set<Long> activeConversations = ConcurrentHashMap.newKeySet();
 
     private volatile JedisPubSub pubSub;
