@@ -130,6 +130,8 @@ public class McpToolService {
     private com.aliyun.autowonder.dispatch.DeliveryExternalOperationService externalOperations;
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.aliyun.autowonder.dispatch.LatestWorkflowRestartService latestWorkflowRestart;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.aliyun.autowonder.conversation.ConversationQuestionToolService questionTool;
     private static final String UPDATE_WORKITEM = "autowonder.update_workitem";
     private static final String LIST_TASK_DATA = "autowonder.list_task_data";
     private static final String PUT_TASK_DATA = "autowonder.put_task_data";
@@ -339,6 +341,8 @@ public class McpToolService {
      */
     private static final Map<String, ToolAccess> TOOL_ACCESS =
             Map.<String, ToolAccess>ofEntries(
+                    Map.entry(com.aliyun.autowonder.conversation.ConversationQuestionToolService.TOOL_NAME,
+                            workspaceTool(WorkspaceAccessLevel.READ_ONLY)),
                     Map.entry(LIST_PROJECTS,
                             globalTool(WorkspaceAccessLevel.READ_ONLY)),
                     Map.entry(CREATE_WORKITEM,
@@ -728,6 +732,8 @@ public class McpToolService {
                     Map.entry(UPDATE_EXECUTOR_LAUNCH_CONFIG, WorkspaceDomain.EXECUTOR),
                     Map.entry(LIST_HARNESS_TEMPLATES, WorkspaceDomain.TEMPLATE),
                     Map.entry(GET_HARNESS_TEMPLATE, WorkspaceDomain.TEMPLATE),
+                    Map.entry(com.aliyun.autowonder.conversation.ConversationQuestionToolService.TOOL_NAME,
+                            WorkspaceDomain.CONVERSATION),
                     Map.entry(PREPARE_WORKSPACE_ONBOARDING, WorkspaceDomain.CONVERSATION),
                     Map.entry(GET_WORKSPACE_ONBOARDING, WorkspaceDomain.CONVERSATION),
                     Map.entry(PREVIEW_HARNESS_INITIALIZATION, WorkspaceDomain.CONVERSATION),
@@ -2159,8 +2165,13 @@ public class McpToolService {
         WorkspaceVO scopedWorkspace = workspaceService.getCurrent(principal.workspaceId());
         String workspaceName = scopedWorkspace != null ? scopedWorkspace.getName() : String.valueOf(principal.workspaceId());
         String desc = "Workspace: " + principal.workspaceId() + "=" + workspaceName;
-        return applyExecutorModelDescriptions(applyWorkspaceIdDescriptions(tools, desc, desc),
+        List<McpToolVO> scoped = applyExecutorModelDescriptions(applyWorkspaceIdDescriptions(tools, desc, desc),
                 principal.workspaceId());
+        if (questionTool != null && questionTool.isAvailable(principal)) {
+            scoped = new ArrayList<>(scoped);
+            scoped.add(questionToolDefinition());
+        }
+        return scoped;
     }
 
     /**
@@ -2347,6 +2358,13 @@ public class McpToolService {
             if(actions==null || actions.isEmpty() || actions.size()>10) throw new BizException(ErrorCode.MCP_TOOL_ARGUMENT_INVALID);
             for(var action:actions) validatePlatformAction(principal.workspaceId(),principal.userId(),principal.tokenId(),action);
             return platformPlans.propose(principal.workspaceId(),principal.userId(),principal.tokenId(),actions);
+        }
+        if (com.aliyun.autowonder.conversation.ConversationQuestionToolService.TOOL_NAME.equals(name)) {
+            // 阻塞等待最长 300 秒，不能进入通用的上下文解析与审计封装。
+            if (questionTool == null) {
+                throw new BizException(ErrorCode.NO_PERMISSION);
+            }
+            return questionTool.ask(principal, safeArgs);
         }
         ToolExecutionContext context = resolveDispatchBoundary(
                 resolveExecutionContext(principal, name, safeArgs));
@@ -4424,6 +4442,35 @@ public class McpToolService {
                         + "expected): fix the reported fields and resubmit with a new submissionId. You have at "
                         + "most three distinct submissions, so never resubmit identical bytes.",
                 input, output);
+    }
+
+    private McpToolVO questionToolDefinition() {
+        Map<String, Object> option = schema(
+                required("label"),
+                prop("label", "string", "Option label shown to the user."),
+                prop("description", "string", "One-line hint shown next to the label."));
+        Map<String, Object> question = schema(
+                required("question", "options"),
+                prop("header", "string", "Short field title (max 12 characters)."),
+                prop("question", "string", "The question body shown above the options."),
+                prop("multiSelect", "boolean", "True to let the user pick more than one option."),
+                arrayProp("options", option, "2-4 choices. Never add an 'Other' option."));
+        Map<String, Object> questions = new LinkedHashMap<>();
+        questions.put("name", "questions");
+        questions.put("type", "array");
+        questions.put("minItems", 1);
+        questions.put("maxItems", 4);
+        questions.put("description", "1-4 questions submitted as one card.");
+        questions.put("items", question);
+        return new McpToolVO(com.aliyun.autowonder.conversation.ConversationQuestionToolService.TOOL_NAME,
+                "Ask the human user structured multiple-choice questions and wait for the answer. "
+                        + "Call this whenever you need a decision instead of guessing. Each question has a "
+                        + "header, question text and 2-4 options; set multiSelect to allow several choices. "
+                        + "The call blocks up to 300 seconds: on success it returns status=answered with "
+                        + "answers keyed q1..qN (single choice is a label, multiSelect is an array of labels); "
+                        + "status=declined, expired or canceled means no answers. Only available in interactive "
+                        + "conversations.",
+                schema(required("questions"), questions));
     }
 
     private Map<String, Object> outputSchemaFor(String name) {

@@ -33,7 +33,8 @@ public class AiWorkerPool {
 
     private static final Logger log = LoggerFactory.getLogger(AiWorkerPool.class);
     private static final String API_MODE_SUFFIX =
-            "\n\n重要：你在API模式下运行，不能使用AskUserQuestion等交互工具。直接用文字提问和回复。";
+            "\n\n重要：你在API模式下运行，不能使用客户端自带的AskUserQuestion等交互工具；"
+                    + "需要提问时直接用文字提问和回复，平台提供的MCP提问工具不受此限制。";
 
     private final AiSessionDao sessionDao;
     private final AiMessageDao messageDao;
