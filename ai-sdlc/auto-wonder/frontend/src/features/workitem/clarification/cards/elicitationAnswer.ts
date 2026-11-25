@@ -98,6 +98,50 @@ export function computeElicitationContent(
   return content;
 }
 
+function optionLabel(field: ElicitationField, value: string): string {
+  return field.options?.find((option) => option.value === value)?.label ?? value;
+}
+
+/**
+ * 把已作答字段拼成可直接作为普通消息发送的文本；未作答字段不出现。
+ * 卡片超时或轮次结束后，结构化回复已不可用，用它把用户的选择带回去。
+ */
+export function computeElicitationText(
+  fields: ElicitationField[],
+  values: AnswerValues,
+  other: OtherText,
+): string {
+  const lines: string[] = [];
+
+  fields.forEach((field, index) => {
+    if (!isFieldAnswered(field, values, other)) return;
+    // schema 没有 title 时 parseElicitationSchema 用属性名兜底，属性名不是可读标题，按规格回退「问题N」。
+    const label = field.label?.trim();
+    const title = label && label !== field.name
+      ? label
+      : i18n.t('workitem:clarification.questionFallback', { number: index + 1 });
+    const value = values[field.name];
+    const note = trimmed(other, field.name);
+    let answer: string;
+
+    if (field.control === 'select') {
+      answer = value === OTHER_SENTINEL ? note : optionLabel(field, String(value));
+    } else if (field.control === 'multiselect') {
+      const all = selectedArray(value);
+      const parts = all.filter((item) => item !== OTHER_SENTINEL)
+        .map((item) => optionLabel(field, item));
+      if (all.includes(OTHER_SENTINEL) && note) parts.push(note);
+      answer = parts.join('、');
+    } else {
+      answer = String(value);
+    }
+
+    if (answer) lines.push(`${title}：${answer}`);
+  });
+
+  return lines.join('\n');
+}
+
 export interface ElicitationValidation {
   errors: Record<string, string>;
   /** 第一个未通过必填校验的题序，全通过为 -1。 */

@@ -1,4 +1,3 @@
-import { appendQuestionContext } from '@/features/workitem/clarification/continueQuestion';
 import { conversationNotice } from '@/features/workitem/clarification/conversationNotice';
 import { hiddenFailedOutboundTurnIds } from '@/features/workitem/clarification/hooks';
 import { AnswerDeliveryStatus } from "@/features/workitem/clarification/cards/AnswerDeliveryStatus";
@@ -20,6 +19,10 @@ import { ChiefTurnEvents } from './ChiefTurnEvents';
 import { ChiefSetupPanel } from './ChiefSetupPanel';
 import { ChiefGuidedSetup } from './ChiefGuidedSetup';
 import { ElicitationWizard } from '@/features/workitem/clarification/cards/ElicitationWizard';
+import type { ElicitationReply } from '@/features/workitem/clarification/cards/ElicitationCard';
+import type { QuestionHistoryEntry } from '@/features/workitem/clarification/answerHistory';
+import type { ClarificationElicitation } from '@/features/workitem/clarification/types';
+import { ApiError, ErrorCodes } from '@/shared/types/common';
 import { buildExecutorLaunchCommand } from '@/features/executor/api';
 import { formatDateTime } from '@/shared/i18n/format';
 import * as api from './api';
@@ -91,7 +94,10 @@ export function wideResizeExit(
     // .aw-chief-panel sits 48px above the launcher, so the root offset needs that gap to keep the panel still
     y: Math.min(Math.max(0, Math.round(viewport.height - rect.bottom - PANEL_LAUNCH_GAP)), maxY) };
 }
-function schema(text: string | null) { try { return JSON.parse(text || '{}') as unknown; } catch { return {}; } }
+function schema(value: unknown) {
+  if (typeof value !== 'string') return value ?? {};
+  try { return JSON.parse(value || '{}') as unknown; } catch { return {}; }
+}
 const retryableContinuationStatuses = new Set(['FAILED', 'CANCELED']);
 function planOrder(left: api.ActionPlan, right: api.ActionPlan) {
   const a = Number(left.id); const b = Number(right.id);
@@ -202,6 +208,85 @@ function Assistant({ userId, workspaceId, hideLauncher }: { userId: number; work
   const refresh = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: scopedKey, predicate: query => query.queryKey[3] !== 'turnEvents' });
   }, [queryClient, scopedKey]);
+  const seenPendingQuestions = useRef(new Map<string, ClarificationElicitation>());
+  useEffect(() => {
+    // 切换会话后重新开始：旧会话的卡片只能从历史里「继续回答」，不能再次自动弹出。
+    seenPendingQuestions.current = new Map();
+  }, [prefs.conversationId]);
+  useEffect(() => {
+    if (prefs.conversationId === null) return;
+    for (const card of conversation.data?.pendingElicitations ?? []) {
+      seenPendingQuestions.current.set(`${prefs.conversationId}:${card.requestId}`, card);
+    }
+  }, [conversation.data?.pendingElicitations, prefs.conversationId]);
+  const [expiredQuestions, setExpiredQuestions] = useState(() => ({
+    conversationId: prefs.conversationId,
+    cards: [] as ClarificationElicitation[],
+    dismissed: new Set<string>(),
+  }));
+  if (expiredQuestions.conversationId !== prefs.conversationId) {
+    setExpiredQuestions({ conversationId: prefs.conversationId, cards: [], dismissed: new Set() });
+  }
+  const recordExpiredQuestions = useCallback((conversationId: number, _turnId: number, requestIds: readonly string[]) => {
+    if (currentConversationId.current !== conversationId || requestIds.length === 0) return;
+    setExpiredQuestions(previous => {
+      if (previous.conversationId !== conversationId) return previous;
+      const cards = [...previous.cards];
+      for (const requestId of requestIds) {
+        if (previous.dismissed.has(requestId) || cards.some(card => card.requestId === requestId)) continue;
+        // 只保留本次会话亲眼见过的待答卡片：历史里早已过期的卡片由「继续回答」入口承担。
+        const card = seenPendingQuestions.current.get(`${conversationId}:${requestId}`);
+        if (card) cards.push(card);
+      }
+      return cards.length === previous.cards.length ? previous : { ...previous, cards };
+    });
+  }, []);
+  const dismissExpiredQuestion = useCallback((conversationId: number, requestId: string) => {
+    setExpiredQuestions(previous => {
+      if (previous.conversationId !== conversationId
+          || (previous.dismissed.has(requestId)
+            && !previous.cards.some(card => card.requestId === requestId))) return previous;
+      const dismissed = new Set(previous.dismissed);
+      dismissed.add(requestId);
+      return {
+        ...previous,
+        cards: previous.cards.filter(card => card.requestId !== requestId),
+        dismissed,
+      };
+    });
+  }, []);
+  const [sendingQuestionId, setSendingQuestionId] = useState<string | null>(null);
+  const sendQuestionText = useCallback(async (conversationId: number, requestId: string, text: string) => {
+    if (!text.trim()) return false;
+    setSendingQuestionId(requestId);
+    try {
+      await api.sendMessage(conversationId, text, createUuidV4(), null);
+      dismissExpiredQuestion(conversationId, requestId);
+      refresh();
+      return true;
+    } catch (error) {
+      void message.error(error instanceof Error ? error.message : String(error));
+      return false;
+    } finally {
+      setSendingQuestionId(null);
+    }
+  }, [dismissExpiredQuestion, refresh]);
+  const replyQuestion = useMutation({
+    mutationFn: ({ conversationId, requestId, reply }: {
+      conversationId: number; requestId: string; reply: ElicitationReply;
+    }) => api.replyElicitation(conversationId, requestId, reply.action, reply.content),
+    onSuccess: refresh,
+    onError: (error: Error, variables) => {
+      if (error instanceof ApiError && error.code === ErrorCodes.CONFLICT
+          && variables.reply.action === 'accept' && variables.reply.text) {
+        void sendQuestionText(variables.conversationId, variables.requestId, variables.reply.text);
+        return;
+      }
+      void message.error(error.message);
+    },
+  });
+  const [historyQuestion, setHistoryQuestion] = useState<QuestionHistoryEntry | null>(null);
+  useEffect(() => { setHistoryQuestion(null); }, [prefs.conversationId]);
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const scheduleRefresh = useCallback(() => {
     if (refreshTimer.current !== null) return;
@@ -475,6 +560,7 @@ function Assistant({ userId, workspaceId, hideLauncher }: { userId: number; work
   const pageLabel = t(pageKey || 'pages.other');
   const contextLabel = contextMatch ? t('resourceContext', { resource: pageLabel, id: contextMatch[2] }) : pageLabel;
   const canContinue = canWrite && !processing && !submit.isPending && !upload.isPending && !perform.isPending
+    && !replyQuestion.isPending && sendingQuestionId === null
     && !!setup.data?.ready && !conversation.data?.archivedAt && !conversation.error;
   const [retryingInboundId, setRetryingInboundId] = useState<number | null>(null);
   const hiddenFailedOutbound = useMemo(
@@ -491,6 +577,7 @@ function Assistant({ userId, workspaceId, hideLauncher }: { userId: number; work
       && (turn.status === 'PROCESSING' || turn.status === 'QUEUED'))
     ? latestInbound.id : null;
   const settledQuestions = new Set([...(conversation.data?.answerDeliveries ?? []), ...(conversation.data?.questionHistory ?? [])].map(card => card.requestId));
+  const expiredQuestionIds = new Set(expiredQuestions.cards.map(card => card.requestId));
   const currentQuestionTurnId = conversation.data?.processingTurnId ?? [...(conversation.data?.turns ?? [])].reverse().find(turn => turn.direction === INBOUND)?.id;
   const turnNotices = new Map(conversation.data?.turns.map(turn => [turn.id, [
     conversationNotice(turn.display?.content, 'content', workitemT),
@@ -648,10 +735,10 @@ function Assistant({ userId, workspaceId, hideLauncher }: { userId: number; work
               {turn.direction !== INBOUND && <div className="aw-chief-secondary">{t('name')}</div>}
               <div className="aw-chief-message-actions"><Button type="text" size="small" icon={<CopyOutlined />} aria-label={t('copyMessage')} title={t('copyMessage')} onClick={() => copyMessage(turn.content)} /></div>
             </div>
-            {turn.direction === INBOUND ? <><p>{turn.content}</p><div data-quote-ignore><ChiefTurnEvents key={`${prefs.conversationId}:${turn.id}`} onContentChange={followContent} onSettledQuestions={recordSettledQuestions} scope={scopedKey} conversationId={prefs.conversationId!} turnId={turn.id} processing={processing && turn.id === conversation.data?.processingTurnId}
+            {turn.direction === INBOUND ? <><p>{turn.content}</p><div data-quote-ignore><ChiefTurnEvents key={`${prefs.conversationId}:${turn.id}`} onContentChange={followContent} onSettledQuestions={recordSettledQuestions} onExpiredQuestions={recordExpiredQuestions} scope={scopedKey} conversationId={prefs.conversationId!} turnId={turn.id} processing={processing && turn.id === conversation.data?.processingTurnId}
                 questionHistory={conversation.data?.questionHistory ?? conversation.data?.answerDeliveries}
                 canContinue={canContinue} onContinue={entry => {
-                  if (canContinue) setDraft(current => appendQuestionContext(current, turn.content, entry));
+                  if (canContinue) setHistoryQuestion(entry);
                 }} /></div></>
               : turnNotices.get(turn.id)?.[0] ?? <MarkdownView content={turn.content} copyCodeBlocks />}
             {!!turn.images?.length && <div className="aw-chief-images">{turn.images.map(image => <a key={image.id} href={image.url} target="_blank" rel="noreferrer"><img src={image.url} alt={image.name} /></a>)}</div>}
@@ -669,8 +756,34 @@ function Assistant({ userId, workspaceId, hideLauncher }: { userId: number; work
             {planLayout.orphanPlans.map(renderPlan)}
           </div>}
           <AnswerDeliveryStatus cards={conversation.data?.answerDeliveries} currentTurnId={currentQuestionTurnId} />
-          {conversation.data?.pendingElicitations?.filter(card => !settledQuestions.has(card.requestId)
-            && !(liveSettledQuestions.conversationId === prefs.conversationId && liveSettledQuestions.turns.get(card.turnId)?.has(card.requestId))).map(card => <ElicitationWizard key={card.requestId} requestId={card.requestId} message={card.message || undefined} schema={schema(card.requestedSchema)} submitting={perform.isPending} onReply={reply => perform.mutate(() => api.replyElicitation(prefs.conversationId!, card.requestId, reply.action, reply.content))} />)}
+          {[...(conversation.data?.pendingElicitations ?? []).filter(card => !expiredQuestionIds.has(card.requestId)
+            && !expiredQuestions.dismissed.has(card.requestId)
+            && !settledQuestions.has(card.requestId)
+            && !(liveSettledQuestions.conversationId === prefs.conversationId
+              && liveSettledQuestions.turns.get(card.turnId)?.has(card.requestId))),
+          ...expiredQuestions.cards].map(card => {
+            const expired = expiredQuestionIds.has(card.requestId);
+            return <ElicitationWizard key={card.requestId} requestId={card.requestId}
+              message={card.message || undefined} schema={schema(card.requestedSchema)}
+              submitting={perform.isPending || replyQuestion.isPending || sendingQuestionId === card.requestId}
+              expired={expired}
+              canSubmit={!expired || canWrite}
+              readOnlyHint={expired && !canWrite ? workitemT('dispatchRequests.writersCanReply') : undefined}
+              onReply={reply => {
+                const conversationId = prefs.conversationId;
+                if (conversationId !== null) {
+                  replyQuestion.mutate({ conversationId, requestId: card.requestId, reply });
+                }
+              }}
+              onReplyText={text => {
+                const conversationId = prefs.conversationId;
+                if (conversationId !== null) void sendQuestionText(conversationId, card.requestId, text);
+              }}
+              onSkip={() => {
+                const conversationId = prefs.conversationId;
+                if (conversationId !== null) dismissExpiredQuestion(conversationId, card.requestId);
+              }} />;
+          })}
         </>}
         </div>
       </div>
@@ -681,6 +794,25 @@ function Assistant({ userId, workspaceId, hideLauncher }: { userId: number; work
         </div>}
       {composerVisible && <footer className="aw-chief-composer">
         <div className="aw-chief-composer-inner">
+        {historyQuestion && <ElicitationWizard
+          key={`history-${historyQuestion.requestId}`}
+          requestId={historyQuestion.requestId}
+          message={historyQuestion.message}
+          schema={schema(historyQuestion.requestedSchema)}
+          submitting={replyQuestion.isPending || sendingQuestionId === historyQuestion.requestId}
+          expired
+          onReply={() => setHistoryQuestion(null)}
+          onReplyText={text => {
+            const entry = historyQuestion;
+            const conversationId = prefs.conversationId;
+            if (conversationId !== null) {
+              void sendQuestionText(conversationId, entry.requestId, text).then(sent => {
+                if (sent) setHistoryQuestion(null);
+              });
+            }
+          }}
+          onSkip={() => setHistoryQuestion(null)}
+        />}
         {quote && (
           <div style={{ marginBottom: 8 }}>
             <QuoteCard

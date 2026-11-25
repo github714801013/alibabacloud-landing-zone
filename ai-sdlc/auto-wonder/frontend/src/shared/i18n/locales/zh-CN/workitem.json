@@ -1098,6 +1098,8 @@
     "jsonAnswer": "回答（JSON）",
     "otherRequired": "请填写其他想法",
     "fieldRequired": "请填写「{{label}}」",
+    "questionFallback": "问题{{number}}",
+    "selectAtLeastOne": "请至少选择一项",
     "copy": "复制",
     "copied": "已复制",
     "copyFailed": "复制失败，请检查浏览器剪贴板权限",
@@ -1186,7 +1188,7 @@
     "history": {
       "originalAnswer": "查看原始答案",
       "continue": "继续回答",
-      "continueUnavailable": "会话空闲且可编辑时，可整理到输入框后继续。",
+      "continueUnavailable": "会话空闲且可编辑时，可在输入框位置继续作答。",
       "expired": "因长时间未回答而结束",
       "continueIntro": "继续回答此前的问题，请结合以下背景和我补充的回答。",
       "originalRequest": "原始请求：",

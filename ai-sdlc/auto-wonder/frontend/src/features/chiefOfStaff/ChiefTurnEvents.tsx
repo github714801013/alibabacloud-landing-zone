@@ -11,8 +11,9 @@ import { buildTimeline } from '@/features/workitem/clarification/timeline';
 import { getTurnEventPage } from './api';
 
 const LIVE_WINDOW_ROWS = 2000;
-export function ChiefTurnEvents({ scope, conversationId, turnId, processing, onContentChange, questionHistory, onContinue, canContinue, onSettledQuestions }: {
+export function ChiefTurnEvents({ scope, conversationId, turnId, processing, onContentChange, questionHistory, onContinue, canContinue, onSettledQuestions, onExpiredQuestions }: {
   onSettledQuestions?: (conversationId: number, turnId: number, requestIds: readonly string[]) => void;
+  onExpiredQuestions?: (conversationId: number, turnId: number, requestIds: readonly string[]) => void;
   questionHistory?: ClarificationElicitation[] | null;
   onContinue?: (entry: QuestionHistoryEntry) => void;
   canContinue?: boolean;
@@ -69,6 +70,10 @@ export function ChiefTurnEvents({ scope, conversationId, turnId, processing, onC
     .map(node => node.elicitation!.requestId), [nodes]);
   useEffect(() => { onSettledQuestions?.(conversationId, turnId, settledRequestIds); },
     [conversationId, turnId, settledRequestIds, onSettledQuestions]);
+  const expiredRequestIds = useMemo(() => nodes.filter(node => node.elicitation?.resolved
+    && node.elicitation.status === 'EXPIRED').map(node => node.elicitation!.requestId), [nodes]);
+  useEffect(() => { onExpiredQuestions?.(conversationId, turnId, expiredRequestIds); },
+    [conversationId, turnId, expiredRequestIds, onExpiredQuestions]);
   useLayoutEffect(() => { onContentChange?.(); }, [nodes, history, onContentChange]);
   return <>
     <AnswerHistory entries={history} onContinue={onContinue} canContinue={canContinue} />

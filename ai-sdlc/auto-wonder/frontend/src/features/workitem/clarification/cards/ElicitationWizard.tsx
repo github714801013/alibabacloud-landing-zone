@@ -1,6 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Button, Modal } from 'antd';
+import { Button, Modal, message } from 'antd';
 import { DownOutlined, QuestionCircleOutlined } from '@ant-design/icons';
 import { CLARIFICATION_THEME } from '../theme';
 import { elicitationMessage, parseElicitationSchema } from './schemaForm';
@@ -9,6 +9,7 @@ import type { ElicitationReply } from './ElicitationCard';
 import {
   OTHER_SENTINEL,
   computeElicitationContent,
+  computeElicitationText,
   isFieldAnswered,
   unansweredFields,
   validateElicitation,
@@ -39,16 +40,25 @@ interface ElicitationWizardProps {
   collapsible?: boolean;
   /** 答完/跳过后父级在卸载前标记：卡片淡出且不可交互，随后由父级移除。 */
   dismissing?: boolean;
+  /** 卡片已超时：提交改为把已选项拼成文本交给父级发送普通消息。 */
+  expired?: boolean;
+  /** 无写权限时禁用提交：超时卡片不允许只读用户发出文本回复。 */
+  canSubmit?: boolean;
+  /** 提交被权限禁用时展示的提示文案。 */
+  readOnlyHint?: string;
   onReply: (reply: ElicitationReply) => void;
+  onReplyText?: (text: string) => void;
+  onSkip?: () => void;
 }
 
 export function ElicitationWizard({
-  requestId, message, schema, submitting = false, fullscreen = false,
-  collapsible = false, dismissing = false, onReply,
+  requestId, message: headingMessage, schema, submitting = false, fullscreen = false,
+  collapsible = false, dismissing = false, expired = false, canSubmit = true, readOnlyHint,
+  onReply, onReplyText, onSkip,
 }: ElicitationWizardProps) {
   const { t } = useTranslation('workitem');
   const form = useMemo(() => parseElicitationSchema(schema), [schema, t]);
-  const heading = elicitationMessage(message, schema) || form.title || t('clarification.confirmation');
+  const heading = elicitationMessage(headingMessage, schema) || form.title || t('clarification.confirmation');
   const fields = form.fields;
   const total = fields.length;
 
@@ -155,14 +165,32 @@ export function ElicitationWizard({
   const send = () => {
     setConfirming(false);
     setFieldErrors({});
-    onReply({ action: 'accept', content: computeElicitationContent(fields, values, otherText) });
+    if (expired) {
+      onReplyText?.(computeElicitationText(fields, values, otherText));
+      return;
+    }
+    onReply({
+      action: 'accept',
+      content: computeElicitationContent(fields, values, otherText),
+      text: computeElicitationText(fields, values, otherText),
+    });
   };
 
   const submit = () => {
+    if (!canSubmit) return;
     const { errors, firstInvalidIndex } = validateElicitation(fields, values, otherText);
     if (firstInvalidIndex >= 0) {
       setFieldErrors(Object.fromEntries(Object.keys(errors).map(name => [name, true as const])));
       setStepIndex(firstInvalidIndex);
+      return;
+    }
+    if (expired) {
+      // 超时后只发已答字段，不再走「还有题未答」的确认弹窗。
+      if (!fields.some((item) => isFieldAnswered(item, values, otherText))) {
+        message.warning(t('clarification.selectAtLeastOne'));
+        return;
+      }
+      send();
       return;
     }
     // 必答项齐了但仍有可选题没答：先让用户确认真要按现有答案提交，不静默丢弃。
@@ -263,7 +291,7 @@ export function ElicitationWizard({
             size="small"
             disabled={submitting}
             data-testid={`elicitation-skip-${requestId}`}
-            onClick={() => onReply({ action: 'decline' })}
+            onClick={() => { if (expired) onSkip?.(); else onReply({ action: 'decline' }); }}
             style={{ fontSize: 14, color: CLARIFICATION_THEME.textMuted }}
           >
             {t('clarification.skip')}
@@ -347,11 +375,19 @@ export function ElicitationWizard({
         >
           {t('clarification.previousQuestion')}
         </Button>
+        {!canSubmit && readOnlyHint ? (
+          <span
+            data-testid={`elicitation-readonly-${requestId}`}
+            style={{ fontSize: 12, color: CLARIFICATION_THEME.textMuted }}
+          >
+            {readOnlyHint}
+          </span>
+        ) : null}
         {isLast ? (
           <Button
             type="primary"
             size="small"
-            disabled={submitting || !submitArmed}
+            disabled={submitting || !submitArmed || !canSubmit}
             data-testid={`elicitation-submit-${requestId}`}
             onClick={submit}
             style={{ marginLeft: 'auto' }}

@@ -87,7 +87,11 @@ describe('ElicitationWizard', () => {
     settle();
     fireEvent.change(screen.getByTestId('elicitation-field-q2'), { target: { value: '备注' } });
     clickSubmit();
-    expect(onReply).toHaveBeenCalledWith({ action: 'accept', content: { q0: 'B', q1: ['C'], q2: '备注' } });
+    expect(onReply).toHaveBeenCalledWith({
+      action: 'accept',
+      content: { q0: 'B', q1: ['C'], q2: '备注' },
+      text: '<b>技术栈</b>：B\n交付物：C\n补充：备注',
+    });
   });
 
   it('跳过回传 decline', () => {
@@ -111,7 +115,11 @@ describe('ElicitationWizard', () => {
     expect(onReply).not.toHaveBeenCalled();
     expect(screen.getByTestId('elicitation-unanswered-r1')).toHaveTextContent('补充');
     fireEvent.click(screen.getByTestId('elicitation-confirm-submit-r1'));
-    expect(onReply).toHaveBeenCalledWith({ action: 'accept', content: { q0: '自定义', q1: ['C'] } });
+    expect(onReply).toHaveBeenCalledWith({
+      action: 'accept',
+      content: { q0: '自定义', q1: ['C'] },
+      text: '<b>技术栈</b>：自定义\n交付物：C',
+    });
   });
 
   it('选「有其他想法」但空值，必填拦下并提示', () => {
@@ -157,6 +165,7 @@ describe('ElicitationWizard', () => {
     expect(onReply).toHaveBeenCalledWith({
       action: 'accept',
       content: { q0: 'A', q1: ['C', '要离线'] },
+      text: '<b>技术栈</b>：A\n交付物：C、要离线',
     });
   });
 
@@ -218,7 +227,11 @@ describe('ElicitationWizard', () => {
     expect(screen.getByTestId('elicitation-count-r1')).toHaveTextContent('第 3/3 题');
     clickSubmit();
     fireEvent.click(screen.getByTestId('elicitation-confirm-submit-r1'));
-    expect(onReply).toHaveBeenCalledWith({ action: 'accept', content: { q0: 'B', q1: ['C'] } });
+    expect(onReply).toHaveBeenCalledWith({
+      action: 'accept',
+      content: { q0: 'B', q1: ['C'] },
+      text: '<b>技术栈</b>：B\n交付物：C',
+    });
   });
 });
 
@@ -277,7 +290,11 @@ describe('ElicitationWizard 收起/展开（工单 56330）', () => {
     settle();
     clickSubmit();
     fireEvent.click(screen.getByTestId('elicitation-confirm-submit-r1'));
-    expect(onReply).toHaveBeenCalledWith({ action: 'accept', content: { q0: 'B', q1: ['C'] } });
+    expect(onReply).toHaveBeenCalledWith({
+      action: 'accept',
+      content: { q0: 'B', q1: ['C'] },
+      text: '<b>技术栈</b>：B\n交付物：C',
+    });
   });
 
   it('提交/跳过在途（submitting）时收起按钮仍可点击，不阻塞原有流程', () => {
@@ -382,7 +399,11 @@ describe('Elicitation live locale changes', () => {  afterEach(async () => { awa
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 450)); });
     fireEvent.click(screen.getByTestId('elicitation-submit-r1'));
     fireEvent.click(screen.getByTestId('elicitation-confirm-submit-r1'));
-    expect(reply).toHaveBeenCalledWith({ action: 'accept', content: { q0: '<b>我的方案</b>', q1: ['C'] } });
+    expect(reply).toHaveBeenCalledWith({
+      action: 'accept',
+      content: { q0: '<b>我的方案</b>', q1: ['C'] },
+      text: '<b>技术栈</b>：<b>我的方案</b>\n交付物：C',
+    });
   });
   it('refreshes memoized unsupported-schema fallback and required labels', async () => {
     const raw = { type: 'array', description: '工具提供的原始说明' };
@@ -402,5 +423,68 @@ describe('Elicitation live locale changes', () => {  afterEach(async () => { awa
     fireEvent.click(toggle());
     expect(toggle()).toHaveAccessibleName('Expand question card');
     expect(screen.getByTestId('elicitation-count-r1')).toHaveTextContent('Question 1/3');
+  });
+});
+
+describe('ElicitationWizard 超时后改发文本', () => {
+  it('超时后提交：跳过未答确认，只把已选项拼成文本回传', async () => {
+    const onReply = vi.fn();
+    const onReplyText = vi.fn();
+    render(<ElicitationWizard requestId="r1" schema={schema} expired onReply={onReply} onReplyText={onReplyText} />);
+    fireEvent.click(screen.getByTestId('elicitation-option-q0-0'));
+    fireEvent.click(stepDot(1));
+    fireEvent.click(screen.getByTestId('elicitation-option-q1-0'));
+    fireEvent.click(next());
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 450)); });
+    clickSubmit();
+    expect(screen.queryByTestId('elicitation-unanswered-r1')).toBeNull();
+    expect(onReplyText).toHaveBeenCalledWith('<b>技术栈</b>：A\n交付物：C');
+    expect(onReply).not.toHaveBeenCalled();
+  });
+
+  it('超时后必填未答：仍先走必填校验，不发文本', async () => {
+    const onReplyText = vi.fn();
+    render(<ElicitationWizard requestId="r1" schema={schema} expired onReply={vi.fn()} onReplyText={onReplyText} />);
+    fireEvent.click(stepDot(2));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 450)); });
+    clickSubmit();
+    expect(onReplyText).not.toHaveBeenCalled();
+    expect(screen.getByTestId('elicitation-count-r1')).toHaveTextContent('第 1/3 题');
+    expect(screen.getByTestId('elicitation-error-q0')).toBeInTheDocument();
+  });
+
+  it('超时后一项未选：提示至少选择一项且不发送', async () => {
+    const optional = {
+      type: 'object',
+      properties: { q0: { type: 'string', title: '技术栈', oneOf: [{ const: 'A', title: 'A' }] } },
+    };
+    const onReplyText = vi.fn();
+    render(<ElicitationWizard requestId="r1" schema={optional} expired onReply={vi.fn()} onReplyText={onReplyText} />);
+    clickSubmit();
+    expect(await screen.findByText('请至少选择一项')).toBeInTheDocument();
+    expect(onReplyText).not.toHaveBeenCalled();
+  });
+
+  it('无写权限：提交按钮禁用并展示提示，点击不发送', async () => {
+    const onReplyText = vi.fn();
+    render(<ElicitationWizard requestId="r1" schema={schema} expired canSubmit={false}
+      readOnlyHint="有工作空间写权限的成员可以回答。" onReply={vi.fn()} onReplyText={onReplyText} />);
+    fireEvent.click(stepDot(2));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 450)); });
+    expect(submitBtn()).toBeDisabled();
+    expect(screen.getByTestId('elicitation-readonly-r1')).toHaveTextContent('有工作空间写权限的成员可以回答。');
+    fireEvent.click(submitBtn());
+    expect(onReplyText).not.toHaveBeenCalled();
+  });
+
+  it('超时后跳过：只关闭卡片，不回传也不发送', () => {
+    const onReply = vi.fn();
+    const onReplyText = vi.fn();
+    const onSkip = vi.fn();
+    render(<ElicitationWizard requestId="r1" schema={schema} expired onReply={onReply} onReplyText={onReplyText} onSkip={onSkip} />);
+    fireEvent.click(screen.getByTestId('elicitation-skip-r1'));
+    expect(onSkip).toHaveBeenCalledOnce();
+    expect(onReply).not.toHaveBeenCalled();
+    expect(onReplyText).not.toHaveBeenCalled();
   });
 });

@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { conversationNotice } from './conversationNotice';
 import { AnswerHistory } from './cards/AnswerHistory';
 import { projectQuestionHistory, questionIdentity, withoutCoveredQuestions } from './answerHistory';
-import { appendQuestionContext } from './continueQuestion';
+import type { QuestionHistoryEntry } from './answerHistory';
 import { RobotHeadIcon } from '@/shared/ui/RobotHeadIcon';
 import {
   Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState,
@@ -853,6 +853,25 @@ export function WorkitemClarificationPanel({
   // 避免用户对着死卡片反复点击、对话卡死。
   const [settledElicitationIds, setSettledElicitationIds] = useState<ReadonlySet<string>>(() => new Set());
 
+  /** 卡片已失效时把已选项作为普通消息发送；成功后撤下卡片，失败保留原卡片与选项。 */
+  const sendElicitationText = useCallback(async (requestId: string, text: string): Promise<boolean> => {
+    if (!conversationId || !text.trim()) return false;
+    setReplyingRequestId(requestId);
+    try {
+      await submitMutation.mutateAsync({
+        content: text,
+        clientMessageId: api.createClientMessageId(),
+      });
+      setSettledElicitationIds((prev) => new Set(prev).add(requestId));
+      return true;
+    } catch {
+      message.error(i18n.t('workitem:clarification.sendFailed'));
+      return false;
+    } finally {
+      setReplyingRequestId(null);
+    }
+  }, [conversationId, submitMutation]);
+
   const handleReplyElicitation = useCallback(
     (requestId: string, reply: ElicitationReply) => {
       if (!conversationId || replyMutation.isPending) return;
@@ -869,6 +888,11 @@ export function WorkitemClarificationPanel({
           onError: (error) => {
             setReplyingRequestId(null);
             if (error instanceof ApiError && error.code === ErrorCodes.CONFLICT) {
+              // 前端尚未看到过期事件：结构化提交已被拒，改用同一份文本，保住已选项。
+              if (reply.action === 'accept' && reply.text) {
+                void sendElicitationText(requestId, reply.text);
+                return;
+              }
               setSettledElicitationIds((prev) => new Set(prev).add(requestId));
               queryClient.invalidateQueries({
                 queryKey: ['workitem', workitemId, 'clarification-conversation', conversationId],
@@ -891,7 +915,7 @@ export function WorkitemClarificationPanel({
         },
       );
     },
-    [conversationId, replyMutation, queryClient, workitemId],
+    [conversationId, replyMutation, queryClient, workitemId, sendElicitationText],
   );
 
   const streamedRequestIds = useMemo(
@@ -954,13 +978,35 @@ export function WorkitemClarificationPanel({
     setHeldRequestId(activeElicitationId);
     setHeldElicitation(activeElicitation ?? heldElicitation);
   }
+  const heldElicitationId = heldElicitation?.requestId;
+  const heldElicitationExpired = heldElicitationId != null && (
+    timeline.some(
+      (node) => node.kind === 'elicitation'
+        && node.elicitation?.requestId === heldElicitationId
+        && node.elicitation.status === 'EXPIRED',
+    )
+    || [...(convData?.questionHistory ?? []), ...(convData?.answerDeliveries ?? [])].some(
+      (row) => row.requestId === heldElicitationId && row.status === 'EXPIRED',
+    )
+  );
+  // 超时结算的卡片不进入撤下动画：保留在输入框位置继续可改选，直到用户提交或跳过。
+  const retainedExpiredElicitation = !activeElicitationId && heldElicitationExpired
+    && heldElicitationId != null && !settledElicitationIds.has(heldElicitationId);
   const displayedElicitation = activeElicitationId ? activeElicitation : heldElicitation;
-  const dismissingElicitation = !activeElicitationId && !!heldElicitation;
+  const hiddenHistoryRequestId = !activeElicitationId && heldElicitationExpired
+    ? displayedElicitation?.requestId ?? null
+    : null;
+  const dismissingElicitation = !activeElicitationId && !!heldElicitation && !retainedExpiredElicitation;
   useEffect(() => {
     if (!dismissingElicitation) return undefined;
     const timer = window.setTimeout(() => setHeldElicitation(null), CLARIFICATION_CARD_DISMISS_MS);
     return () => window.clearTimeout(timer);
   }, [dismissingElicitation]);
+
+  const [historyQuestion, setHistoryQuestion] = useState<QuestionHistoryEntry | null>(null);
+  useEffect(() => {
+    if (displayedElicitation) setHistoryQuestion(null);
+  }, [displayedElicitation]);
 
   // 只有「已打开面板里新出现」的待答问题才发浏览器提醒：刷新恢复的旧 pending、
   // 重放与已结算问题都由基线/去重集合挡掉；卡片自身的渲染次数不参与判断。
@@ -1217,6 +1263,7 @@ export function WorkitemClarificationPanel({
   useEffect(() => {
     initializedInputRef.current = null;
     setSelectedTemplateId(null);
+    setHistoryQuestion(null);
     autoSendPrefilledRef.current = false;
   }, [workitemId, conversationId]);
 
@@ -1836,12 +1883,13 @@ export function WorkitemClarificationPanel({
                       />
                     }
                   />
-                  <AnswerHistory entries={questionHistories.get(turn.id) ?? []}
+                  <AnswerHistory
+                    entries={(questionHistories.get(turn.id) ?? [])
+                      .filter(entry => entry.requestId !== hiddenHistoryRequestId)}
                     canContinue={canWrite && !composerDisabled && !displayedElicitation}
                     onContinue={entry => {
                       if (!canWrite || composerDisabled || displayedElicitation) return;
-                      setInputValue(draft => appendQuestionContext(draft, turn.content, entry));
-                      composerRef.current?.focus();
+                      setHistoryQuestion(entry);
                     }} />
                   </Fragment>
                   );
@@ -1914,7 +1962,33 @@ export function WorkitemClarificationPanel({
             fullscreen={fullscreen}
             collapsible
             dismissing={dismissingElicitation}
+            expired={retainedExpiredElicitation}
+            canSubmit={!retainedExpiredElicitation || canWrite}
+            readOnlyHint={retainedExpiredElicitation && !canWrite ? t('dispatchRequests.writersCanReply') : undefined}
             onReply={(reply) => handleReplyElicitation(displayedElicitation.requestId, reply)}
+            onReplyText={(text) => { void sendElicitationText(displayedElicitation.requestId, text); }}
+            onSkip={() => setSettledElicitationIds(
+              (prev) => new Set(prev).add(displayedElicitation.requestId),
+            )}
+          />
+        ) : historyQuestion ? (
+          <ElicitationWizard
+            key={`history-${historyQuestion.requestId}`}
+            requestId={historyQuestion.requestId}
+            message={historyQuestion.message}
+            schema={historyQuestion.requestedSchema}
+            submitting={replyingRequestId === historyQuestion.requestId}
+            fullscreen={fullscreen}
+            collapsible
+            expired
+            onReply={() => setHistoryQuestion(null)}
+            onReplyText={(text) => {
+              const entry = historyQuestion;
+              void sendElicitationText(entry.requestId, text).then((sent) => {
+                if (sent) setHistoryQuestion(null);
+              });
+            }}
+            onSkip={() => setHistoryQuestion(null)}
           />
         ) : (
         <div style={{

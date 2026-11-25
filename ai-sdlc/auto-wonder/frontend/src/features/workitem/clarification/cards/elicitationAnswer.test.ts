@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { OTHER_SENTINEL, computeElicitationContent, unansweredFields, validateElicitation } from './elicitationAnswer';
+import { OTHER_SENTINEL, computeElicitationContent, computeElicitationText, unansweredFields, validateElicitation } from './elicitationAnswer';
 import type { ElicitationField } from './schemaForm';
 
 const f = (over: Partial<ElicitationField>): ElicitationField =>
@@ -42,6 +42,48 @@ describe('computeElicitationContent', () => {
     const fields = [f({ name: 'j', control: 'json' })];
     expect(computeElicitationContent(fields, { j: '{"x":1}' }, {})).toEqual({ x: 1 });
     expect(computeElicitationContent(fields, { j: 'not-json' }, {})).toEqual({});
+  });
+});
+
+describe('computeElicitationText', () => {
+  it('只拼已答字段：多选用顿号、其他用自填文本，0/false 也算已答', () => {
+    const fields = [
+      f({ name: 'a', label: '技术栈', control: 'select', options: [{ value: 'java', label: 'Java' }] }),
+      f({ name: 'b', label: '范围', control: 'multiselect', options: [
+        { value: 'web', label: '前端' }, { value: 'api', label: '后端' },
+      ] }),
+      f({ name: 'c', label: '数量', control: 'number' }),
+      f({ name: 'd', label: '启用', control: 'boolean' }),
+      f({ name: 'e', label: '备注', control: 'text' }),
+    ];
+    expect(computeElicitationText(fields, {
+      a: 'java', b: ['web', OTHER_SENTINEL], c: 0, d: false,
+    }, { b: '移动端' })).toBe('技术栈：Java\n范围：前端、移动端\n数量：0\n启用：false');
+  });
+
+  it('无标题回退「问题N」，属性名兜底不算标题，单选用选项文案而非原始值', () => {
+    const fields = [
+      f({ name: 'a', label: '', control: 'select', options: [{ value: 'java', label: 'Java' }] }),
+      f({ name: 'q2', label: 'q2', control: 'text' }),
+    ];
+    expect(computeElicitationText(fields, { a: 'java', q2: '带 空格' }, {}))
+      .toBe('问题1：Java\n问题2：带 空格');
+  });
+
+  it('单选「其他想法」用自填文本；多选勾其他但填字为空时只保留真实项', () => {
+    const fields = [
+      f({ name: 'a', label: '方案', control: 'select', options: [{ value: 'x', label: 'X' }] }),
+      f({ name: 'b', label: '范围', control: 'multiselect', options: [{ value: 'web', label: '前端' }] }),
+    ];
+    expect(computeElicitationText(fields, { a: OTHER_SENTINEL, b: ['web', OTHER_SENTINEL] }, { a: ' 自研方案 ', b: '  ' }))
+      .toBe('方案：自研方案\n范围：前端');
+  });
+
+  it('一项未答返回空串；长文本原样保留', () => {
+    const long = 'A'.repeat(500);
+    const fields = [f({ name: 'a', label: '备注', control: 'text' })];
+    expect(computeElicitationText(fields, {}, {})).toBe('');
+    expect(computeElicitationText(fields, { a: long }, {})).toBe(`备注：${long}`);
   });
 });
 

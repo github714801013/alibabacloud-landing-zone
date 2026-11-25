@@ -1118,6 +1118,8 @@
     "jsonAnswer": "Answer (JSON)",
     "otherRequired": "Please enter your other ideas.",
     "fieldRequired": "Please fill in “{{label}}”.",
+    "questionFallback": "Question {{number}}",
+    "selectAtLeastOne": "Select at least one option.",
     "copy": "Copy",
     "copied": "Copied",
     "copyFailed": "Could not copy. Check your browser clipboard permissions.",
@@ -1206,7 +1208,7 @@
     "history": {
       "originalAnswer": "View original answer",
       "continue": "Continue answering",
-      "continueUnavailable": "Continue in the composer when this conversation is idle and editable.",
+      "continueUnavailable": "Continue at the composer when this conversation is idle and editable.",
       "expired": "Closed after waiting for an answer",
       "continueIntro": "Continue with the earlier question using this context and the answer I add.",
       "originalRequest": "Original request:",
