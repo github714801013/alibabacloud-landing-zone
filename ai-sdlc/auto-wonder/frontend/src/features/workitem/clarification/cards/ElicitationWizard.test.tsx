@@ -90,7 +90,7 @@ describe('ElicitationWizard', () => {
     expect(onReply).toHaveBeenCalledWith({
       action: 'accept',
       content: { q0: 'B', q1: ['C'], q2: '备注' },
-      text: '<b>技术栈</b>：B\n交付物：C\n补充：备注',
+      text: 'Q1 <b>技术栈</b>：B\nQ2 交付物：C\nQ3 补充：备注',
     });
   });
 
@@ -118,7 +118,7 @@ describe('ElicitationWizard', () => {
     expect(onReply).toHaveBeenCalledWith({
       action: 'accept',
       content: { q0: '自定义', q1: ['C'] },
-      text: '<b>技术栈</b>：自定义\n交付物：C',
+      text: 'Q1 <b>技术栈</b>：自定义\nQ2 交付物：C',
     });
   });
 
@@ -165,7 +165,7 @@ describe('ElicitationWizard', () => {
     expect(onReply).toHaveBeenCalledWith({
       action: 'accept',
       content: { q0: 'A', q1: ['C', '要离线'] },
-      text: '<b>技术栈</b>：A\n交付物：C、要离线',
+      text: 'Q1 <b>技术栈</b>：A\nQ2 交付物：C、要离线',
     });
   });
 
@@ -230,7 +230,7 @@ describe('ElicitationWizard', () => {
     expect(onReply).toHaveBeenCalledWith({
       action: 'accept',
       content: { q0: 'B', q1: ['C'] },
-      text: '<b>技术栈</b>：B\n交付物：C',
+      text: 'Q1 <b>技术栈</b>：B\nQ2 交付物：C',
     });
   });
 });
@@ -293,7 +293,7 @@ describe('ElicitationWizard 收起/展开（工单 56330）', () => {
     expect(onReply).toHaveBeenCalledWith({
       action: 'accept',
       content: { q0: 'B', q1: ['C'] },
-      text: '<b>技术栈</b>：B\n交付物：C',
+      text: 'Q1 <b>技术栈</b>：B\nQ2 交付物：C',
     });
   });
 
@@ -402,7 +402,7 @@ describe('Elicitation live locale changes', () => {  afterEach(async () => { awa
     expect(reply).toHaveBeenCalledWith({
       action: 'accept',
       content: { q0: '<b>我的方案</b>', q1: ['C'] },
-      text: '<b>技术栈</b>：<b>我的方案</b>\n交付物：C',
+      text: 'Q1 <b>技术栈</b>：<b>我的方案</b>\nQ2 交付物：C',
     });
   });
   it('refreshes memoized unsupported-schema fallback and required labels', async () => {
@@ -438,7 +438,7 @@ describe('ElicitationWizard 超时后改发文本', () => {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 450)); });
     clickSubmit();
     expect(screen.queryByTestId('elicitation-unanswered-r1')).toBeNull();
-    expect(onReplyText).toHaveBeenCalledWith('<b>技术栈</b>：A\n交付物：C');
+    expect(onReplyText).toHaveBeenCalledWith('Q1 <b>技术栈</b>：A\nQ2 交付物：C');
     expect(onReply).not.toHaveBeenCalled();
   });
 

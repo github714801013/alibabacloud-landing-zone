@@ -58,16 +58,16 @@ describe('computeElicitationText', () => {
     ];
     expect(computeElicitationText(fields, {
       a: 'java', b: ['web', OTHER_SENTINEL], c: 0, d: false,
-    }, { b: '移动端' })).toBe('技术栈：Java\n范围：前端、移动端\n数量：0\n启用：false');
+    }, { b: '移动端' })).toBe('Q1 技术栈：Java\nQ2 范围：前端、移动端\nQ3 数量：0\nQ4 启用：false');
   });
 
-  it('无标题回退「问题N」，属性名兜底不算标题，单选用选项文案而非原始值', () => {
+  it('无标题只留题号，属性名兜底不算标题，单选用选项文案而非原始值', () => {
     const fields = [
       f({ name: 'a', label: '', control: 'select', options: [{ value: 'java', label: 'Java' }] }),
       f({ name: 'q2', label: 'q2', control: 'text' }),
     ];
     expect(computeElicitationText(fields, { a: 'java', q2: '带 空格' }, {}))
-      .toBe('问题1：Java\n问题2：带 空格');
+      .toBe('Q1：Java\nQ2：带 空格');
   });
 
   it('单选「其他想法」用自填文本；多选勾其他但填字为空时只保留真实项', () => {
@@ -76,14 +76,22 @@ describe('computeElicitationText', () => {
       f({ name: 'b', label: '范围', control: 'multiselect', options: [{ value: 'web', label: '前端' }] }),
     ];
     expect(computeElicitationText(fields, { a: OTHER_SENTINEL, b: ['web', OTHER_SENTINEL] }, { a: ' 自研方案 ', b: '  ' }))
-      .toBe('方案：自研方案\n范围：前端');
+      .toBe('Q1 方案：自研方案\nQ2 范围：前端');
+  });
+
+  it('只答第二题时保留原题号，不连续重排', () => {
+    const fields = [
+      f({ name: 'a', label: '技术栈', control: 'text' }),
+      f({ name: 'b', label: '交付物', control: 'text' }),
+    ];
+    expect(computeElicitationText(fields, { b: 'C' }, {})).toBe('Q2 交付物：C');
   });
 
   it('一项未答返回空串；长文本原样保留', () => {
     const long = 'A'.repeat(500);
     const fields = [f({ name: 'a', label: '备注', control: 'text' })];
     expect(computeElicitationText(fields, {}, {})).toBe('');
-    expect(computeElicitationText(fields, { a: long }, {})).toBe(`备注：${long}`);
+    expect(computeElicitationText(fields, { a: long }, {})).toBe(`Q1 备注：${long}`);
   });
 });
 

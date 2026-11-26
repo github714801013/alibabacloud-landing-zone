@@ -102,8 +102,12 @@ function optionLabel(field: ElicitationField, value: string): string {
   return field.options?.find((option) => option.value === value)?.label ?? value;
 }
 
+/** 题号前缀固定为 Q，与卡片「第N题」同口径；中英文环境一致，不走 i18n。 */
+const QUESTION_NO_PREFIX = 'Q';
+
 /**
- * 把已作答字段拼成可直接作为普通消息发送的文本；未作答字段不出现。
+ * 把已作答字段拼成可直接作为普通消息发送的文本；未作答字段不出现，但编号按原下标保留、不重排。
+ * 每条带与卡片「第N题」同号的 Q 前缀，便于回查；无标题时只留题号。
  * 卡片超时或轮次结束后，结构化回复已不可用，用它把用户的选择带回去。
  */
 export function computeElicitationText(
@@ -115,11 +119,11 @@ export function computeElicitationText(
 
   fields.forEach((field, index) => {
     if (!isFieldAnswered(field, values, other)) return;
-    // schema 没有 title 时 parseElicitationSchema 用属性名兜底，属性名不是可读标题，按规格回退「问题N」。
+    // schema 没有 title 时 parseElicitationSchema 用属性名兜底，属性名不是可读标题，只保留题号。
     const label = field.label?.trim();
     const title = label && label !== field.name
-      ? label
-      : i18n.t('workitem:clarification.questionFallback', { number: index + 1 });
+      ? `${QUESTION_NO_PREFIX}${index + 1} ${label}`
+      : `${QUESTION_NO_PREFIX}${index + 1}`;
     const value = values[field.name];
     const note = trimmed(other, field.name);
     let answer: string;
