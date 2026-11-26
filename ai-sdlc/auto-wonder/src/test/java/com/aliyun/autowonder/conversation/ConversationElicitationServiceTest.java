@@ -1002,6 +1002,60 @@ class ConversationElicitationServiceTest {
         assertEquals("req-2", settled.get(0).getRequestId());
     }
 
+    /** 轮次终结但卡片要保留：置 EXPIRED，返回值供提交后唤醒等待者与推送浏览器。 */
+    @Test
+    void expirePendingForTurnWritesExpiredStateWithoutSideEffects() {
+        when(dao.listPendingByTurn(1L, 100L)).thenReturn(List.of(pending("req-1", 100L)));
+        when(dao.settleIfPending(anyLong(), anyLong(), anyString(), anyString(), any())).thenReturn(1);
+
+        List<AgentConversationElicitationDO> settled = service.expirePendingForTurn(1L, 10L, 100L);
+
+        assertEquals(1, settled.size());
+        assertEquals("EXPIRED", settled.get(0).getStatus());
+        verify(dao).settleIfPending(1L, 10L, "req-1", "EXPIRED", null);
+        verifyNoFrameSent();
+        verify(browserEventPublisher, never()).publishServerEvent(anyLong(), anyLong(), anyLong(),
+                anyString(), anyString());
+    }
+
+    /** 过期任务主卡到期时，同轮其余挂起卡也必须保留为 EXPIRED，而不是被当作取消撤下。 */
+    @Test
+    void expireForAttemptKeepsSiblingPendingCardsExpired() {
+        AgentConversationElicitationDO main = pending("mcpq-main", 100L);
+        main.setGmtCreate(new Date(0L));
+        main.setDispatchAttempt(1);
+        main.setExecutorId(9L);
+        AgentConversationElicitationDO sibling = pending("mcpq-sibling", 100L);
+        when(dao.findByRequestIdForUpdate(1L, 10L, "mcpq-main")).thenReturn(main);
+        when(dao.listPendingByTurn(1L, 100L)).thenReturn(List.of(sibling));
+        when(dao.settleIfPending(1L, 10L, "mcpq-main", "EXPIRED", null)).thenReturn(1);
+        when(dao.settleIfPending(1L, 10L, "mcpq-sibling", "EXPIRED", null)).thenReturn(1);
+        AgentConversationTurnDO turn = turn("IN", "PROCESSING");
+        turn.setDispatchAttempt(1);
+
+        List<AgentConversationElicitationDO> settled = service.expireForAttempt(main, new Date(),
+                turn, conversation());
+
+        assertEquals(List.of("mcpq-main", "mcpq-sibling"),
+                settled.stream().map(AgentConversationElicitationDO::getRequestId).toList());
+        assertEquals(List.of("EXPIRED", "EXPIRED"),
+                settled.stream().map(AgentConversationElicitationDO::getStatus).toList());
+    }
+
+    /** 工具卡片在轮次终结后按 EXPIRED 唤醒等待者，前端才能把卡片按超时卡片保留。 */
+    @Test
+    void notifySystemStoppedWakesToolCardWithExpired() {
+        ConversationQuestionToolService questionTool = mock(ConversationQuestionToolService.class);
+        service.setQuestionTool(questionTool);
+        AgentConversationElicitationDO expired = pending("mcpq-1", 100L);
+        expired.setStatus("EXPIRED");
+
+        service.notifySystemStopped(List.of(expired));
+
+        verify(questionTool).wake(10L, "mcpq-1", "EXPIRED", null);
+        verifyNoFrameSent();
+    }
+
     @Test
     void legacyExpiryDelegatesToTheSameCoordinatorWithoutAnAnswer() {
         var question = pending("req-1",100L);

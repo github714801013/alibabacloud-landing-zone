@@ -385,12 +385,29 @@ public class ConversationElicitationService {
      */
     public List<AgentConversationElicitationDO> settlePendingForTurn(long tenantId,
             long conversationId, long turnId) {
+        return settlePendingForTurn(tenantId, conversationId, turnId, STATUS_CANCELED);
+    }
+
+    /**
+     * 轮次已终结但卡片仍要保留：把该轮挂起卡置 EXPIRED，前端按超时卡片继续提供文本作答。
+     *
+     * <p>与 {@link #settlePendingForTurn} 一样只写库、不发副作用，调用方须在提交之后
+     * 用 {@link #notifySystemStopped(List)} 唤醒工具等待线程并通知浏览器。
+     */
+    public List<AgentConversationElicitationDO> expirePendingForTurn(long tenantId,
+            long conversationId, long turnId) {
+        return settlePendingForTurn(tenantId, conversationId, turnId, STATUS_EXPIRED);
+    }
+
+    private List<AgentConversationElicitationDO> settlePendingForTurn(long tenantId,
+            long conversationId, long turnId, String status) {
         turnDao.findByConversationTurnForUpdate(tenantId, conversationId, turnId);
         elicitationDao.closeAnswerDeliveriesForTurn(tenantId, conversationId, turnId);
         List<AgentConversationElicitationDO> settled = new ArrayList<>();
         for (AgentConversationElicitationDO record : elicitationDao.listPendingByTurn(tenantId, turnId)) {
             if (elicitationDao.settleIfPending(record.getTenantId(), record.getConversationId(),
-                    record.getRequestId(), STATUS_CANCELED, null) == 1) {
+                    record.getRequestId(), status, null) == 1) {
+                record.setStatus(status);
                 settled.add(record);
             }
             // 抢不到说明用户刚好同时作答，答案已下发，不能再发一个矛盾的动作。
@@ -460,7 +477,7 @@ public class ConversationElicitationService {
         List<AgentConversationElicitationDO> settled = new ArrayList<>();
         settled.add(row);
         // Preserve real answers and truthful uncertainty. This path sends no question replies.
-        settled.addAll(settlePendingForTurn(row.getTenantId(), row.getConversationId(), row.getTurnId()));
+        settled.addAll(expirePendingForTurn(row.getTenantId(), row.getConversationId(), row.getTurnId()));
         return settled;
     }
 

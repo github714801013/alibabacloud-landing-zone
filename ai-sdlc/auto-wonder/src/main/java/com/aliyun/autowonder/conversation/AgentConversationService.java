@@ -741,8 +741,13 @@ public class AgentConversationService {
                         conversationId, turnId);
                 return null;
             }
-            // 轮次已终结，同轮挂起的提问不可能再被回答：立即结算并唤醒平台侧工具等待线程。
-            cancelPendingElicitations(tenantId, conversationId, turnId);
+            // 轮次已终结：用户主动取消则关闭卡片；正常/失败终结则置 EXPIRED 保留卡片，
+            // 供前端按超时卡片继续文本作答，同时唤醒平台侧工具等待线程。
+            if (STATUS_CANCELED.equalsIgnoreCase(status)) {
+                cancelPendingElicitations(tenantId, conversationId, turnId);
+            } else {
+                expirePendingElicitations(tenantId, conversationId, turnId);
+            }
             // 只有真正终结了本轮（finalized == 1）才记录用量，重放/被拒绝的 ACK 不重复计费。
             if (conversationUsageService != null) {
                 conversationUsageService.recordTurnUsage(tenantId, conv, turnId, usage);
@@ -1130,6 +1135,29 @@ public class AgentConversationService {
             return;
         }
         runAfterCommit(() -> conversationElicitationService.notifyCanceled(settled));
+    }
+
+    /**
+     * 轮次正常/失败终结但卡片仍要保留：置 EXPIRED，前端按超时卡片继续作答。
+     * 与取消路径一致，状态转移留在事务内，唤醒与浏览器通知在提交后执行。
+     */
+    private void expirePendingElicitations(Long tenantId, Long conversationId, Long turnId) {
+        if (conversationElicitationService == null) {
+            return;
+        }
+        List<AgentConversationElicitationDO> settled;
+        try {
+            settled = conversationElicitationService.expirePendingForTurn(tenantId, conversationId,
+                    turnId);
+        } catch (RuntimeException e) {
+            log.warn("conversation pending elicitation expire failed conversationId={} turnId={}: {}",
+                    conversationId, turnId, e.getMessage());
+            return;
+        }
+        if (settled.isEmpty()) {
+            return;
+        }
+        runAfterCommit(() -> conversationElicitationService.notifySystemStopped(settled));
     }
 
     /**

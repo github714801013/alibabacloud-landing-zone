@@ -17,6 +17,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.NullSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.junit.jupiter.params.provider.Arguments;
 import org.mockito.ArgumentCaptor;
@@ -1070,21 +1071,55 @@ class AgentConversationServiceTest {
         verifyNoInteractions(publisher);
     }
 
-    /** 执行器结束轮次后，挂起的提问卡已无人接收：必须立即结算并唤醒工具等待线程。 */
+    /** 执行器结束轮次后卡片仍要保留：置 EXPIRED 并唤醒工具等待线程，不能标成已取消。 */
+    @ParameterizedTest
+    @NullSource
+    @ValueSource(strings = {"SUCCESS", "FAILED", "WEIRD"})
+    void ackTerminalExpiresPendingQuestionsSoTheCardStaysAnswerableAndTheToolWaitEnds(String status) {
+        ConversationElicitationService elicitationService = mock(ConversationElicitationService.class);
+        svc.setConversationElicitationService(elicitationService);
+        java.util.List<AgentConversationElicitationDO> settled = canceledCards();
+        when(elicitationService.expirePendingForTurn(1L, 77L, 55L)).thenReturn(settled);
+        stubAckSettlement(existingConversationWithSession(), status, 701L);
+
+        svc.acknowledgeTurn(1L, 9L, 77L, 55L, status, null, "reply-md", null);
+
+        verify(elicitationService).expirePendingForTurn(1L, 77L, 55L);
+        verify(elicitationService, never()).notifySystemStopped(any());
+        commitTransactionSynchronizations();
+        verify(elicitationService).notifySystemStopped(settled);
+    }
+
+    /** 用户主动取消轮次时卡片应关闭，不能按超时卡片继续保留。 */
     @Test
-    void ackTerminalSettlesPendingQuestionsSoTheToolWaitEndsImmediately() {
+    void ackCanceledClosesPendingQuestions() {
         ConversationElicitationService elicitationService = mock(ConversationElicitationService.class);
         svc.setConversationElicitationService(elicitationService);
         java.util.List<AgentConversationElicitationDO> settled = canceledCards();
         when(elicitationService.settlePendingForTurn(1L, 77L, 55L)).thenReturn(settled);
+        stubAckSettlement(existingConversationWithSession(), "CANCELED", 701L);
+
+        svc.acknowledgeTurn(1L, 9L, 77L, 55L, "CANCELED", null, "reply-md", null);
+
+        verify(elicitationService).settlePendingForTurn(1L, 77L, 55L);
+        verify(elicitationService, never()).expirePendingForTurn(anyLong(), anyLong(), anyLong());
+        commitTransactionSynchronizations();
+        verify(elicitationService).notifyCanceled(settled);
+    }
+
+    /** 同轮没有挂起卡时终结轮次不应产生任何卡片通知。 */
+    @Test
+    void ackTerminalWithoutPendingQuestionsSkipsNotifications() {
+        ConversationElicitationService elicitationService = mock(ConversationElicitationService.class);
+        svc.setConversationElicitationService(elicitationService);
+        when(elicitationService.expirePendingForTurn(1L, 77L, 55L)).thenReturn(java.util.List.of());
         stubAckSettlement(existingConversationWithSession(), "SUCCESS", 701L);
 
         svc.acknowledgeTurn(1L, 9L, 77L, 55L, "SUCCESS", null, "reply-md", null);
 
-        verify(elicitationService).settlePendingForTurn(1L, 77L, 55L);
-        verify(elicitationService, never()).notifyCanceled(any());
         commitTransactionSynchronizations();
-        verify(elicitationService).notifyCanceled(settled);
+        verify(elicitationService, never()).notifySystemStopped(any());
+        verify(elicitationService, never()).notifyCanceled(any());
     }
 
     @Test
