@@ -1951,6 +1951,98 @@ class AgentConversationServiceTest {
         verify(turnDao).releaseConversationLock("agent-conversation:1:77");
     }
 
+    /**
+     * 执行器仍在线时事件静默可能只是模型阻塞在答题卡上等用户选择：此时重投会取消卡片
+     * 并让用户已选的答案落空，应跳过本轮自动恢复，交给卡片 30 分钟兜底过期。
+     */
+    @Test
+    void recoverStaleTurnsForExecutorKeepsCardWhenQuestionStillPending() {
+        Date cutoff = new Date(1_000L);
+        AgentConversationDO conv = existingConversationWithSession();
+        AgentConversationTurnDO stale = processingInboundTurn(77L);
+        when(turnDao.listStaleProcessingInboundByExecutor(1L, 9L, cutoff, 100))
+                .thenReturn(java.util.List.of(stale));
+        when(convDao.findById(1L, 77L)).thenReturn(conv);
+        when(turnDao.findByConversationTurn(1L, 77L, 55L)).thenReturn(stale);
+        ConversationRuntimePresence presence = mock(ConversationRuntimePresence.class);
+        when(presence.isExecutorOnline(9L)).thenReturn(true);
+        AgentConversationElicitationDao elicitations = mock(AgentConversationElicitationDao.class);
+        when(elicitations.listPendingByTurn(1L, 55L))
+                .thenReturn(java.util.List.of(pendingQuestion("{}")));
+        ConversationElicitationService elicitationService = mock(ConversationElicitationService.class);
+        AgentConversationService target = serviceWithPresence(presence);
+        target.setElicitationDao(elicitations);
+        target.setConversationElicitationService(elicitationService);
+
+        target.recoverStaleTurnsForExecutor(1L, 9L, java.util.Set.of(), true, cutoff, 100);
+        commitTransactionSynchronizations();
+
+        verify(turnDao, never()).claimStaleDispatchAttemptIfProcessing(anyLong(), anyLong(),
+                anyLong(), any());
+        verify(transport, never()).send(any(), any(), any(), any(), any());
+        verify(elicitationService, never()).settlePendingForTurn(anyLong(), anyLong(), anyLong());
+    }
+
+    /** 已重投 2 次的轮次在第 3 次投递中发起答题卡时，在线执行器仍应等待用户，而不是按耗尽收口。 */
+    @Test
+    void recoverStaleTurnKeepsPendingCardBeforeDeliveryAttemptsAreExhausted() {
+        Date cutoff = new Date(1_000L);
+        AgentConversationDO conv = existingConversationWithSession();
+        AgentConversationTurnDO stale = processingInboundTurn(77L);
+        stale.setDispatchAttempt(3);
+        stale.setAutoRedeliveryCount(2);
+        when(turnDao.listStaleProcessingInboundByExecutor(1L, 9L, cutoff, 100))
+                .thenReturn(java.util.List.of(stale));
+        when(convDao.findById(1L, 77L)).thenReturn(conv);
+        when(turnDao.findByConversationTurn(1L, 77L, 55L)).thenReturn(stale);
+        ConversationRuntimePresence presence = mock(ConversationRuntimePresence.class);
+        when(presence.isExecutorOnline(9L)).thenReturn(true);
+        AgentConversationElicitationDao elicitations = mock(AgentConversationElicitationDao.class);
+        when(elicitations.listPendingByTurn(1L, 55L))
+                .thenReturn(java.util.List.of(pendingQuestion("{}")));
+        ConversationElicitationService elicitationService = mock(ConversationElicitationService.class);
+        AgentConversationService target = serviceWithPresence(presence);
+        target.setElicitationDao(elicitations);
+        target.setConversationElicitationService(elicitationService);
+
+        target.recoverStaleTurnsForExecutor(1L, 9L, java.util.Set.of(), true, cutoff, 100);
+        commitTransactionSynchronizations();
+
+        verify(turnDao, never()).claimStaleDispatchAttemptIfProcessing(anyLong(), anyLong(),
+                anyLong(), any());
+        verify(transport, never()).send(any(), any(), any(), any(), any());
+        verify(elicitationService, never()).settlePendingForTurn(anyLong(), anyLong(), anyLong());
+    }
+
+    /** 执行器已被替换/离线时卡片 requestId 已不存在，仍必须取消卡片并重投，避免答案进黑洞。 */
+    @Test
+    void recoverInactiveTurnsForReplacedExecutorStillCancelsPendingCard() {
+        ConversationRuntimePresence presence = mock(ConversationRuntimePresence.class);
+        when(presence.isExecutorOnline(9L)).thenReturn(false);
+        AgentConversationElicitationDao elicitations = mock(AgentConversationElicitationDao.class);
+        when(elicitations.listPendingByTurn(1L, 55L))
+                .thenReturn(java.util.List.of(pendingQuestion("{}")));
+        ConversationElicitationService elicitationService = mock(ConversationElicitationService.class);
+        when(elicitationService.settlePendingForTurn(1L, 77L, 55L)).thenReturn(canceledCards());
+        AgentConversationService target = serviceWithPresence(presence);
+        target.setElicitationDao(elicitations);
+        target.setConversationElicitationService(elicitationService);
+        AgentConversationDO conv = existingConversationWithSession();
+        AgentConversationTurnDO stale = processingInboundTurn(77L);
+        stale.setContent("orphaned by replaced runtime");
+        when(turnDao.listStaleProcessingInboundByExecutor(eq(1L), eq(9L), any(Date.class), eq(100)))
+                .thenReturn(java.util.List.of(stale));
+        when(convDao.findById(1L, 77L)).thenReturn(conv);
+        when(turnDao.findByConversationTurn(1L, 77L, 55L)).thenReturn(stale);
+
+        target.recoverInactiveTurnsForReplacedExecutor(1L, 9L, java.util.Set.of());
+        commitTransactionSynchronizations();
+
+        verify(elicitationService).settlePendingForTurn(1L, 77L, 55L);
+        verify(transport).send(eq(conv), eq(55L), eq("orphaned by replaced runtime"),
+                anyString(), any());
+    }
+
     @Test
     void recoveredClarificationDispatchRefreshesAnEmptyOwnerSnapshot() {
         Date cutoff = new Date(1_000L);

@@ -1190,6 +1190,56 @@ describe('durable clarification history', () => {
     expect(replies).toBe(0);
     expect((screen.getByPlaceholderText('输入消息...') as HTMLTextAreaElement).value).toBe('Keep my draft');
   });
+  it('opens a system-canceled question in the composer editor and replies as text', async () => {
+    let sends = 0; let replies = 0; let sentContent = '';
+    server.use(
+      http.post('/api/workitems/:workitemId/clarification-conversations/:conversationId/turns', async ({ request }) => {
+        sends++;
+        sentContent = (await request.json() as { content: string }).content;
+        return ok(null);
+      }),
+      http.post('/api/workitems/:workitemId/clarification-conversations/:conversationId/elicitations/:requestId/reply', () => { replies++; return ok(null); }),
+    );
+    const canceled = { ...rows(1, 7)[0], status: 'CANCELED', deliveryStatus: null, answerJson: null };
+    await renderPanel({ acpInteractionSupported: true, questionHistory: [canceled],
+      turns: [{ id: 7, direction: 'IN', content: 'Original request', status: 'SUCCESS' }] });
+    const history = await screen.findByTestId('question-history-7-q-7-0');
+    expect(history).toHaveTextContent('已取消');
+
+    fireEvent.click(await screen.findByRole('button', { name: '继续回答' }));
+    expect(screen.getByTestId('elicitation-wizard-q-7-0')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('elicitation-option-q0-0'));
+    fireEvent.click(screen.getByTestId('elicitation-submit-q-7-0'));
+    await waitFor(() => expect(sends).toBe(1));
+    expect(sentContent).toBe('首选技术栈：Next.js 全栈');
+    expect(replies).toBe(0);
+  });
+  it('opens a user-declined question in the composer editor and replies as text', async () => {
+    let sends = 0; let replies = 0; let sentContent = '';
+    server.use(
+      http.post('/api/workitems/:workitemId/clarification-conversations/:conversationId/turns', async ({ request }) => {
+        sends++;
+        sentContent = (await request.json() as { content: string }).content;
+        return ok(null);
+      }),
+      http.post('/api/workitems/:workitemId/clarification-conversations/:conversationId/elicitations/:requestId/reply', () => { replies++; return ok(null); }),
+    );
+    const declined = { ...rows(1, 8)[0], status: 'DECLINED', deliveryStatus: null, answerJson: null };
+    await renderPanel({ acpInteractionSupported: true, questionHistory: [declined],
+      turns: [{ id: 8, direction: 'IN', content: 'Original request', status: 'SUCCESS' }] });
+    const history = await screen.findByTestId('question-history-8-q-8-0');
+    expect(history).toHaveTextContent('已跳过');
+
+    fireEvent.click(await screen.findByRole('button', { name: '继续回答' }));
+    expect(screen.getByTestId('elicitation-wizard-q-8-0')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('elicitation-option-q0-0'));
+    fireEvent.click(screen.getByTestId('elicitation-submit-q-8-0'));
+    await waitFor(() => expect(sends).toBe(1));
+    expect(sentContent).toBe('首选技术栈：Next.js 全栈');
+    expect(replies).toBe(0);
+  });
 });
 
 

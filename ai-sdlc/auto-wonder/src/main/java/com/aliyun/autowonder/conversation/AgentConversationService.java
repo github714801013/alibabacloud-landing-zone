@@ -1390,6 +1390,17 @@ public class AgentConversationService {
             }
             int autoRedeliveries = current.getAutoRedeliveryCount() == null
                     ? 0 : current.getAutoRedeliveryCount();
+            if (runtimePresence != null && runtimePresence.isExecutorOnline(conv.getExecutorId())
+                    && elicitationDao != null && !elicitationDao.listPendingByTurn(stale.getTenantId(),
+                            stale.getId()).isEmpty()) {
+                // 执行器在线且本轮正阻塞在答题卡上等用户选择：事件静默是等待本身造成的。
+                // 重投会取消卡片并让用户已选的答案落空；耗尽分支同样先跳过，
+                // 卡片由 30 分钟兜底过期任务收口后，下一次扫描再按原策略处理。
+                log.info("conversation stale turn recovery skipped: question pending "
+                                + "conversationId={} turnId={}",
+                        stale.getConversationId(), stale.getId());
+                return null;
+            }
             if (autoRedeliveries >= MAX_AUTO_REDELIVERIES) {
                 // 执行器已重启 / 掉线，它侧的挂起 requestId 不存在了：卡片必须立刻
                 // 失效，否则最长 30 分钟内用户的回答会落库成功却进黑洞（spec §4.6）。
