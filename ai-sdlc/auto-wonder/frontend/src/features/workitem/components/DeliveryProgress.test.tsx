@@ -1332,6 +1332,55 @@ describe('DeliveryProgress', () => {
     vi.unstubAllGlobals();
   });
 
+  it('navigates same-suffix artifacts from the workbench artifact preview', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => new Response(
+      String(input) === '/api/artifacts/1/preview' ? '# Dev Summary\nPASS' : '# QA Report\nPASS', { status: 200 })));
+    server.use(http.get('/api/artifacts/:id/download', ({ params }) => HttpResponse.json({
+      success: true, code: '0', message: '', traceId: null,
+      data: params.id === '1' ? 'https://oss.example/dev-summary.md' : 'https://oss.example/qa-report.md',
+    })));
+    const progress: DeliveryProgressModel = {
+      steps: [],
+      agents: [{
+        agentId: 41,
+        agentName: 'Agent Dev',
+        status: 'finished',
+        durationMs: 120_000,
+        steps: [{
+          stepId: 101,
+          name: '编码实现',
+          status: 'done',
+          agentName: 'Agent Dev', executorName: null,
+          error: null,
+          subSteps: null,
+          durationMs: 120_000,
+          attempts: [
+            { dispatchId: 301, agentName: 'Agent Dev', executorName: null, status: 'SUCCEEDED', error: null, startedAt: null, durationMs: 120_000 },
+          ],
+        }],
+      }],
+    };
+    const artifacts: Artifact[] = [
+      { id: 1, workitemId: 100, dispatchId: 301, name: 'dev-summary.md', type: 'MARKDOWN', size: 1024, gmtCreate: '' },
+      { id: 2, workitemId: 100, dispatchId: 301, name: 'qa-report.md', type: 'MARKDOWN', size: 1024, gmtCreate: '' },
+    ];
+
+    render(<DeliveryProgress progress={progress} artifacts={artifacts} />);
+
+    fireEvent.click(within(screen.getByTestId('delivery-progress-card')).getByText(/^产物（/));
+    fireEvent.click(screen.getByText(/其他文件（/));
+    fireEvent.click(screen.getByRole('button', { name: '预览产物 dev-summary.md' }));
+
+    expect(await screen.findByRole('heading', { name: 'Dev Summary' })).toBeInTheDocument();
+    expect(screen.getByText('1 / 2')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '下一个' }));
+    expect(await screen.findByRole('heading', { name: 'QA Report' })).toBeInTheDocument();
+    expect(screen.getByText('2 / 2')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /下载/ })).toHaveAttribute('href', 'https://oss.example/qa-report.md');
+
+    vi.unstubAllGlobals();
+  });
+
   it('downloads agent artifacts without opening a popup tab', async () => {
     server.use(http.get('/api/artifacts/1/download', () => HttpResponse.json({
       success: true, code: '0', message: '', traceId: null, data: 'https://oss.example/dev-summary.md',

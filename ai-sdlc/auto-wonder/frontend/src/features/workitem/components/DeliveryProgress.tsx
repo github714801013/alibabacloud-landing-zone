@@ -8,7 +8,7 @@ import type { ReactNode } from 'react';
 import { Card, Typography, Space, Spin, Collapse, Tag, Tooltip, Button, Select, ConfigProvider, Modal, Tabs, Alert, Empty } from 'antd';
 import { CheckCircleFilled, ClockCircleOutlined, CloseCircleFilled, CompressOutlined, DownloadOutlined, EyeOutlined, FileTextOutlined, FullscreenOutlined, LoadingOutlined, PauseCircleOutlined, ReloadOutlined, ZoomInOutlined, ZoomOutOutlined } from '@ant-design/icons';
 import type { AgentDeliveryProgress, Artifact, DeliveryProgress as DeliveryProgressModel, DeliveryStep, DispatchAttempt, ProcessGraph, ProcessGraphEdge, ProcessGraphNode, StepTiming, SubStep, WorkflowPlan } from '@/shared/types/workitem';
-import { artifactCategories, artifactsForReadingCategory, groupArtifactsByExecution } from '../artifactGrouping';
+import { artifactCategories, artifactsForReadingCategory, artifactsInDisplayOrder, groupArtifactsByExecution } from '../artifactGrouping';
 import { basename } from '@/shared/lib/artifactLinking';
 import { getArtifactDownloadUrl } from '../api';
 import { ArtifactPreviewModal } from './ArtifactPreviewModal';
@@ -854,6 +854,9 @@ function DeliveryWorkbench({ agents, progress, artifacts, artifactsLoading, onEx
   const selectedEntry = pinnedDispatch !== null ? entries.find(entry => entry.dispatchId === pinnedDispatch) : pinnedAgent !== null ? [...entries].reverse().find(entry => entry.agent.agentId === pinnedAgent) : defaultEntry;
   const selectedAgent = pinnedAgent !== null ? agents.find(agent => agent.agentId === pinnedAgent) : selectedEntry?.agent ?? attentionAgent ?? agents[agents.length - 1];
   const selectedStep = selectedAgent?.steps.find(step => step.stepId === selectedStepId);
+  const selectedArtifacts = useMemo(() => selectedAgent ? artifactsForAgent(selectedAgent, artifacts, progress?.executions) : artifacts, [selectedAgent, artifacts, progress?.executions]);
+  const selectedExecutions = useMemo(() => progress?.executions?.filter(attempt => !selectedAgent || attempt.agentId === selectedAgent.agentId), [progress?.executions, selectedAgent]);
+  const previewSequence = useMemo(() => artifactsInDisplayOrder(selectedAgent?.steps ?? [], selectedArtifacts, selectedExecutions), [selectedAgent, selectedArtifacts, selectedExecutions]);
   const selectedIsTimeout = selectedEntry?.attempt.status === 'TIMEOUT';
   const currentStep = currentAgent?.steps.find(step => step.status === 'active');
   const selectedLive = selectedEntry?.dispatchId === currentEntry?.dispatchId && currentAgent !== null;
@@ -999,7 +1002,7 @@ function DeliveryWorkbench({ agents, progress, artifacts, artifactsLoading, onEx
               ...(renderControlTimeline ? [{ key: 'controls', label: t('executionControl.timeline'), children: selectedEntry && renderControlTimeline(selectedEntry.dispatchId) }] : []),
               { key: 'details', label: t('workbench.details'), children: details },
               { key: 'timing', label: t('stepTiming.title'), children: selectedEntry ? <StepDurationChart key={selectedEntry.dispatchId} dispatchId={selectedEntry.dispatchId} steps={selectedEntry.attempt.stepTimings} /> : <Empty description={t('workbench.noSession')} /> },
-              { key: 'artifacts', label: t('artifacts.agentCount', { count: selectedAgent ? artifactsForAgent(selectedAgent, artifacts, progress?.executions).length : artifacts.length }), children: <ArtifactGroup key={selectedAgent?.agentId ?? 'all'} executions={progress?.executions?.filter(attempt => !selectedAgent || attempt.agentId === selectedAgent.agentId)} steps={selectedAgent?.steps ?? []} artifacts={selectedAgent ? artifactsForAgent(selectedAgent, artifacts, progress?.executions) : artifacts} loading={artifactsLoading} onPreview={setPreviewArtifact} /> },
+              { key: 'artifacts', label: t('artifacts.agentCount', { count: selectedArtifacts.length }), children: <ArtifactGroup key={selectedAgent?.agentId ?? 'all'} executions={selectedExecutions} steps={selectedAgent?.steps ?? []} artifacts={selectedArtifacts} loading={artifactsLoading} onPreview={setPreviewArtifact} /> },
               { key: 'graph', label: t('workbench.graph'), children: <AuthoritativeExecutionProcessGraph processGraph={progress?.processGraph} /> },
             ]} />
           </main>
@@ -1008,6 +1011,7 @@ function DeliveryWorkbench({ agents, progress, artifacts, artifactsLoading, onEx
       <ArtifactPreviewModal
         open={expanded && previewArtifact != null}
         artifact={previewArtifact}
+        artifacts={previewSequence}
         onClose={() => setPreviewArtifact(null)}
       />
     </Modal>

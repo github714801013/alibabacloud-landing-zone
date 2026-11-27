@@ -7,8 +7,8 @@ import { useAuthStore } from '@/shared/auth/store';
 import type { Artifact } from '@/shared/types/workitem';
 import { ArtifactPreviewModal } from './ArtifactPreviewModal';
 
-const artifact = (name: string): Artifact => ({
-  id: 7,
+const artifact = (name: string, id = 7): Artifact => ({
+  id,
   workitemId: 1,
   dispatchId: 2,
   name,
@@ -261,5 +261,106 @@ describe('ArtifactPreviewModal', () => {
 
     expect(await screen.findByText('无法确认产物大小，请下载后查看')).toBeInTheDocument();
     await waitFor(() => expect(fetch).not.toHaveBeenCalled());
+  });
+
+  it('navigates same-suffix artifacts with buttons and updates title, preview and download link', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => new Response(
+      String(input).includes('/2/') ? '# Second Report\nPASS' : '# First Report\nPASS', { status: 200 })));
+    server.use(http.get('/api/artifacts/:id/download', ({ params }) => HttpResponse.json({
+      success: true, code: '0', message: '', traceId: null,
+      data: params.id === '2' ? 'https://oss.example/second.md' : 'https://oss.example/first.md',
+    })));
+
+    const artifacts = [artifact('reports/first.md', 1), artifact('reports/second.md', 2), artifact('reports/notes.txt', 3)];
+    render(<ArtifactPreviewModal open artifact={artifacts[0]} artifacts={artifacts} onClose={() => undefined} />);
+
+    expect(await screen.findByRole('heading', { name: 'First Report' })).toBeInTheDocument();
+    expect(screen.getByText('1 / 2')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '上一个' })).toBeDisabled();
+    expect(screen.getByRole('link', { name: /下载/ })).toHaveAttribute('href', 'https://oss.example/first.md');
+
+    await userEvent.click(screen.getByRole('button', { name: '下一个' }));
+
+    expect(await screen.findByRole('heading', { name: 'Second Report' })).toBeInTheDocument();
+    expect(screen.getByText('reports/second.md')).toBeInTheDocument();
+    expect(screen.getByText('2 / 2')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '下一个' })).toBeDisabled();
+    expect(screen.getByRole('link', { name: /下载/ })).toHaveAttribute('href', 'https://oss.example/second.md');
+    expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input) === '/api/artifacts/2/preview')).toBe(true);
+  });
+
+  it('navigates same-suffix artifacts with arrow keys and clamps at both ends', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => new Response(
+      String(input).includes('/2/') ? '# Second Report\nPASS' : '# First Report\nPASS', { status: 200 })));
+    server.use(http.get('/api/artifacts/:id/download', () => HttpResponse.json({
+      success: true, code: '0', message: '', traceId: null, data: 'https://oss.example/report.md',
+    })));
+
+    const artifacts = [artifact('reports/first.md', 1), artifact('reports/second.md', 2)];
+    render(<ArtifactPreviewModal open artifact={artifacts[0]} artifacts={artifacts} onClose={() => undefined} />);
+
+    expect(await screen.findByRole('heading', { name: 'First Report' })).toBeInTheDocument();
+    await userEvent.keyboard('{ArrowRight}');
+    expect(await screen.findByRole('heading', { name: 'Second Report' })).toBeInTheDocument();
+    expect(screen.getByText('2 / 2')).toBeInTheDocument();
+    await userEvent.keyboard('{ArrowRight}');
+    expect(screen.getByText('2 / 2')).toBeInTheDocument();
+    await userEvent.keyboard('{ArrowLeft}');
+    expect(await screen.findByRole('heading', { name: 'First Report' })).toBeInTheDocument();
+    await userEvent.keyboard('{ArrowLeft}');
+    expect(screen.getByText('1 / 2')).toBeInTheDocument();
+  });
+
+  it('hides navigation for a single same-suffix artifact or a preview type that does not participate', async () => {
+    server.use(http.get('/api/artifacts/:id/download', () => HttpResponse.json({
+      success: true, code: '0', message: '', traceId: null, data: 'https://oss.example/file',
+    })));
+
+    const artifacts = [artifact('reports/only.md', 1), artifact('reports/notes.txt', 2), artifact('requirements/design.pdf', 3)];
+    const { rerender } = render(<ArtifactPreviewModal open artifact={artifacts[0]} artifacts={artifacts} onClose={() => undefined} />);
+    expect(await screen.findByRole('heading', { name: 'Report' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '上一个' })).not.toBeInTheDocument();
+    expect(screen.queryByText('1 / 1')).not.toBeInTheDocument();
+
+    rerender(<ArtifactPreviewModal open artifact={artifacts[2]} artifacts={artifacts} onClose={() => undefined} />);
+    expect(await screen.findByTestId('artifact-pdf-preview')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '下一个' })).not.toBeInTheDocument();
+  });
+
+  it('restarts from the opened artifact after closing and drops navigation when the refreshed list no longer contains it', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => new Response(
+      String(input).includes('/2/') ? '# Second Report\nPASS' : '# First Report\nPASS', { status: 200 })));
+    server.use(http.get('/api/artifacts/:id/download', () => HttpResponse.json({
+      success: true, code: '0', message: '', traceId: null, data: 'https://oss.example/report.md',
+    })));
+
+    const artifacts = [artifact('reports/first.md', 1), artifact('reports/second.md', 2)];
+    const { rerender } = render(<ArtifactPreviewModal open artifact={artifacts[0]} artifacts={artifacts} onClose={() => undefined} />);
+    expect(await screen.findByRole('heading', { name: 'First Report' })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: '下一个' }));
+    expect(await screen.findByRole('heading', { name: 'Second Report' })).toBeInTheDocument();
+
+    rerender(<ArtifactPreviewModal open={false} artifact={null} artifacts={artifacts} onClose={() => undefined} />);
+    rerender(<ArtifactPreviewModal open artifact={artifacts[0]} artifacts={artifacts} onClose={() => undefined} />);
+    expect(await screen.findByRole('heading', { name: 'First Report' })).toBeInTheDocument();
+    expect(screen.getByText('1 / 2')).toBeInTheDocument();
+
+    rerender(<ArtifactPreviewModal open artifact={artifacts[0]} artifacts={[artifacts[1]]} onClose={() => undefined} />);
+    expect(screen.queryByRole('button', { name: '下一个' })).not.toBeInTheDocument();
+    expect(screen.queryByText('1 / 2')).not.toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'First Report' })).toBeInTheDocument();
+  });
+
+  it('hides navigation when the caller does not provide the artifact list', async () => {
+    server.use(http.get('/api/artifacts/:id/download', () => HttpResponse.json({
+      success: true, code: '0', message: '', traceId: null, data: 'https://oss.example/report.md',
+    })));
+
+    render(<ArtifactPreviewModal open artifact={artifact('reports/first.md', 1)} onClose={() => undefined} />);
+
+    expect(await screen.findByRole('heading', { name: 'Report' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '上一个' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '下一个' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/\d+ \/ \d+/)).not.toBeInTheDocument();
   });
 });

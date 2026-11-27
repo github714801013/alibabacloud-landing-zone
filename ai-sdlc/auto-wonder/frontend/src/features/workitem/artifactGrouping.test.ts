@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Artifact, DispatchAttempt } from '@/shared/types/workitem';
-import { artifactCategories, artifactCategory, artifactReadingCategory, artifactsForReadingCategory, groupArtifactsByExecution } from './artifactGrouping';
+import { artifactCategories, artifactCategory, artifactReadingCategory, artifactsForReadingCategory, artifactsInDisplayOrder, groupArtifactsByExecution, sameTypeArtifactSequence } from './artifactGrouping';
 
 const attempt = (dispatchId: number): DispatchAttempt => ({ dispatchId, agentName: 'RD', executorName: null, status: 'FAILED', error: null, startedAt: null, durationMs: null });
 const artifact = (id: number, dispatchId: number): Artifact => ({ id, dispatchId, workitemId: 1, name: 'artifacts/output/deliverables/report.md', type: 'MARKDOWN', size: null, gmtCreate: '' });
@@ -57,6 +57,34 @@ describe('artifact grouping', () => {
     expect(artifactsForReadingCategory([...files].reverse(), 'evidence').map(file => file.name)).toEqual(['evidence/triage-report.md', 'evidence/check.log']);
     expect(artifactsForReadingCategory(files, 'handoff').map(file => file.name)).toEqual(['handoff/summary.md']);
     expect(artifactCategories.flatMap(category => artifactsForReadingCategory(files, category.key)).map(file => file.id).sort()).toEqual(files.map(file => file.id).sort());
+  });
+
+  it('navigates same-suffix previews in display order with strict case-insensitive suffixes', () => {
+    const files = [
+      { ...artifact(1, 10), name: 'artifacts/summary.md' },
+      { ...artifact(2, 10), name: 'artifacts/report.md' },
+      { ...artifact(3, 10), name: 'artifacts/guide.markdown' },
+      { ...artifact(4, 10), name: 'artifacts/shot.PNG' },
+      { ...artifact(5, 10), name: 'artifacts/probe.png' },
+    ];
+    const ordered = artifactsInDisplayOrder([{ name: '开发', attempts: [attempt(10)] }], files);
+    expect(ordered.map(file => file.id)).toEqual([1, 2, 3, 4, 5]);
+    expect(sameTypeArtifactSequence(ordered, files[0]).map(file => file.id)).toEqual([1, 2]);
+    expect(sameTypeArtifactSequence(ordered, files[3]).map(file => file.id)).toEqual([4, 5]);
+    expect(sameTypeArtifactSequence(ordered, { ...files[0], name: 'artifacts/video.mp4' })).toEqual([]);
+    expect(sameTypeArtifactSequence(ordered, { ...files[0], name: 'artifacts/README' })).toEqual([]);
+    expect(sameTypeArtifactSequence([], files[0])).toEqual([]);
+  });
+
+  it('flattens executions newest first and categories before reading priority', () => {
+    const files = [
+      { ...artifact(1, 20), name: 'evidence/z-report.md', type: 'EVIDENCE' },
+      { ...artifact(2, 20), name: 'deliverables/a.png', type: 'DELIVERABLE' },
+      { ...artifact(3, 10), name: 'handoff/summary.md', type: 'HANDOFF' },
+    ];
+    const ordered = artifactsInDisplayOrder([{ name: '开发', attempts: [attempt(10), attempt(20)] }], files);
+    expect(ordered.map(file => file.id)).toEqual([2, 1, 3]);
+    expect(artifactsInDisplayOrder([], [])).toEqual([]);
   });
 
   it('uses server types regardless of filenames, retaining future and missing types', () => {

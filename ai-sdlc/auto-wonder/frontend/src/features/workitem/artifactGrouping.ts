@@ -1,4 +1,5 @@
 import { i18n } from '@/shared/i18n';
+import { filePreviewKind } from '@/shared/ui/FilePreview';
 import { runtimeStatusLabel } from './runtimeLabels';
 import { basename } from '@/shared/lib/artifactLinking';
 import type { Artifact, DeliveryStep, DispatchAttempt } from '@/shared/types/workitem';
@@ -44,6 +45,27 @@ export function artifactReadingCategory(artifact: Pick<Artifact, 'type' | 'name'
 export function artifactsForReadingCategory(artifacts: Artifact[], category: Category): Artifact[] {
   return artifacts.filter(artifact => artifactReadingCategory(artifact) === category)
     .sort((a, b) => readingPriority(a.name) - readingPriority(b.name));
+}
+
+// 与产物标签页的渲染顺序一致，保证预览翻页与页面顺序相同。
+export function artifactsInDisplayOrder(steps: Pick<DeliveryStep, 'name' | 'attempts'>[], artifacts: Artifact[], attempts: DispatchAttempt[] = []): Artifact[] {
+  return groupArtifactsByExecution(steps, artifacts, attempts)
+    .flatMap(execution => artifactCategories.flatMap(category => artifactsForReadingCategory(execution.artifacts, category.key)));
+}
+
+function artifactExtension(path: string): string | null {
+  const name = basename(path.split(/[?#]/)[0]).toLowerCase();
+  const dot = name.lastIndexOf('.');
+  return dot >= 0 && dot < name.length - 1 ? name.slice(dot + 1) : null;
+}
+
+// 仅同后缀（忽略大小写）；.md 与 .markdown 等别名不互相翻页。
+export function sameTypeArtifactSequence(artifacts: Artifact[], current: Artifact): Artifact[] {
+  const kind = filePreviewKind(current.name);
+  if (kind !== 'text' && kind !== 'image') return [];
+  const extension = artifactExtension(current.name);
+  if (!extension) return [];
+  return artifacts.filter(artifact => artifactExtension(artifact.name) === extension);
 }
 
 function readingPriority(path: string): number {
