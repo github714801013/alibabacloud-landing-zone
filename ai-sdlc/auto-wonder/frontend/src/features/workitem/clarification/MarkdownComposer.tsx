@@ -3,7 +3,6 @@ import { Editor, InputRule } from '@tiptap/core';
 import { EditorContent, useEditor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Placeholder from '@tiptap/extension-placeholder';
-import Table from '@tiptap/extension-table';
 import TableRow from '@tiptap/extension-table-row';
 import TableCell from '@tiptap/extension-table-cell';
 import TableHeader from '@tiptap/extension-table-header';
@@ -17,6 +16,7 @@ import {
   pastedFileForUpload,
 } from '@/shared/lib/documentUpload';
 import { shouldSendOnKey, type SendMode } from './sendMode';
+import { MarkdownTable } from './markdownTable';
 import './markdownComposer.css';
 
 export interface MarkdownComposerHandle {
@@ -93,7 +93,7 @@ export function MarkdownComposer({
     extensions: [
       StarterKit,
       Placeholder.configure({ placeholder: () => placeholderRef.current }),
-      Table.configure({ resizable: false }),
+      MarkdownTable.configure({ resizable: false }),
       TableRow,
       TableCell,
       TableHeader,
